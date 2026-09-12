@@ -1,0 +1,38 @@
+# Inception-of-Wisdom (IoW) — Target Configuration
+# All timing values and safety bounds MUST be read from this file dynamically.
+# Hard-coded timing values are strictly forbidden by the subject.
+
+# ==============================================================================
+# Wisdom Loop Safety Bounds (Subject Mandatory)
+# ==============================================================================
+grace_period: 20        # Seconds the target must stay up to count as healed
+cooldown: 300           # Seconds before the same crash signature may retrigger
+rate_limit_per_hour: 5  # Maximum heals started per hour
+hard_cap: 20            # Maximum heals over the lifetime of the process
+kill_switch: false      # Flip to true to immediately refuse every new heal
+
+# ==============================================================================
+# Observer Configuration (Container & HTTP Probes)
+# ==============================================================================
+target:
+  container_name: "iow_demo_target"
+  service_url: "http://demo_app:5000"
+  probe_interval_seconds: 3
+  probe_timeout_seconds: 2
+  probe_urls:
+    - "/"
+    - "/healthz"
+  error_patterns:
+    - "Traceback (most recent call last):"
+    - "CRITICAL:"
+    - "Error:"
+    - "Exception:"
+
+# ==============================================================================
+# Analyst Configuration (Local Model & Retrieval)
+# ==============================================================================
+analyst:
+  model: "qwen2.5-coder:1.5b"
+  embedding_model: "all-MiniLM-L6-v2"
+  top_k: 3
+

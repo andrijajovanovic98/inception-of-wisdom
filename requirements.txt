@@ -1,0 +1,22 @@
+# Inception-of-Wisdom (IoW) — Agent Dependencies
+
+# Web framework & Live Dashboard
+fastapi>=0.110.0,<0.116.0
+uvicorn[standard]>=0.28.0,<0.33.0
+sse-starlette>=2.0.0,<2.2.0
+jinja2>=3.1.3,<3.2.0
+
+# Part 1: Observer (Docker daemon inspection & HTTP probes)
+docker>=7.0.0,<7.2.0
+httpx>=0.27.0,<0.29.0
+
+# Part 2: Analyst (ChromaDB, local embeddings & Ollama client)
+chromadb>=0.4.24,<0.6.0
+sentence-transformers>=2.5.0,<3.4.0
+ollama>=0.1.7,<0.5.0
+
+# Part 3: Wisdom Loop (Git operations & Configuration parsing)
+GitPython>=3.1.42,<3.2.0
+pyyaml>=6.0.1,<6.1.0
+pydantic>=2.6.0,<2.11.0
+
