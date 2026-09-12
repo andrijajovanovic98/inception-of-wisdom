@@ -49,6 +49,7 @@ make up      # build + start the agent, the LLM runtime and the demo target
 make down    # tear everything down
 make logs    # follow the stack logs
 make re      # down + up
+make break   # break the demo target on purpose (see Demo below)
 ```
 
 Then open the dashboard:
