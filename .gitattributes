@@ -1,0 +1,13 @@
+# GitHub Linguist overrides
+# Keep repository language statistics 100% Python by excluding HTML presentations and templates
+
+*.html linguist-detectable=false
+*.html linguist-documentation=true
+*.html linguist-vendored=true
+
+presentation/** linguist-documentation=true
+presentation/** linguist-detectable=false
+presentation/** linguist-vendored=true
+
+dashboard/templates/** linguist-detectable=false
+dashboard/templates/** linguist-vendored=true
