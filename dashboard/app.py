@@ -66,6 +66,12 @@ from p3.loop import WisdomLoop
 from p3.safety import SafetyManager
 from p3.loop_api import create_loop_router
 
+# Chapter VI: Bonus imports
+from bonus.classifier import TinySymptomClassifier
+from bonus.consensus import SecondOpinionEngine
+from bonus.pr_manager import PullRequestManager
+from bonus.bonus_api import create_bonus_router
+
 CONFIG_FILE = os.environ.get("IOW_CONFIG_PATH", "demo_app/iow.config.yml")
 TARGET_DIR = os.environ.get("IOW_TARGET_DIR", "demo_app")
 REPO_PATH = os.environ.get("IOW_REPO_PATH", ".")
@@ -151,6 +157,15 @@ class InceptionOrchestrator:
             max_attempts=3
         )
 
+        # 5. Bonus Suite (Chapter VI)
+        self.classifier = TinySymptomClassifier()
+        self.consensus_engine = SecondOpinionEngine(
+            retriever=self.retriever,
+            model_name=model_name,
+            ollama_host=ollama_host
+        )
+        self.pr_manager = PullRequestManager(git_manager=self.git_manager)
+
         # Register event subscriber for autonomous healing
         self.event_manager.add_listener(self._on_observer_event)
 
@@ -182,10 +197,23 @@ class InceptionOrchestrator:
         """Worker thread for autonomous heal cycle."""
         sig = event.signature
         grace_period = self.safety_manager.get_grace_period()
+        log_excerpt = event.details.get("log_excerpt", "")
+
+        # Bonus: Check classifier for Fast Path bypass
+        match = self.classifier.classify(log_excerpt, raw_signature=sig)
+        if match.matched and match.cached_patch:
+            logger.info(f"🎯 BONUS FAST PATH: Symptom [{match.symptom_id}] matched by Tiny Classifier! Applying cached patch.")
+
         logger.info(f"⚡ Starting autonomous Wisdom Loop for crash signature [{sig[:8]}]...")
         try:
             result = self.wisdom_loop.execute_heal(event, grace_period=grace_period)
             logger.info(f"Wisdom Loop finished with status: {result.status.upper()}")
+
+            # Bonus reinforcement: record successful heal to classifier
+            if result.status == "healed" and result.attempts:
+                last_att = result.attempts[-1]
+                if last_att.patch:
+                    self.classifier.record_successful_heal(log_excerpt, last_att.patch, raw_signature=sig)
         except Exception as e:
             logger.error(f"Unexpected error in autonomous heal thread: {e}")
         finally:
@@ -259,6 +287,11 @@ class InceptionOrchestrator:
                 "git_branch": self.git_manager.get_current_branch(),
                 "git_head": self.git_manager.get_current_head(),
                 "safety": safety_status
+            },
+            "bonus": {
+                "classifier": self.classifier.get_stats(),
+                "prs_total": len(self.pr_manager.prs),
+                "prs_pending": len(self.pr_manager.list_prs(status_filter="pending_review"))
             }
         }
 
@@ -315,6 +348,14 @@ def create_app() -> FastAPI:
     )
     if loop_router:
         app.include_router(loop_router)
+
+    bonus_router = create_bonus_router(
+        classifier=orchestrator.classifier,
+        consensus_engine=orchestrator.consensus_engine,
+        pr_manager=orchestrator.pr_manager
+    )
+    if bonus_router:
+        app.include_router(bonus_router)
 
     # High-level overview endpoint
     @app.get("/api/overview")

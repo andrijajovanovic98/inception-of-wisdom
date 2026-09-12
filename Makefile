@@ -229,6 +229,10 @@ p3: ensure-ready ensure-ollama-quick
 	@echo "[*] Part 3 - Wisdom Loop: Launching on http://127.0.0.1:$(PORT)"
 	@make run
 
+bonus: ensure-ready ensure-ollama-quick
+	@echo "[*] Chapter VI - Bonus Suite: Launching on http://127.0.0.1:$(PORT)"
+	@make run
+
 stop:
 	@if [ -f $(IOW_DIR)/ollama.pid ]; then \
 		kill $$(cat $(IOW_DIR)/ollama.pid) 2>/dev/null || true; \

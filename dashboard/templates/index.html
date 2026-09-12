@@ -420,6 +420,7 @@
         <button class="tab-btn active" onclick="switchTab('observer')">1. Observer</button>
         <button class="tab-btn" onclick="switchTab('analyst')">2. Analyst</button>
         <button class="tab-btn" onclick="switchTab('loop')">3. Wisdom Loop</button>
+        <button class="tab-btn" onclick="switchTab('bonus')">4. Bonus Suite</button>
       </div>
     </div>
 
@@ -626,7 +627,80 @@
           <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLoopHistory()">Refresh</button>
         </div>
         <div id="cycleHistoryList" style="display: flex; flex-direction: column; gap: 10px;">
-          <div style="text-align: center; color: #64748b; padding: 40px;">No heal cycles recorded yet. Trigger a crash to observe healing!</div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 4: BONUS SUITE (Chapter VI) -->
+    <!-- ===================================================================== -->
+    <div id="tab-bonus" class="tab-content">
+      <div class="grid-4">
+        <div class="stat-card">
+          <span class="stat-label">Tiny Classifier Symptoms</span>
+          <span class="stat-value" id="bonusSympCount">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Fast-Path Bypasses</span>
+          <span class="stat-value" id="bonusBypassCount">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Second Opinion Mode</span>
+          <span class="stat-value" style="font-size: 1.1rem; color: #34d399;">CONSENSUS (2x)</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Pending Pull Requests</span>
+          <span class="stat-value" id="bonusPendingPRs">0</span>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- Tiny Symptom Classifier Panel -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Tiny Symptom Classifier Knowledge Base</div>
+            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshBonus()">Refresh</button>
+          </div>
+          <div style="max-height: 380px; overflow-y: auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symptom ID</th>
+                  <th>Error Type</th>
+                  <th>Target File</th>
+                  <th>Confidence</th>
+                  <th>Reused</th>
+                </tr>
+              </thead>
+              <tbody id="classifierTableBody">
+                <tr><td colspan="5" style="text-align: center; color: #64748b;">No learned symptoms yet. They will appear after successful heal cycles!</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Second Opinion Consensus Tester -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Second Opinion Consensus Tester</div>
+            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="loadConsensusSample()">Insert Sample</button>
+          </div>
+          <textarea id="consensusInput" class="form-input" style="height: 110px; font-family: var(--font-mono); font-size: 0.75rem;" placeholder="Paste crash trace to test dual-opinion voting..."></textarea>
+          <div style="display: flex; justify-content: flex-end;">
+            <button id="consensusBtn" class="btn btn-primary" onclick="testConsensus()">Evaluate Consensus (2x LLM)</button>
+          </div>
+          <div id="consensusOutput" style="display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
+            <div style="color: #64748b; text-align: center; padding: 15px;">Click button to evaluate dual-prompt agreement.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pull Request & Review Manager -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Human-in-the-Loop Pull Requests & Review Artifacts</div>
+          <span id="prStatusBadge" class="badge badge-blue">PR Mode Available</span>
+        </div>
+        <div id="prListContainer" style="display: flex; flex-direction: column; gap: 12px;">
+          <div style="color: #64748b; text-align: center; padding: 30px;">No pending review Pull Requests at this time.</div>
         </div>
       </div>
     </div>
@@ -996,16 +1070,162 @@
       }
     }
 
+    // =========================================================================
+    // Bonus Suite Handlers
+    // =========================================================================
+    async function refreshBonus() {
+      try {
+        const res = await fetch('/api/bonus/status');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Update stats
+        const clf = data.classifier || {};
+        document.getElementById('bonusSympCount').textContent = clf.total_learned_symptoms || 0;
+        document.getElementById('bonusBypassCount').textContent = clf.total_fast_path_bypasses || 0;
+        document.getElementById('bonusPendingPRs').textContent = (data.pull_requests || {}).pending || 0;
+
+        // Populate learned symptoms table
+        const tbody = document.getElementById('classifierTableBody');
+        const symps = clf.symptoms || [];
+        if (symps.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #64748b;">No learned symptoms yet. They will appear after successful heal cycles!</td></tr>`;
+        } else {
+          tbody.innerHTML = symps.map(s => `
+            <tr>
+              <td><code style="color: #38bdf8;">${s.symptom_id.slice(0, 8)}</code></td>
+              <td><strong style="color: #f87171;">${escapeHtml(s.error_type || 'Error')}</strong></td>
+              <td>${escapeHtml(s.file || 'N/A')}:${escapeHtml(s.func || '')}</td>
+              <td><span class="badge badge-green">${(s.confidence * 100).toFixed(0)}%</span></td>
+              <td><strong>x${s.times_applied}</strong></td>
+            </tr>
+          `).join('');
+        }
+
+        // Fetch PRs
+        const prRes = await fetch('/api/bonus/prs');
+        if (prRes.ok) {
+          const prs = await prRes.json();
+          const prCont = document.getElementById('prListContainer');
+          if (prs.length === 0) {
+            prCont.innerHTML = `<div style="color: #64748b; text-align: center; padding: 25px;">No review Pull Requests at this time.</div>`;
+          } else {
+            prCont.innerHTML = prs.map(pr => `
+              <div style="background: #090f1e; border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <div>
+                    <strong style="color: #38bdf8;">${escapeHtml(pr.title)}</strong>
+                    <span class="badge ${pr.status === 'pending_review' ? 'badge-yellow' : (pr.status === 'merged' ? 'badge-green' : 'badge-red')}">${pr.status}</span>
+                  </div>
+                  <span style="font-size: 0.75rem; color: #64748b;">${new Date(pr.created_at * 1000).toLocaleTimeString()}</span>
+                </div>
+                <div style="font-size: 0.8rem; color: #cbd5e1;">${escapeHtml(pr.diagnosis_summary)}</div>
+                <pre class="code-preview">${escapeHtml(pr.unified_diff || 'No diff available')}</pre>
+                ${pr.status === 'pending_review' ? `
+                  <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="rejectPR('${pr.pr_id}')">Reject PR</button>
+                    <button class="btn btn-primary" style="padding: 4px 12px; font-size: 0.75rem;" onclick="mergePR('${pr.pr_id}')">Approve & Merge PR</button>
+                  </div>
+                ` : `<div style="font-size: 0.75rem; color: #64748b; font-style: italic;">Review closed: ${pr.reviewer_comment || ''}</div>`}
+              </div>
+            `).join('');
+          }
+        }
+      } catch (err) {
+        console.error("Error refreshing bonus:", err);
+      }
+    }
+
+    function loadConsensusSample() {
+      document.getElementById('consensusInput').value = `Traceback (most recent call last):
+  File "demo_app/app.py", line 45, in crash_me
+    val = 1 / 0
+ZeroDivisionError: division by zero`;
+    }
+
+    async function testConsensus() {
+      const log = document.getElementById('consensusInput').value.trim();
+      if (!log) return;
+      const btn = document.getElementById('consensusBtn');
+      const out = document.getElementById('consensusOutput');
+
+      btn.disabled = true;
+      btn.textContent = "Voting (Dual Opinion)...";
+      out.innerHTML = `<div style="color: #38bdf8; text-align: center;">Querying 2 independent prompts for consensus...</div>`;
+
+      try {
+        const res = await fetch('/api/bonus/consensus/evaluate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ log_excerpt: log, top_k: 3 })
+        });
+        const data = await res.json();
+        out.innerHTML = `
+          <div style="background: #090f1e; border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; justify-content: space-between;">
+              <strong>Consensus Verdict</strong>
+              <span class="badge ${data.consensus_reached ? 'badge-green' : 'badge-red'}">
+                ${data.consensus_reached ? 'AGREEMENT REACHED' : 'DISAGREEMENT'}
+              </span>
+            </div>
+            <div><strong>Agreed Files:</strong> ${data.agreed_files && data.agreed_files.length ? data.agreed_files.map(f => `<code style="color: #38bdf8;">${escapeHtml(f)}</code>`).join(', ') : 'None'}</div>
+            <div style="font-size: 0.8rem; color: #cbd5e1;">${escapeHtml(data.consensus_summary)}</div>
+            <div style="font-size: 0.75rem; color: #64748b; margin-top: 4px;">
+              <strong>Opinion A:</strong> ${(data.opinion_a || {}).summary || 'N/A'}<br>
+              <strong>Opinion B:</strong> ${(data.opinion_b || {}).summary || 'N/A'}
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        out.innerHTML = `<div style="color: #f87171;">Consensus test failed: ${err}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Evaluate Consensus (2x LLM)";
+      }
+    }
+
+    async function mergePR(prId) {
+      if (!confirm(`Merge Pull Request ${prId} into active target code?`)) return;
+      try {
+        const res = await fetch(`/api/bonus/prs/${prId}/merge`, { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || "PR merged!");
+        refreshBonus();
+        refreshOverview();
+      } catch (err) {
+        alert("Failed to merge PR: " + err);
+      }
+    }
+
+    async function rejectPR(prId) {
+      const reason = prompt("Enter rejection reason:");
+      if (!reason) return;
+      try {
+        const res = await fetch(`/api/bonus/prs/${prId}/reject`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ comment: reason })
+        });
+        const data = await res.json();
+        alert(data.message || "PR rejected.");
+        refreshBonus();
+      } catch (err) {
+        alert("Failed to reject PR: " + err);
+      }
+    }
+
     // Startup timers
     window.addEventListener('DOMContentLoaded', () => {
       initSSE();
       refreshOverview();
       refreshEvents();
       refreshLoopHistory();
+      refreshBonus();
 
       // Poll overview every 3 seconds
       setInterval(() => {
         refreshOverview();
+        refreshBonus();
       }, 3000);
     });
   </script>
