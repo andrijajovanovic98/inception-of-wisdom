@@ -243,3 +243,4 @@ class PullRequestManager:
         except Exception as e:
             logger.error(f"Failed to reject PR [{pr_id}]: {e}")
             return False, f"Error rejecting PR: {str(e)}"
+

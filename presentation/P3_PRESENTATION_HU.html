@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Part 3: Wisdom Loop — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --accent-purple: #c084fc;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #9333ea; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-purple); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-purple); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #d8b4fe; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(147, 51, 234, 0.1); border-left: 4px solid var(--accent-purple); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-purple); width: 12.5%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Part 3</span>
+      <span>Wisdom Loop Részletes Bemutató — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">ACT & VERIFY FÁZIS</span>
+      <h1>Part 3: Wisdom Loop — Autonóm Hibajavítás és Visszaállítás</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        A Wisdom Loop a diagnózisból kiindulva ellenőrzött forráskód-javítást végez. Összehangolja a diff-mentes JSON javítócsomagokat, a többlépcsős érvényességi ellenőrzést (sanity bounds), az atomikus Git ágkezelést, a Docker konténer újraindítást, a türelmi időszakos aktív verifikációt és a legfeljebb 3 próbálkozás utáni automatikus visszaállítást (rollback).
+      </p>
+      <div class="highlight-box">
+        <strong>Subject követelmény:</strong> "Cselekedj a diagnózis alapján: készíts patch-et, alkalmazd a módosításokat, igazold a konténer helyreállását. Tartsd be a biztonsági korlátokat (rate limit, cooldown, hard cap, kill-switch). Sikertelen verifikáció esetén automatikus visszaállítás maximum 3 kísérlet után."
+      </div>
+    </div>
+
+    <!-- Slide 2: Diff-free JSON Patching -->
+    <div class="slide">
+      <h2>Diff-mentes JSON Patch generálás (p3/patcher.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Miért buknak el az Unified Diff-ek kis modelleknél?</h3>
+          <p>A hagyományos diff formátum (<code>@@ -12,4 +12,6 @@</code>) szigorú sorszámozást és karakterszámlálást igényel. A 3B paraméter alatti helyi modellek hajlamosak hibás fejléceket generálni, amit a standard <code>patch(1)</code> parancs elutasít.</p>
+        </div>
+        <div class="card">
+          <h3>Strukturált Teljes Fájlcsere</h3>
+          <pre>{
+  "summary": "ZeroDivisionError kezelése guard feltétellel",
+  "files": [
+    {
+      "path": "demo_app/app.py",
+      "op": "replace",
+      "content": "... teljes szintaktikailag helyes forráskód ..."
+    }
+  ]
+}</pre>
+          <ul>
+            <li>A modell teljes fájlt ír felül vagy hoz létre.</li>
+            <li>Nincsenek pontatlan eltolási (offset) anomáliák.</li>
+            <li>A system prompt szintaktikailag zárt, teljes kódot követel meg.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Sanity Bounds -->
+    <div class="slide">
+      <h2>Érvényességi Korlátok és Védelmi Falak (p3/sanity.py)</h2>
+      <div class="card">
+        <h3>Lemezre Írás Előtti Szigorú Szűrés</h3>
+        <p>Mielőtt egy generált patch megérintené a fájlrendszert vagy a Git tárolót, át kell mennie 4 védelmi kapun:</p>
+        <ul>
+          <li><strong>Fájlszám korlát:</strong> Legfeljebb 3 fájlt módosíthat egyetlen javítási körben (megelőzi a teljes repó szétzilálását).</li>
+          <li><strong>Zsugorodás elleni védelem (Shrinkage Guard):</strong> Legfeljebb 60%-kal csökkenhet a fájl mérete az eredetihez képest (kivédi a kód véletlen kiürítését).</li>
+          <li><strong>Helyettesítő token védelem:</strong> Letiltja a lusta AI mintákat: <code># TODO</code>, <code># rest of code here</code>, <code># implement here</code>.</li>
+          <li><strong>Szintaktikai ellenőrzés:</strong> Python fájloknál lefuttatja az <code>ast.parse(content)</code> hívást; szintaxishiba esetén a patch azonnal elutasításra kerül.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Slide 4: Atomic Git & Branching -->
+    <div class="slide">
+      <h2>Git Izoláció és Atomikus Commitok (p3/git_manager.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Dedikált Öngyógyító Ág</h3>
+          <ul>
+            <li>Minden autonóm módosítás az izolált <code>iow/auto-heal</code> ágon fut.</li>
+            <li>A ciklus előtt rögzíti a kiinduló állapotot: <code>pre-loop revision</code> (commit SHA).</li>
+            <li>Atomikus fájlkezelés: ideiglenes fájlba ír, majd biztonságos átnevezést végez.</li>
+            <li>Git commitot hoz létre a diagnózis összefoglalójával és a kísérlet sorszámával.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Automatikus Hard Rollback</h3>
+          <div class="highlight-box">
+            <strong>Garantált Állapotvédelem:</strong> Ha a verifikáció az utolsó (3.) kísérlet után sem sikeres, a rendszer kiadja:
+            <code>git reset --hard &lt;pre_loop_sha&gt;</code>
+            A repó maradéktalanul visszaáll a kiinduló, tiszta állapotra.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Active Verification & Docker Restart -->
+    <div class="slide">
+      <h2>Konténer Újraindítás és Verifikáció (p3/verifier.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Docker Engine Újraindítás</h3>
+          <ul>
+            <li>A host Docker démonnal kommunikál a <code>/var/run/docker.sock</code>-on keresztül.</li>
+            <li>Újraindítja a célkonténert: <code>POST /containers/{id}/restart</code>.</li>
+            <li>Lekéri az új állapotot és kilépési kódot.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Aktív Türelmi Időszak (Grace Period, 20s)</h3>
+          <ul>
+            <li>Nem fogadja el azonnal a helyreállást pusztán a konténer elindulása miatt.</li>
+            <li>HTTP health végpontokat (<code>/health</code>, <code>/crash</code>) tesztel a türelmi idő alatt.</li>
+            <li>Pásztázza a konténer logjait, hogy nem lép-e fel azonnali újabb crash loop.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 6: 3-Attempt Feedback Loop -->
+    <div class="slide">
+      <h2>Többfordulós Visszacsatolási Hurok (p3/loop.py)</h2>
+      <div class="card">
+        <h3>Adaptív Öngyógyítás</h3>
+        <p>Egyetlen javítás nem mindig elég komplex hibáknál. A Wisdom Loop 3 fordulón keresztül tanul a hibákból:</p>
+        <pre>1. Kísérlet: Diagnózis -> Patch -> Újraindítás -> Verifikáció Elbukik!
+                 │
+                 ▼ (Visszacsatolás: Konténer kilépési kód: 1, Traceback log átadva)
+2. Kísérlet: Bővített prompt az előző hibával -> Új patch -> Sikeres!
+                 │
+                 └─ Ha a 3. kísérlet is bukik: Automatikus Git Reset --hard</pre>
+        <ul>
+          <li>Az 1. kísérlet hibaüzenete és tracebackje beépül a 2. kísérlet promptjába.</li>
+          <li>Lehetővé teszi, hogy az 1.5B modell korrigálja a korábbi tévedéseit.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Slide 7: Operational Safety Controls -->
+    <div class="slide">
+      <h2>Üzemeltetési Korlátok (p3/safety.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>iow.config.yml Korlátok</h3>
+          <ul>
+            <li><strong>Single-Flight Lock:</strong> Egyszerre kizárólag egyetlen javítási hurok futhat.</li>
+            <li><strong>Cooldown:</strong> Kötelező csendes periódus a ciklusok között (pl. 60 mp).</li>
+            <li><strong>Rate Limit Per Hour:</strong> Óránkénti javítások maximális száma (pl. 10 javítás / óra).</li>
+            <li><strong>Hard Cap:</strong> Abszolút plafon; túllépése esetén kötelező az emberi felülvizsgálat.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Vészhelyzeti Kill-Switch</h3>
+          <div class="defense-tip">
+            <strong>Subject követelmény:</strong> A <code>kill_switch: true</code> beállítás az <code>iow.config.yml</code> fájlban azonnal leállít minden autonóm műveletet az ágens újraindítása nélkül!
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 8: Peer-Evaluation Checklist -->
+    <div class="slide">
+      <h2>Part 3 Védési Ellenőrzőlista</h2>
+      <div class="card">
+        <h3>Tipikus Értékelői Kérdések és Válaszok:</h3>
+        <ul>
+          <li><strong>K: Miért nem hagyományos git diff formátumot használtok?</strong><br>
+              V: A 3B alatti modellek sorszám-eltolási anomáliákat okoznak. A strukturált teljes fájlcsere megbízható és szintaktikailag biztonságos.</li>
+          <li><strong>K: Mi gátolja meg, hogy a modell letörölje a teljes projektet a 'javítás' kedvéért?</strong><br>
+              V: A Sanity ellenőrzések: max 3 fájl, max 60% méretcsökkenés, és kötelező AST szintaktikai érvényesítés a lemezre írás előtt.</li>
+          <li><strong>K: Hogyan demonstráljátok a rollback működését a védésen?</strong><br>
+              V: Szándékosan feloldhatatlan hibát idézünk elő; a logokon látható lesz a 3 kísérlet elbukása, majd a <code>git reset --hard</code> automatikus visszaállása a kiinduló revízióra.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Előző</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Következő ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>

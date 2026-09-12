@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Part 2: Analyst — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #0284c7; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-blue); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #93c5fd; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(2, 132, 199, 0.1); border-left: 4px solid var(--accent-blue); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-blue); width: 14%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Part 2</span>
+      <span>Analyst Részletes Védési Prezentáció — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">ANALÍZIS FÁZIS</span>
+      <h1>Part 2: Analyst — Szemantikus Kód-Intelligencia</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        Az Analyst híd a futásidejű hibaüzenetek és a forráskód szemantikája között. AST segítségével logikai darabokra bontja a célalkalmazást, indexeli a helyi ChromaDB vektoradatbázisba, lekéri a releváns részeket és strukturált JSON diagnózist állít fel a helyi LLM-mel (< 3B).
+      </p>
+      <div class="highlight-box">
+        <strong>Subject Előírás:</strong> "Indexeli a célkódot ChromaDB-be logikai darabolással (függvényeket és osztályokat megőrizve, nem fix mérettel). Visszaadja a releváns darabokat pontszámmal. Strukturált JSON diagnózist ad összefoglalóval és a gyanús fájlok listájával."
+      </div>
+    </div>
+
+    <!-- Slide 2: AST Chunking -->
+    <div class="slide">
+      <h2>AST Logikai Daraboló (p2/chunker.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Miért bukik el a fix méretű darabolás?</h3>
+          <p>A naiv darabolók (pl. 500 karakterenként) kettévágják a függvényeket, szintaktikai hibákat okoznak és megsemmisítik a változó-hatóköröket. A subject kifejezetten tiltja az önkényes fix méretet.</p>
+        </div>
+        <div class="card">
+          <h3>AST-alapú Felbontás</h3>
+          <ul>
+            <li>A beépített Python <code>ast</code> modullal elemzi a forrásfájlokat.</li>
+            <li>Azonosítja az <code>ast.FunctionDef</code>, <code>ast.AsyncFunctionDef</code> és <code>ast.ClassDef</code> csomópontokat.</li>
+            <li>Megőrzi a dekorátorokat és a pontos kezdő/záró sorszámokat.</li>
+            <li>Külön kódkockaként kimenti a modul fejrészét (importok, globális konstansok).</li>
+            <li>Determinisztikus SHA-256 lenyomatot rendel minden chunkhoz.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: ChromaDB -->
+    <div class="slide">
+      <h2>ChromaDB és Offline Embedding (p2/db.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>PersistentClient Mód</h3>
+          <ul>
+            <li>A <code>chromadb.PersistentClient(path=".chroma")</code> klienst használja.</li>
+            <li><strong>Inkrementális frissítés:</strong> Összeveti az új chunkok SHA-256 hash-ét a tárolt metaadatokkal. Csak a valóban módosult függvényeket ágyazza be újra!</li>
+            <li>Subject szabály: Az indexnek túlélnie kell az újraindítást, és <strong>tilos nulláról újraépülnie</strong>.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Helyi all-MiniLM-L6-v2 Modell</h3>
+          <ul>
+            <li>Teljesen offline 384 dimenziós sűrű vektorok.</li>
+            <li>A modellek a <code>/tmp/iow_cache/</code> mappában gyorsítótárazódnak a 42-es tárhelykvóta védelmében.</li>
+            <li>Futás közben nincs szükség semmilyen internetkapcsolatra.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 4: Traceback Vezérelt Keresés -->
+    <div class="slide">
+      <h2>Traceback Által Vezérelt RAG (p2/retriever.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Azonosítók Kinyerése a Hibából</h3>
+          <p>A hibanaplót kompilált reguláris kifejezésekkel fésüli át:</p>
+          <pre>
+# Kinyeri a fájlt, sort, függvényt és a hibatípust:
+File "demo_app/app.py", line 45, in crash_me
+ZeroDivisionError: division by zero
+          </pre>
+          <p>Megkeresi a pontos hívási verem adatait a vektorkeresés megkezdése előtt.</p>
+        </div>
+        <div class="card">
+          <h3>Hibrid Rangsorolás (Szimbólum + Vektor)</h3>
+          <ul>
+            <li>1. prioritás: A tracebackben nevesített fájl és függvény kódkockája.</li>
+            <li>2. prioritás: Top-k szemantikus koszinusz-hasonlóság az <code>all-MiniLM-L6-v2</code> segítségével.</li>
+            <li>Metaadatokkal adja vissza a darabokat: <code>{file_path, symbol_name, lines, score}</code>.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Strukturált Diagnosztika -->
+    <div class="slide">
+      <h2>Strukturált LLM Diagnoszta (p2/diagnostician.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Ollama Coder Prompt (< 3B)</h3>
+          <ul>
+            <li>Modell: <code>qwen2.5-coder:1.5b</code> a host gépen.</li>
+            <li>Kikényszerített JSON séma: <code>{"summary": "...", "files": ["demo_app/app.py"]}</code>.</li>
+            <li>Kizárólag a kinyert releváns kódrészleteket fűzi be a promptba.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Anti-Hallucinációs Védelem</h3>
+          <div class="highlight-box">
+            <strong>Az Ágens Nem Találgat:</strong> A kisméretű 1.5B modellek hajlamosak nem létező fájlokat kitalálni. A diagnoszta szigorúan összeveti a válaszban kapott fájlokat a valós indexelt fájlokkal, és az ismeretleneket azonnal törli.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 6: Analyst API -->
+    <div class="slide">
+      <h2>Analyst REST Végpontok (p2/analyst_api.py)</h2>
+      <div class="card">
+        <h3>FastAPI Végpontok</h3>
+        <ul>
+          <li><code>GET /api/analyst/status</code>: Indexelt darabok száma, embedding modell neve, LLM típus.</li>
+          <li><code>POST /api/analyst/sync</code>: Átvizsgálja a repót és inkrementálisan frissíti az indexet.</li>
+          <li><code>POST /api/analyst/retrieve</code>: Szabad szöveges kódkeresés hasonlósági pontszámokkal.</li>
+          <li><code>POST /api/analyst/diagnose</code>: Hibanapló diagnosztizálása strukturált JSON formátumban.</li>
+        </ul>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tipp:</strong> A dashboard 2. fülén mutass egy szabad szöveges keresést (pl. "division by zero route"), hogy a vizsgáztató azonnal lássa a valós koszinusz pontszámokat!
+      </div>
+    </div>
+
+    <!-- Slide 7: Védési Ellenőrzőlista -->
+    <div class="slide">
+      <h2>Part 2 Védési Kérdések és Válaszok</h2>
+      <div class="card">
+        <h3>Gyakori Értékelői Kérdések:</h3>
+        <ul>
+          <li><strong>K: Miért AST-vel daraboltok és nem sima karakter-hasítással?</strong><br>
+              V: Subject előírás. Az AST garantálja, hogy a kódkockák tiszteletben tartják a függvény- és osztályhatárokat, így nem kerül csonka, szintaktikailag hibás kód az LLM elé.</li>
+          <li><strong>K: Törlődik a ChromaDB újraindításkor?</strong><br>
+              V: Nem! <code>PersistentClient</code> módban fut a <code>.chroma</code> mappában, és az SHA-256 ujjlenyomatok alapján csak a változott részeket frissíti.</li>
+          <li><strong>K: Hogyan véditek ki a kis 1.5B modell hallucinációit?</strong><br>
+              V: A traceback szimbólumai lehorgonyozzák a kontextust, a kimeneti fájlokat pedig a rendszer ellenőrzi a valódi indexelt fájllista alapján.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Előző</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Következő ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>

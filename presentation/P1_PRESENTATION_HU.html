@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Part 1: Observer — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #0284c7; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-blue); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #93c5fd; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(2, 132, 199, 0.1); border-left: 4px solid var(--accent-blue); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-blue); width: 14%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Part 1</span>
+      <span>Observer Részletes Védési Prezentáció — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">MEGFIGYELÉS FÁZIS</span>
+      <h1>Part 1: Observer — A Szenzoros Idegrendszer</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        Az Observer feladata a célkonténer életciklusának folyamatos monitorozása, a stdout/stderr logok valós idejű követése, HTTP szondák futtatása, a hibajelzések osztályozása és a hibaesemények deduplikációja.
+      </p>
+      <div class="highlight-box">
+        <strong>Subject Előírás:</strong> "Observe: figyeli a Docker eseményeket, szinte valós időben streameli a logokat, HTTP végpontokat tesztel, és az eseményeket egyetlen incidenssé vonja össze."
+      </div>
+    </div>
+
+    <!-- Slide 2: Docker Socket -->
+    <div class="slide">
+      <h2>Docker Socket Vizsgálat (docker_monitor.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Socket Kommunikáció</h3>
+          <p>A <code>/var/run/docker.sock</code> csatolásával az ágens közvetlenül a host Docker démonját kérdezi le a Python <code>docker</code> SDK-val.</p>
+          <ul>
+            <li>Nem-nulla exit code: <code>status == "exited" and exit_code != 0</code></li>
+            <li>Crash loop észrevétele: <code>status == "restarting"</code> számlálóval</li>
+            <li>Halott konténer: <code>c_state.get("Dead") or c_state.get("OOMKilled")</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Konténer Újraindítás</h3>
+          <p>A <code>DockerMonitor</code> ellenálló újraindító primitívet nyújt:</p>
+          <pre>
+def restart_container(self, timeout=10):
+    container = client.containers.get(self.container_name)
+    container.restart(timeout=timeout)
+    return True
+          </pre>
+          <div class="defense-tip">
+            <strong>Értékelői Kérdés:</strong> "Mi történik, ha a Docker démon újraindul?"<br>
+            <strong>Válasz:</strong> A <code>DockerMonitor</code> elkapja az API hibákat, és automatikusan újracsatlakozik anélkül, hogy az ágens összeomlana.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Log Streamer -->
+    <div class="slide">
+      <h2>Valós Idejű Log Streamer (log_streamer.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Stream Ciklus és Körpuffer</h3>
+          <ul>
+            <li>Követi a <code>container.logs(stream=True, follow=True)</code> folyamot egy háttérszálban.</li>
+            <li>500 soros szálbiztos körpuffert kezel (<code>collections.deque(maxlen=500)</code>).</li>
+            <li>Server-Sent Events (SSE) csatornán keresztül azonnal elküldi a sorokat a dashboardnak.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Regex Hibaminta Illesztés</h3>
+          <p>Minden sort összevet a kompilált mintákkal:</p>
+          <pre>
+DEFAULT_ERROR_PATTERNS = [
+    r"Traceback \(most recent call last\):",
+    r"CRITICAL:",
+    r"Error:",
+    r"Exception:"
+]
+          </pre>
+          <p>Találat esetén azonnal jelzést küld a központi <code>EventManager</code>-nek.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 4: HTTP Szondák -->
+    <div class="slide">
+      <h2>HTTP Szondák és Jelzésosztályozás (http_probe.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Hard Crash vs Soft Szuggesztió</h3>
+          <p>A subject szigorúan megköveteli a hibák és szuggesztiók szétválasztását:</p>
+          <ul>
+            <li><strong>Hard Signal (Crash):</strong>
+              <ul>
+                <li>HTTP 5xx Server Error</li>
+                <li>Connection refused / megszakadt kapcsolat</li>
+                <li>Timeout (nem válaszoló célalkalmazás)</li>
+                <li>👉 <em>Automatikusan elindítja a Wisdom Loop öngyógyítást!</em></li>
+              </ul>
+            </li>
+            <li><strong>Soft Signal (Szuggesztió):</strong>
+              <ul>
+                <li>HTTP 4xx (pl. 404 Not Found, hiányzó route)</li>
+                <li>👉 <em>Csak megjelenik a dashboardon az ember számára. SOHA nem javítja automatikusan!</em></li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Folyamatos Poller</h3>
+          <p>Időzítése az <code>iow.config.yml</code> fájlból olvasandó:</p>
+          <pre>
+# demo_app/iow.config.yml
+target:
+  service_url: "http://demo_app:5000"
+  probe_interval_seconds: 3
+  probe_urls: ["/", "/healthz"]
+          </pre>
+          <p>Késleltetést mér milliszekundumban a felület számára.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Deduplikáció -->
+    <div class="slide">
+      <h2>Esemény Deduplikáció (event_manager.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Az Eseményáradat Problémája</h3>
+          <p>Ha a konténer beragad egy újraindulási hurokba, percenként több tucat hiba keletkezik. Deduplikáció nélkül az LLM túlterhelődne az azonos hibaüzenetekkel.</p>
+        </div>
+        <div class="card">
+          <h3>Csúszóablakos Megoldás</h3>
+          <ul>
+            <li>SHA-256 ujjlenyomat: <code>SHA256(forras + tipus + kulcs)</code>.</li>
+            <li>Csúszóablakos időbélyeg cache:
+              <ul>
+                <li><strong>Crash ablak:</strong> 10 másodperc</li>
+                <li><strong>Szuggesztió ablak:</strong> 60 másodperc</li>
+              </ul>
+            </li>
+            <li>Az ablakon belül érkező duplikátumok egy számlálót léptetnek (<code>x3</code>) új esemény dobása helyett.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="highlight-box">
+        Eredmény: 1 valós hibaforrás = 1 tiszta <code>ObserverEvent</code>.
+      </div>
+    </div>
+
+    <!-- Slide 6: Observer API -->
+    <div class="slide">
+      <h2>Observer REST API és SSE Csatorna (observer_api.py)</h2>
+      <div class="card">
+        <h3>FastAPI Végpontok</h3>
+        <ul>
+          <li><code>GET /api/observer/status</code>: Konténer állapot, Docker státusz, HTTP késleltetés.</li>
+          <li><code>GET /api/observer/logs</code>: A körpuffer legutóbbi sorainak pillanatképe.</li>
+          <li><code>GET /api/observer/events</code>: A deduplikált incidensek listája.</li>
+          <li><code>GET /api/observer/stream</code>: <strong>Server-Sent Events (SSE)</strong> folyamatos adatfolyam a webes terminálhoz.</li>
+        </ul>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tipp:</strong> Mutasd meg a vizsgáztatóknak, hogyan gördülnek valós időben a logok a fekete terminálablakban az SSE-n keresztül!
+      </div>
+    </div>
+
+    <!-- Slide 7: Védési Ellenőrzőlista -->
+    <div class="slide">
+      <h2>Part 1 Védési Kérdések és Válaszok</h2>
+      <div class="card">
+        <h3>Gyakori Értékelői Kérdések:</h3>
+        <ul>
+          <li><strong>K: Honnan tudja az Observer, hogy a konténer összeomlott?</strong><br>
+              V: Kétirányú detektálás: a Docker socket állapota (exited, restarting, dead) ÉS a HTTP szondák (5xx, connection refused).</li>
+          <li><strong>K: Miért nem javítja automatikusan a 4xx hibákat?</strong><br>
+              V: Subject előírás: a 4xx funkcionális hiányosságot vagy klienshibát jelent, nem pedig rendszerszintű összeomlást. Csak a hard hibák aktiválják az öngyógyítást.</li>
+          <li><strong>K: Hogyan akadályozod meg az eseményáradatot?</strong><br>
+              V: Az <code>event_manager.py</code> csúszóablakos deduplikációja SHA-256 ujjlenyomat alapján 10 másodpercig egyetlen incidenssé vonja össze az ismétlődő hibákat.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Előző</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Következő ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>

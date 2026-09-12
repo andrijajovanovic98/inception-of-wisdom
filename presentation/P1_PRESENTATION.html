@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Part 1: Observer — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #0284c7; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-blue); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #93c5fd; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(2, 132, 199, 0.1); border-left: 4px solid var(--accent-blue); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-blue); width: 14%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Part 1</span>
+      <span>Observer Deep-Dive — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">OBSERVE PHASE</span>
+      <h1>Part 1: Observer — The Nervous System</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        The Observer's responsibility is to continuously monitor target container lifecycle events, follow stdout/stderr logs in real time, probe HTTP endpoints, classify failure signals, and deduplicate incidents into a clean event stream.
+      </p>
+      <div class="highlight-box">
+        <strong>Subject Requirement:</strong> "Observe: inspect Docker events, follow the log stream in near real time, probe HTTP endpoints, and deduplicate events into a single incident."
+      </div>
+    </div>
+
+    <!-- Slide 2: Docker Socket -->
+    <div class="slide">
+      <h2>Docker Socket Inspection (docker_monitor.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Socket Communication</h3>
+          <p>Mounting <code>/var/run/docker.sock</code> into the agent enables direct communication with the host Docker engine via the Python <code>docker</code> SDK.</p>
+          <ul>
+            <li>Non-zero exit detection: <code>status == "exited" and exit_code != 0</code></li>
+            <li>Crash loop detection: <code>status == "restarting"</code> with restart count</li>
+            <li>Dead state: <code>c_state.get("Dead") or c_state.get("OOMKilled")</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Container Lifecycle Actions</h3>
+          <p>The <code>DockerMonitor</code> provides resilient restart primitives:</p>
+          <pre>
+def restart_container(self, timeout=10):
+    container = client.containers.get(self.container_name)
+    container.restart(timeout=timeout)
+    return True
+          </pre>
+          <div class="defense-tip">
+            <strong>Evaluator Question:</strong> "What happens if Docker daemon restarts?"<br>
+            <strong>Answer:</strong> <code>DockerMonitor</code> catches API exceptions and lazily reconnects without crashing the agent.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Log Streamer -->
+    <div class="slide">
+      <h2>Real-Time Log Streamer (log_streamer.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Stream Loop & Ring Buffer</h3>
+          <ul>
+            <li>Follows <code>container.logs(stream=True, follow=True)</code> in a dedicated background worker thread.</li>
+            <li>Maintains a 500-line thread-safe ring buffer (<code>collections.deque(maxlen=500)</code>).</li>
+            <li>Yields real-time events to the dashboard via Server-Sent Events (SSE).</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Regex Error Matching</h3>
+          <p>Scans each line against compiled regex patterns:</p>
+          <pre>
+DEFAULT_ERROR_PATTERNS = [
+    r"Traceback \(most recent call last\):",
+    r"CRITICAL:",
+    r"Error:",
+    r"Exception:"
+]
+          </pre>
+          <p>When matched, immediately signals the central <code>EventManager</code>.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 4: HTTP Probes -->
+    <div class="slide">
+      <h2>HTTP Probes & Signal Classification (http_probe.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Hard Crash vs Soft Suggestion</h3>
+          <p>The subject strictly requires separating hard crashes from suggestions:</p>
+          <ul>
+            <li><strong>Hard Signal (Crash):</strong>
+              <ul>
+                <li>HTTP 5xx Server Error</li>
+                <li>Connection refused / dropped socket</li>
+                <li>Timeout (target unresponsive)</li>
+                <li>👉 <em>Triggers the Wisdom Loop automatically!</em></li>
+              </ul>
+            </li>
+            <li><strong>Soft Signal (Suggestion):</strong>
+              <ul>
+                <li>HTTP 4xx (e.g. 404 Not Found, missing route)</li>
+                <li>👉 <em>Surfaced on dashboard for humans. NEVER patched automatically!</em></li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Continuous Poller</h3>
+          <p>Runs every <code>probe_interval_seconds</code> (read dynamically from <code>iow.config.yml</code>):</p>
+          <pre>
+# demo_app/iow.config.yml
+target:
+  service_url: "http://demo_app:5000"
+  probe_interval_seconds: 3
+  probe_urls: ["/", "/healthz"]
+          </pre>
+          <p>Reports response time in milliseconds for the dashboard latency monitor.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Deduplication -->
+    <div class="slide">
+      <h2>Event Deduplication (event_manager.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>The Flooding Problem</h3>
+          <p>When a container fails to start, Docker restart loops or polling probes can emit 50 errors per minute. Without deduplication, the LLM would be flooded with duplicate tickets.</p>
+        </div>
+        <div class="card">
+          <h3>Sliding-Window Solution</h3>
+          <ul>
+            <li>Computes SHA-256 fingerprint: <code>SHA256(source + type + raw_key)</code>.</li>
+            <li>Maintains sliding-window timestamp cache:
+              <ul>
+                <li><strong>Crash window:</strong> 10 seconds</li>
+                <li><strong>Suggestion window:</strong> 60 seconds</li>
+              </ul>
+            </li>
+            <li>Duplicate events within the window increment a counter (<code>x3</code>) instead of generating new notifications.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="highlight-box">
+        Result: 1 real root cause = 1 clean <code>ObserverEvent</code>.
+      </div>
+    </div>
+
+    <!-- Slide 6: Observer API & SSE -->
+    <div class="slide">
+      <h2>Observer REST API & SSE Channel (observer_api.py)</h2>
+      <div class="card">
+        <h3>FastAPI Endpoints</h3>
+        <ul>
+          <li><code>GET /api/observer/status</code>: Container health, Docker state, HTTP latency.</li>
+          <li><code>GET /api/observer/logs</code>: Snapshot of the recent ring buffer logs.</li>
+          <li><code>GET /api/observer/events</code>: List of deduplicated incident events.</li>
+          <li><code>GET /api/observer/stream</code>: <strong>Server-Sent Events (SSE)</strong> real-time event pipeline streaming directly into the browser terminal.</li>
+        </ul>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tip:</strong> Show the evaluators how the web terminal autoscrolls as the target container starts and outputs logs via SSE!
+      </div>
+    </div>
+
+    <!-- Slide 7: Peer Evaluation Checklist -->
+    <div class="slide">
+      <h2>Part 1 Peer-Evaluation Checklist</h2>
+      <div class="card">
+        <h3>Key Questions Evaluators Will Ask:</h3>
+        <ul>
+          <li><strong>Q: How does the Observer know the container is down?</strong><br>
+              A: Dual detection: Docker socket status (exited, restarting, dead) AND HTTP probe failures (5xx, connection refused).</li>
+          <li><strong>Q: Why are 4xx errors not automatically patched?</strong><br>
+              A: Subject specification: 4xx indicates a missing feature or client error (soft suggestion), not a service crash. Only hard failures trigger automated code repair.</li>
+          <li><strong>Q: How is log flooding prevented?</strong><br>
+              A: Sliding-window deduplication in <code>event_manager.py</code> groups recurring signatures over a 10s window.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Previous</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Next ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>

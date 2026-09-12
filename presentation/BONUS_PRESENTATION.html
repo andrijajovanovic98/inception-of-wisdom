@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bonus Suite — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #10b981;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --accent-emerald: #34d399;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #059669; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-emerald); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-emerald); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #6ee7b7; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(16, 185, 129, 0.1); border-left: 4px solid var(--accent-emerald); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-emerald); width: 14.2%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Chapter VI</span>
+      <span>Bonus Suite Deep-Dive — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">CHAPTER VI BONUS</span>
+      <h1>Bonus Suite: Beyond Autonomous Healing</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        Chapter VI introduces enterprise-grade extensions to the self-healing architecture: a sub-millisecond Symptom Classifier with fast-path bypass, a dual-prompt "Second Opinion" consensus engine to combat AI hallucination, and a Human-in-the-Loop Pull Request Manager with real-time diff preview.
+      </p>
+      <div class="highlight-box">
+        <strong>Subject Context:</strong> "Chapter VI — Bonus part: Additional features to improve reliability, speed, and governance without breaking local-only and sub-3B constraints."
+      </div>
+    </div>
+
+    <!-- Slide 2: Tiny Symptom Classifier -->
+    <div class="slide">
+      <h2>Tiny Symptom Classifier (bonus/classifier.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>The Problem with LLM Latency</h3>
+          <p>Running full RAG embedding retrieval and LLM inference takes 3–8 seconds. For deterministic errors with clear stack traces (e.g. <code>ZeroDivisionError</code> or missing modules), this latency is unnecessary.</p>
+        </div>
+        <div class="card">
+          <h3>Fast-Path Remediation (0.01s)</h3>
+          <ul>
+            <li>Extracts deterministic error patterns, exception signatures, and traceback files via compiled regex.</li>
+            <li>Calculates confidence score (0.0 to 1.0).</li>
+            <li>When confidence &gt; 0.85: triggers instant fast-path diagnosis without invoking ChromaDB or Ollama.</li>
+            <li>Falls back gracefully to standard Part 2 Analyst pipeline when uncertain.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Second Opinion Consensus -->
+    <div class="slide">
+      <h2>"Second Opinion" Consensus Engine (bonus/consensus.py)</h2>
+      <div class="card">
+        <h3>Eliminating Single-Prompt Hallucination</h3>
+        <p>Small 1.5B LLMs can be sensitive to phrasing. The consensus engine issues two distinct reasoning prompts to the local model:</p>
+        <div class="grid-2" style="margin-top: 8px;">
+          <div style="background: #030712; padding: 14px; border-radius: 6px; border: 1px solid #1e293b;">
+            <strong style="color: var(--accent-emerald);">Perspective A (Root Cause Focus):</strong>
+            <p style="font-size: 0.9rem; margin-top: 6px;">Examines raw stack trace and runtime execution flow.</p>
+          </div>
+          <div style="background: #030712; padding: 14px; border-radius: 6px; border: 1px solid #1e293b;">
+            <strong style="color: var(--accent-blue);">Perspective B (Defensive Architecture):</strong>
+            <p style="font-size: 0.9rem; margin-top: 6px;">Examines call-site contracts, edge cases, and input validation.</p>
+          </div>
+        </div>
+        <div class="highlight-box" style="margin-top: 14px;">
+          <strong>Consensus Scoring:</strong> Compares suspect files and proposed root causes. If both perspectives agree (Consensus = 1.0), the patch proceed autonomously. If they diverge, it flags the issue for Human-in-the-Loop review.
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 4: Human-in-the-Loop PR Manager -->
+    <div class="slide">
+      <h2>Human-in-the-Loop PR Manager (bonus/pr_manager.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Enterprise Safe Mode</h3>
+          <p>In production environments, fully autonomous code writes to production branches can be prohibited by governance policy.</p>
+          <ul>
+            <li>Creates isolated review branches: <code>iow/review/pr-&lt;timestamp&gt;</code>.</li>
+            <li>Generates standard unified diff comparing base vs staged repair.</li>
+            <li>Suspends container restart until human operator review.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>One-Click Review via Web UI</h3>
+          <pre>POST /api/bonus/prs/{pr_id}/approve  --> Merges into iow/auto-heal & Restarts
+POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
+          <div class="highlight-box">
+            The dashboard displays color-coded diffs directly inside the 4th tab with instant Approve / Reject controls.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Bonus REST Endpoints -->
+    <div class="slide">
+      <h2>Bonus API Endpoints (bonus/bonus_api.py)</h2>
+      <div class="card">
+        <h3>FastAPI Bonus Router</h3>
+        <ul>
+          <li><code>POST /api/bonus/classify</code>: Instantly categorizes raw logs into error class + suspect file.</li>
+          <li><code>POST /api/bonus/consensus</code>: Runs dual-prompt evaluation and returns consensus score.</li>
+          <li><code>GET /api/bonus/prs</code>: Lists pending Human-in-the-Loop pull requests.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/approve</code>: Operator approves PR, triggering atomic merge & container restart.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/reject</code>: Operator rejects PR, safely resetting git state.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Slide 6: Live Dashboard Demonstration -->
+    <div class="slide">
+      <h2>Bonus UI in Unified Dashboard</h2>
+      <div class="card">
+        <h3>Tab 4: "Bonus Suite"</h3>
+        <p>Integrated seamlessly into the central FastAPI dashboard:</p>
+        <ul>
+          <li><strong>Real-time Classifier Test Bench:</strong> Paste any log trace to see instant regex triage vs RAG latency comparison.</li>
+          <li><strong>Consensus Gauge:</strong> Visual agreement meter between Perspective A and Perspective B.</li>
+          <li><strong>Pending PR List:</strong> Review diffs line-by-line with syntax highlighting before approving disk changes.</li>
+        </ul>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Demonstration:</strong> Trigger a crash, show the generated review PR with diff preview on the UI, and click "Approve" live in front of the evaluator!
+      </div>
+    </div>
+
+    <!-- Slide 7: Peer-Evaluation Checklist -->
+    <div class="slide">
+      <h2>Chapter VI Peer-Evaluation Checklist</h2>
+      <div class="card">
+        <h3>Key Questions Evaluators Will Ask:</h3>
+        <ul>
+          <li><strong>Q: Does the bonus part violate the local-only constraint?</strong><br>
+              A: Absolutely not. Both prompts in the consensus engine use the local host Ollama model (<code>qwen2.5-coder:1.5b</code>), and the classifier uses 100% local compiled regex.</li>
+          <li><strong>Q: Why is the Fast-Path Classifier useful if we already have RAG?</strong><br>
+              A: It provides instant (0.01s) diagnosis for standard deterministic crashes, saving LLM compute and enabling instantaneous self-healing.</li>
+          <li><strong>Q: What happens if an operator rejects a pending PR?</strong><br>
+              A: The PR branch <code>iow/review/*</code> is cleanly purged, no files are modified on the running branch, and the event log records the manual rejection.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Previous</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Next ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>

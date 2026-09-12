@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inception of Wisdom (IoW) — Teljes Architektúra és Védési Prezentáció</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --accent-purple: #c084fc;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-color);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 14px 24px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.9rem;
+    }
+    .header-title { font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px; }
+    .badge {
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      background: #0284c7;
+      color: #fff;
+    }
+    .slides-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    .slide {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      padding: 40px 60px;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out;
+      overflow-y: auto;
+    }
+    .slide.active {
+      display: flex;
+      opacity: 1;
+    }
+    h1 { font-size: 2.5rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); display: flex; align-items: center; gap: 10px; }
+    p { font-size: 1.1rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 1000px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 16px; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card h3 { font-size: 1.2rem; color: #fff; display: flex; align-items: center; gap: 8px; }
+    .card p, .card li { font-size: 0.95rem; color: #cbd5e1; line-height: 1.5; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-blue); }
+    pre {
+      background: #030712;
+      border: 1px solid #1e293b;
+      padding: 16px;
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: #93c5fd;
+      overflow-x: auto;
+      line-height: 1.4;
+      margin-top: 8px;
+    }
+    .highlight-box {
+      background: rgba(2, 132, 199, 0.1);
+      border-left: 4px solid var(--accent-blue);
+      padding: 16px;
+      border-radius: 0 8px 8px 0;
+      margin-top: 12px;
+    }
+    .defense-tip {
+      background: rgba(245, 158, 11, 0.1);
+      border-left: 4px solid var(--accent-yellow);
+      padding: 16px;
+      border-radius: 0 8px 8px 0;
+      margin-top: 14px;
+      font-size: 0.95rem;
+    }
+    /* Controls bar */
+    footer {
+      padding: 14px 24px;
+      background: #0f172a;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .progress-bar-container {
+      width: 300px;
+      height: 6px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: var(--accent-blue);
+      width: 10%;
+      transition: width 0.2s;
+    }
+    .nav-btn {
+      background: #1e293b;
+      border: 1px solid var(--border-color);
+      color: #fff;
+      padding: 6px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-title">
+      <span class="badge">42 Projekt</span>
+      <span>Inception-of-Wisdom (IoW) — Teljes Architektúra és Védési Prezentáció</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 10</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1: Címoldal -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">42 BUDAPEST — AUTONÓM ÖNGYÓGYÍTÓ ÁGENS</span>
+      <h1>Inception of Wisdom (IoW)</h1>
+      <p style="font-size: 1.3rem; color: #94a3b8; max-width: 800px;">
+        Egy 100%-ban helyi, autonóm öngyógyító ágens-hurok, amely folyamatosan felügyel egy konténerizált szolgáltatást,
+        észleli a hibákat, szemantikus RAG-kereséssel kontextust gyűjt, diff-mentes JSON javítást szintetizál,
+        és sikertelenség esetén a Git segítségével automatikusan visszaállítja a kódot.
+      </p>
+      <div class="highlight-box" style="max-width: 750px;">
+        <strong>Szigorú Subject Szabály:</strong> Minden kizárólag helyben futhat. Külső LLM API-k (OpenAI, Anthropic, Gemini) használata tilos és azonnali bukást (0 XP) von maga után.
+      </div>
+      <div style="margin-top: 24px; color: var(--text-muted); font-size: 0.85rem;">
+        Navigáció: <strong>Jobbra nyíl</strong> vagy <strong>Következő</strong> gomb.
+      </div>
+    </div>
+
+    <!-- Slide 2: A 4 Ütem -->
+    <div class="slide">
+      <h2>A 4-Ütem: Autonóm Öngyógyító Hurok</h2>
+      <p>A rendszer egy folyamatos, zárt 4-ütemű ciklust valósít meg állapot-visszacsatolással:</p>
+      <pre>
+ ┌──────────────┐         Hiba Észlelése           ┌──────────────┐
+ │ 1. OBSERVE   ├─────────────────────────────────►│ 2. THINK     │
+ │  (Observer)  │    (Regex logok, 5xx szondák)    │  (Analyst)   │
+ └──────▲───────┘                                  └──────┬───────┘
+        │                                                 │ Releváns AST chunkok
+        │ Verifikáció                                     │ & LLM Diagnózis
+        │ (20s Grace Period)                              ▼
+ ┌──────┴───────┐        Atomi Fájl Patch          ┌──────────────┐
+ │ 4. VERIFY    │◄─────────────────────────────────┤ 3. ACT       │
+ │  (Verifier)  │      Commit az iow/auto-heal-en  │ (Wisdom Loop)│
+ └──────────────┘                                  └──────────────┘
+  (3 sikertelen kísérlet után: Git reset --hard visszaállítás az eredetire)
+      </pre>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Jelosztályozási Döntési Fa</h3>
+          <p>A rendszer nem végez vaktában javítást. A hard jelek (crashek, 5xx hibák, nem-nulla exit) azonnal indítják a hurkot, míg a soft szuggesztiók (4xx hiányzó végpontok) csak megjelennek a dashboardon az ember számára.</p>
+        </div>
+        <div class="card">
+          <h3>Önkorlátozó Biztonság</h3>
+          <p>Szigorú korlátok: max 3 próbálkozás egy ciklusban, írás előtti sanity ellenőrzések, single-flight zár, cooldown és dinamikus vészleállító (kill switch).</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Konténerizáció és Host LLM Híd -->
+    <div class="slide">
+      <h2>Konténerizáció és Helyi Ollama Hálózat</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Több-konténeres Docker Stack</h3>
+          <ul>
+            <li><strong>demo_app:</strong> Konténerizált Flask célalkalmazás (5001:5000 port) <code>./demo_app:/app</code> kötéssel.</li>
+            <li><strong>agent:</strong> IoW ágens és FastAPI dashboard (8000:8000 port).</li>
+            <li><strong>/var/run/docker.sock:</strong> Csatolva az ágensbe a konténer újraindításához és vizsgálatához.</li>
+            <li><strong>UID / GID Matching:</strong> Az ágens a host felhasználó (101888/4224) jogaival fut, elkerülve a fájljogosultsági hibákat a bind mounton.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Offline Host LLM Kapcsolat</h3>
+          <ul>
+            <li><strong>Helyi Ollama:</strong> A modell a hoston fut az erőforrások kímélése érdekében.</li>
+            <li><strong>Bridge Híd:</strong> <code>host.docker.internal:host-gateway</code> biztosítja a kapcsolatot a belső hálózaton (172.17.0.1:11434).</li>
+            <li><strong>Modell:</strong> <code>qwen2.5-coder:1.5b</code> (< 3B paraméter, a subject előírása szerint).</li>
+            <li><strong>Embedding:</strong> <code>all-MiniLM-L6-v2</code> offline cache a <code>/tmp/iow_cache/</code>-ben (42 kvótavédelem).</li>
+          </ul>
+        </div>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tipp:</strong> Az értékelők ellenőrizni fogják, hogy külső API-t hívsz-e. Mutasd meg nekik a <code>docker-compose.yml</code>-ben az <code>extra_hosts</code> és a <code>host.docker.internal:11434</code> beállításokat!
+      </div>
+    </div>
+
+    <!-- Slide 4: Part 1 Observer -->
+    <div class="slide">
+      <h2>Part 1: Observer (A Szenzoros Hálózat)</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Docker Socket Figyelő</h3>
+          <p>Közvetlenül kérdezi le a Docker API-t:</p>
+          <ul>
+            <li>Nem-nulla exit code detektálása</li>
+            <li>Restart loop észrevétele</li>
+            <li>Dead / OOMKilled állapot</li>
+            <li>Konténer újraindítás vezérlése</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Valós Idejű Log Streamer</h3>
+          <p>Követi a konténer kimenetét:</p>
+          <ul>
+            <li>500 soros szálbiztos körpuffer</li>
+            <li>Regex hibaminta illesztés (Traceback, CRITICAL, Error, Exception)</li>
+            <li>SSE eseménycsatorna a webes felületre</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>HTTP Szondák és Osztályozás</h3>
+          <p>3 másodpercenként lekérdezi a végpontokat:</p>
+          <ul>
+            <li><strong>2xx:</strong> Egészséges működés</li>
+            <li><strong>4xx:</strong> Soft szuggesztió (EMBERI feladat, nem javítja automatikusan)</li>
+            <li><strong>5xx / Timeout:</strong> Hard crash jelzés</li>
+          </ul>
+        </div>
+      </div>
+      <div class="highlight-box">
+        <strong>Csúszóablakos Deduplikáció:</strong> SHA-256 lenyomatokat képez. Egyetlen rossz újraindulás pontosan 1 crash eseményt kelt léptetett számlálóval, kizárva a másodpercenkénti eseményáradatot.
+      </div>
+    </div>
+
+    <!-- Slide 5: Part 2 Analyst -->
+    <div class="slide">
+      <h2>Part 2: Analyst (Szemantikus Keresés és Diagnózis)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>AST Logikai Daraboló (chunker.py)</h3>
+          <ul>
+            <li>A subject kifejezetten tiltja a fix méretű darabolást (pl. 500 karakter).</li>
+            <li>Python <code>ast</code> modullal logikai függvény- és osztályhatárok mentén szeletel.</li>
+            <li>Minden chunkhoz SHA-256 lenyomatot rendel.</li>
+            <li>A ChromaDB <code>PersistentClient</code> a <code>.chroma</code> mappában újraindításkor átugorja a változatlan kódkockákat.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Traceback Által Vezérelt RAG</h3>
+          <ul>
+            <li>Kivonja a hibalognak a pontos fájlneveit, sorait, függvényeit és kivételtípusát.</li>
+            <li>Koszinusz-hasonlósági keresést futtat a helyi <code>all-MiniLM-L6-v2</code> modellel.</li>
+            <li>A releváns kódszeleteket átadja a helyi Ollama promptnak.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card" style="margin-top: 16px;">
+        <h3>Strukturált JSON Diagnózis és Anti-Hallucináció</h3>
+        <p>Szigorú JSON kimenetet kényszerít ki: <code>{"summary": "...", "files": ["eleresi/ut"]}</code>. A gyanúsított fájlokat összeveti a valós indexelt fájlokkal — az ágens nem találgat és nem nyúl képzeletbeli elérési utakhoz.</p>
+      </div>
+    </div>
+
+    <!-- Slide 6: Part 3 Wisdom Loop -->
+    <div class="slide">
+      <h2>Part 3: Wisdom Loop (Cselekvés és Rollback)</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Diff-mentes JSON Patcher</h3>
+          <p>A diffeket a subject szigorúan tiltja. A patch a teljes módosított fájltartalmat adja vissza: <code>{summary, files: [{path, op, content}]}</code>.</p>
+        </div>
+        <div class="card">
+          <h3>Sanity Bounds (Lemezre írás előtt)</h3>
+          <ul>
+            <li>Legfeljebb 3 fájlt módosíthat</li>
+            <li>Max. 60%-os méretcsökkenés</li>
+            <li>Üres vagy placeholder fájlok tiltása</li>
+            <li>RAG markerek szűrése</li>
+            <li>Python szintaxis-ellenőrzés</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>GitManager és Ágkezelés</h3>
+          <p>Pre-loop snapshot sha mentése. Atomi írás <code>os.replace</code>-szel. Automatikus commit a dedikált <code>iow/auto-heal</code> ágra.</p>
+        </div>
+      </div>
+      <div class="defense-tip">
+        <strong>A 3-Kísérletes Garancia:</strong> Ha 3 javítási kísérlet után sem áll talpra a célalkalmazás, a GitManager azonnal kiad egy <code>git reset --hard &lt;pre_loop_hash&gt;</code> parancsot, újraindítja a konténert, és tisztán hagyja a repót.
+      </div>
+    </div>
+
+    <!-- Slide 7: Biztonsági Fékek -->
+    <div class="slide">
+      <h2>Dinamikus Biztonsági Korlátok (iow.config.yml)</h2>
+      <p>Hard-code-olt időzítések tiltottak. Minden beállítás közvetlenül lemezről frissül:</p>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Az 5 Megkerülhetetlen Szabály</h3>
+          <ul>
+            <li><strong>Single-Flight:</strong> Egyszerre pontosan 1 javítási ciklus futhat. Kizárja a versenyhelyzeteket.</li>
+            <li><strong>Cooldown:</strong> 300 mp türelmi idő ugyanarra a hiba-szignatúrára.</li>
+            <li><strong>Rate Limit:</strong> Legfeljebb 5 javítás egy csúszó órán belül.</li>
+            <li><strong>Hard Cap:</strong> Legfeljebb 20 javítás a folyamat élettartama alatt.</li>
+            <li><strong>Kill-Switch:</strong> A <code>kill_switch: true</code> azonnal tilt minden új kísérletet.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Dinamikus mtime Újratöltő</h3>
+          <p>A <code>SafetyManager</code> figyeli a fájl módosítási idejét (<code>os.path.getmtime</code>). A konfiguráció átírása azonnal érvényesül az ágens vagy a konténer újraindítása nélkül!</p>
+          <pre>
+# demo_app/iow.config.yml
+grace_period: 20
+cooldown: 300
+rate_limit_per_hour: 5
+hard_cap: 20
+kill_switch: false
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 8: Bónusz Fázis -->
+    <div class="slide">
+      <h2>Chapter VI: Bónusz Képességek (bonus/)</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Tiny Symptom Classifier</h3>
+          <p>Gyorsítótárazza az ellenőrzött javításokat. Ismert hiba esetén átugorja az LLM-et (Fast Path), 20 másodpercről <strong>0.01 másodpercre</strong> csökkentve a javítás idejét.</p>
+        </div>
+        <div class="card">
+          <h3>Second Opinion Konszenzus</h3>
+          <p>Két független elemzési stratégiát futtat (Konzervatív vs Rendszerszintű). Csak akkor indul el a kódjavítás, ha mindkét vélemény megegyezik a hibás fájlban.</p>
+        </div>
+        <div class="card">
+          <h3>Human-in-the-Loop PR-ek</h3>
+          <p>Automatikus commit helyett izolált <code>iow/review/*</code> ágat, vizuális Unified Diff-et és dashboard jóváhagyási gombot nyújt az emberi operátornak.</p>
+        </div>
+      </div>
+      <div class="highlight-box">
+        Minden bónusz modul a <code>bonus/</code> könyvtárban található, így a kötelező rész kódja teljesen tiszta marad.
+      </div>
+    </div>
+
+    <!-- Slide 9: Védési Menetrend -->
+    <div class="slide">
+      <h2>Védési Demonstráció Menete</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>1. Lépés: Indítás és Alapállapot</h3>
+          <pre>
+# Verem indítása
+make up
+
+# Nyisd meg a Dashboardot böngészőben:
+http://localhost:8000
+          </pre>
+          <p>Mutasd meg az értékelőknek: A célkonténer 200 OK (zöld jelvény), élő logstream folyik, 0 crash esemény.</p>
+        </div>
+        <div class="card">
+          <h3>2. Lépés: Hiba kiváltása (Live Break)</h3>
+          <pre>
+# ZeroDivisionError hiba kiváltása
+make break
+          </pre>
+          <p>Kövesd végig a képernyőn a 4 ütemet:</p>
+          <ol style="margin-left: 20px; font-size: 0.9rem; color: #cbd5e1;">
+            <li>Observer elkapja az 500-as kódot és a Traceback-et.</li>
+            <li>Státusz sárgára vált ("HEALING IN PROGRESS").</li>
+            <li>Analyst azonosítja a <code>demo_app/app.py</code>-t.</li>
+            <li>Patcher generálja a teljes fájl JSON javítást.</li>
+            <li>Konténer újraindul és visszaszámol a 20s grace period.</li>
+            <li>Státusz zöldre vált ("VERIFIED HEALED").</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 10: Összegzés -->
+    <div class="slide">
+      <h2>Összegzés: 100%-ban Felkészülve az Értékelésre</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Kötelező Követelmények</h3>
+          <p>✅ Observe $\to$ Think $\to$ Act $\to$ Verify hurok<br>
+             ✅ Diff-mentes strukturált JSON patchek<br>
+             ✅ Max 3 kísérlet + automatikus hard rollback<br>
+             ✅ 5 dinamikus biztonsági korlát<br>
+             ✅ Kizárólag helyi modellek</p>
+        </div>
+        <div class="card">
+          <h3>Konténer és Kvóta</h3>
+          <p>✅ Egyetlen <code>docker compose up</code><br>
+             ✅ Docker socket vezérlés<br>
+             ✅ Host UID illesztés (101888/4224)<br>
+             ✅ Minden cache a <code>/tmp/</code> mappába irányítva</p>
+        </div>
+        <div class="card">
+          <h3>Bónusz Csomag (Chapter VI)</h3>
+          <p>✅ Tiny Classifier & gyorsítótár<br>
+             ✅ Second Opinion kettős konszenzus<br>
+             ✅ Human-in-the-Loop PR menedzser<br>
+             ✅ 4-fülből álló webes felület</p>
+        </div>
+      </div>
+      <div class="highlight-box" style="margin-top: 24px; text-align: center;">
+        <strong>Készen áll az értékelésre!</strong> Add ki a <code>make help</code> vagy <code>make up</code> parancsot az ágens működésének megtekintéséhez.
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Előző</button>
+    <div class="progress-bar-container">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+    <button class="nav-btn" onclick="nextSlide()">Következő ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+
+    function updateSlide() {
+      slides.forEach((s, idx) => {
+        s.classList.toggle('active', idx === currentSlide);
+      });
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+
+    function nextSlide() {
+      if (currentSlide < totalSlides - 1) {
+        currentSlide++;
+        updateSlide();
+      }
+    }
+
+    function prevSlide() {
+      if (currentSlide > 0) {
+        currentSlide--;
+        updateSlide();
+      }
+    }
+
+    // Billentyűzet navigáció
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+        nextSlide();
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        prevSlide();
+      } else if (e.key === 'Home') {
+        currentSlide = 0;
+        updateSlide();
+      } else if (e.key === 'End') {
+        currentSlide = totalSlides - 1;
+        updateSlide();
+      }
+    });
+  </script>
+</body>
+</html>

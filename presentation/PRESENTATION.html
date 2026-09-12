@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inception of Wisdom (IoW) — Complete Architecture Presentation</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --accent-purple: #c084fc;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-color);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 14px 24px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.9rem;
+    }
+    .header-title { font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px; }
+    .badge {
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      background: #0284c7;
+      color: #fff;
+    }
+    .slides-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    .slide {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      padding: 40px 60px;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out;
+      overflow-y: auto;
+    }
+    .slide.active {
+      display: flex;
+      opacity: 1;
+    }
+    h1 { font-size: 2.5rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); display: flex; align-items: center; gap: 10px; }
+    p { font-size: 1.1rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 1000px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 16px; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card h3 { font-size: 1.2rem; color: #fff; display: flex; align-items: center; gap: 8px; }
+    .card p, .card li { font-size: 0.95rem; color: #cbd5e1; line-height: 1.5; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-blue); }
+    pre {
+      background: #030712;
+      border: 1px solid #1e293b;
+      padding: 16px;
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: #93c5fd;
+      overflow-x: auto;
+      line-height: 1.4;
+      margin-top: 8px;
+    }
+    .highlight-box {
+      background: rgba(2, 132, 199, 0.1);
+      border-left: 4px solid var(--accent-blue);
+      padding: 16px;
+      border-radius: 0 8px 8px 0;
+      margin-top: 12px;
+    }
+    .defense-tip {
+      background: rgba(245, 158, 11, 0.1);
+      border-left: 4px solid var(--accent-yellow);
+      padding: 16px;
+      border-radius: 0 8px 8px 0;
+      margin-top: 14px;
+      font-size: 0.95rem;
+    }
+    /* Controls bar */
+    footer {
+      padding: 14px 24px;
+      background: #0f172a;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .progress-bar-container {
+      width: 300px;
+      height: 6px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: var(--accent-blue);
+      width: 10%;
+      transition: width 0.2s;
+    }
+    .nav-btn {
+      background: #1e293b;
+      border: 1px solid var(--border-color);
+      color: #fff;
+      padding: 6px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-title">
+      <span class="badge">42 Project</span>
+      <span>Inception-of-Wisdom (IoW) — Full Architecture & Defense Deck</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 10</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1: Title -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">42 BUDAPEST — AUTONOMOUS DEV-OPS AGENT</span>
+      <h1>Inception of Wisdom (IoW)</h1>
+      <p style="font-size: 1.3rem; color: #94a3b8; max-width: 800px;">
+        An autonomous, 100% local self-healing agent loop that continuously observes a containerized service,
+        detects crashes, retrieves context via RAG, synthesizes full-file JSON patches, verifies fixes, and rewinds through Git upon failure.
+      </p>
+      <div class="highlight-box" style="max-width: 750px;">
+        <strong>Subject Cardinal Rule:</strong> Everything runs locally. Remote LLM API calls (OpenAI, Anthropic, Gemini) are strictly forbidden (instant 0 XP).
+      </div>
+      <div style="margin-top: 24px; color: var(--text-muted); font-size: 0.85rem;">
+        Press <strong>Right Arrow</strong> or click <strong>Next</strong> to begin the walkthrough.
+      </div>
+    </div>
+
+    <!-- Slide 2: The 4 Beats of Self-Healing -->
+    <div class="slide">
+      <h2>The 4 Beats: Autonomous Self-Healing Loop</h2>
+      <p>The system operates in a perpetual 4-beat cycle governed by state feedback:</p>
+      <pre>
+ ┌──────────────┐         Error Detected           ┌──────────────┐
+ │ 1. OBSERVE   ├─────────────────────────────────►│ 2. THINK     │
+ │  (Observer)  │    (Regex logs, 5xx Probes)      │  (Analyst)   │
+ └──────▲───────┘                                  └──────┬───────┘
+        │                                                 │ Top-k AST Chunks
+        │ Verification                                    │ & LLM Diagnosis
+        │ (20s Grace Period)                              ▼
+ ┌──────┴───────┐        Atomic File Patch         ┌──────────────┐
+ │ 4. VERIFY    │◄─────────────────────────────────┤ 3. ACT       │
+ │  (Verifier)  │      Commit on iow/auto-heal     │ (Wisdom Loop)│
+ └──────────────┘                                  └──────────────┘
+  (Failure after 3 attempts rewinds auto-heal branch byte-for-byte)
+      </pre>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Deterministic Decision Tree</h3>
+          <p>The agent does not blindly patch. Hard signals (crashes, 5xx, exit != 0) trigger the loop. Soft signals (4xx functional suggestions) are surfaced for humans only.</p>
+        </div>
+        <div class="card">
+          <h3>Self-Bounded Safety</h3>
+          <p>Strict guardrails: max 3 attempts per cycle, pre-disk sanity checks, single-flight locking, per-signature cooldown, and a dynamic kill switch.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Multi-Container Architecture -->
+    <div class="slide">
+      <h2>Containerized Deployment & Host LLM Bridge</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Multi-Service Docker Stack</h3>
+          <ul>
+            <li><strong>demo_app:</strong> Containerized target Flask service (port 5001:5000) with bind-mount <code>./demo_app:/app</code>.</li>
+            <li><strong>agent:</strong> IoW orchestrator and web dashboard (port 8000:8000).</li>
+            <li><strong>/var/run/docker.sock:</strong> Bound directly into the agent container for container lifecycle control.</li>
+            <li><strong>UID / GID Matching:</strong> Agent runs with host UID 101888 and GID 4224 so disk writes preserve exact repository ownership.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Offline Host LLM Connection</h3>
+          <ul>
+            <li><strong>Ollama on Host:</strong> The model runtime runs locally on the host to avoid nested virtualization.</li>
+            <li><strong>Bridge Mapping:</strong> <code>host.docker.internal:host-gateway</code> maps container network to host bridge gateway (172.17.0.1).</li>
+            <li><strong>Model:</strong> <code>qwen2.5-coder:1.5b</code> (< 3B parameters).</li>
+            <li><strong>Embedding:</strong> <code>all-MiniLM-L6-v2</code> cached offline in <code>/tmp/iow_cache/</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tip:</strong> Evaluators will check if any cloud APIs are used. Show them <code>docker-compose.yml</code> extra_hosts pointing to <code>host.docker.internal:11434</code>!
+      </div>
+    </div>
+
+    <!-- Slide 4: Part 1 Observer -->
+    <div class="slide">
+      <h2>Part 1: Observer (The Nervous System)</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Docker Socket Monitor</h3>
+          <p>Inspects the target container directly via Docker SDK:</p>
+          <ul>
+            <li>Exit code != 0 detection</li>
+            <li>Restart loop detection</li>
+            <li>Dead / OOMKilled state</li>
+            <li>Container restart trigger</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Real-Time Log Streamer</h3>
+          <p>Streams stdout / stderr in near real time:</p>
+          <ul>
+            <li>500-line thread-safe ring buffer</li>
+            <li>Regex error matcher (Traceback, CRITICAL, Error, Exception)</li>
+            <li>Emits real-time SSE stream to dashboard</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>HTTP Probing & Signal Separation</h3>
+          <p>Probes <code>/</code> and <code>/healthz</code> every 3s:</p>
+          <ul>
+            <li><strong>2xx:</strong> Healthy baseline</li>
+            <li><strong>4xx:</strong> Soft functional suggestion (NOT patched automatically)</li>
+            <li><strong>5xx / Timeout:</strong> Hard crash signal</li>
+          </ul>
+        </div>
+      </div>
+      <div class="highlight-box">
+        <strong>Sliding-Window Deduplication:</strong> Generates SHA-256 signatures. A single bad restart produces 1 crash event with an incremented counter, not a flood of 100 events per minute.
+      </div>
+    </div>
+
+    <!-- Slide 5: Part 2 Analyst -->
+    <div class="slide">
+      <h2>Part 2: Analyst (Semantic Retrieval & Diagnosis)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>AST Logical Chunking (chunker.py)</h3>
+          <ul>
+            <li>Subject forbids fixed-size chunking (e.g. 500 characters).</li>
+            <li>Uses Python <code>ast</code> module to split along logical function and class boundaries.</li>
+            <li>Calculates SHA-256 hash per chunk for incremental indexing.</li>
+            <li>ChromaDB <code>PersistentClient</code> in <code>.chroma</code> skips unchanged chunks across restarts.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Traceback Guided Top-k Retrieval</h3>
+          <ul>
+            <li>Extracts exact stack frame symbols, line numbers, and exception names from crash logs.</li>
+            <li>Runs cosine similarity search using local <code>all-MiniLM-L6-v2</code> embeddings.</li>
+            <li>Passes candidate code slices into local Ollama coder prompt.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card" style="margin-top: 16px;">
+        <h3>Structured Diagnosis JSON & Anti-Hallucination</h3>
+        <p>Enforces strict JSON schema: <code>{"summary": "...", "files": ["relative/file/path"]}</code>. Cross-validates cited files against real indexed files — the pipeline refuses to guess or touch imaginary paths.</p>
+      </div>
+    </div>
+
+    <!-- Slide 6: Part 3 Wisdom Loop -->
+    <div class="slide">
+      <h2>Part 3: Wisdom Loop (Action & Rollback)</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Diff-Free JSON Patcher</h3>
+          <p>Diffs are strictly forbidden by subject. Emits complete post-change file contents: <code>{summary, files: [{path, op, content}]}</code>.</p>
+        </div>
+        <div class="card">
+          <h3>Sanity Bounds (Pre-Disk)</h3>
+          <ul>
+            <li>Touches at most 3 files</li>
+            <li>Max 60% file shrinkage</li>
+            <li>No empty or placeholder files</li>
+            <li>No leaked retrieval markers</li>
+            <li>Python syntax compilation check</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>GitManager & Branching</h3>
+          <p>Snapshots pre-loop revision hash. Applies files atomically via <code>os.replace</code>. Commits to dedicated <code>iow/auto-heal</code> branch.</p>
+        </div>
+      </div>
+      <div class="defense-tip">
+        <strong>The 3-Attempt Guarantee:</strong> If after 3 repair attempts the target fails grace period verification, GitManager immediately runs <code>git reset --hard &lt;pre_loop_hash&gt;</code>, restarts the container, and leaves the repository in a clean state.
+      </div>
+    </div>
+
+    <!-- Slide 7: Safety Guardrails -->
+    <div class="slide">
+      <h2>Dynamic Safety Guardrails (iow.config.yml)</h2>
+      <p>Hard-coded timings are strictly forbidden by subject. All parameters are dynamically read from disk:</p>
+      <div class="grid-2">
+        <div class="card">
+          <h3>The 5 Non-Negotiable Bounds</h3>
+          <ul>
+            <li><strong>Single-Flight:</strong> Exactly 1 heal cycle at a time. Locks out race conditions.</li>
+            <li><strong>Cooldown per Signature:</strong> Wait 300s before retrying the same crash signature.</li>
+            <li><strong>Rate Limit:</strong> Max 5 heals started per rolling hour.</li>
+            <li><strong>Hard Cap:</strong> Max 20 lifetime heals per process.</li>
+            <li><strong>Global Kill-Switch:</strong> Flip <code>kill_switch: true</code> to instantly freeze healing.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Dynamic mtime Reloader</h3>
+          <p>The <code>SafetyManager</code> monitors the modification time (<code>mtime</code>) of <code>iow.config.yml</code>. Changing a parameter takes effect immediately without restarting the agent or container!</p>
+          <pre>
+# demo_app/iow.config.yml
+grace_period: 20
+cooldown: 300
+rate_limit_per_hour: 5
+hard_cap: 20
+kill_switch: false
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 8: Chapter VI Bonus Part -->
+    <div class="slide">
+      <h2>Chapter VI: Bonus Part Enhancements</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Tiny Symptom Classifier</h3>
+          <p>Caches verified fixes for crash symptoms. When a known symptom occurs, it bypasses the LLM entirely (Fast Path), reducing repair time from 20s to <strong>0.01s</strong>.</p>
+        </div>
+        <div class="card">
+          <h3>Second Opinion Consensus</h3>
+          <p>Prompts two independent diagnostic angles (Conservative Stack vs Architectural Contracts). A patch is only triggered if both opinions agree on the suspect file.</p>
+        </div>
+        <div class="card">
+          <h3>Human-in-the-Loop PRs</h3>
+          <p>Instead of unattended commit, creates review branch <code>iow/review/*</code>, unified diff preview, and dashboard button for human review and merge.</p>
+        </div>
+      </div>
+      <div class="highlight-box">
+        All bonus components are organized cleanly under the <code>bonus/</code> directory, keeping the mandatory parts pristine.
+      </div>
+    </div>
+
+    <!-- Slide 9: Live Defense Demo Runbook -->
+    <div class="slide">
+      <h2>Live Defense Demonstration Runbook</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Step 1: Launch & Show Health</h3>
+          <pre>
+# Start complete stack
+make up
+
+# Open Dashboard in browser:
+http://localhost:8000
+          </pre>
+          <p>Show the evaluators: Target status is 200 OK (green badge), live logs streaming, 0 crashes recorded.</p>
+        </div>
+        <div class="card">
+          <h3>Step 2: Trigger Intentional Crash</h3>
+          <pre>
+# Inject ZeroDivisionError
+make break
+          </pre>
+          <p>Observe live on the Dashboard:</p>
+          <ol style="margin-left: 20px; font-size: 0.9rem; color: #cbd5e1;">
+            <li>Observer catches 500 error & ZeroDivisionError.</li>
+            <li>Status ribbon turns yellow ("HEALING IN PROGRESS").</li>
+            <li>Analyst identifies <code>demo_app/app.py</code>.</li>
+            <li>Patcher generates full-file JSON fix.</li>
+            <li>Target restarts & grace period counts down 20s.</li>
+            <li>Status ribbon turns green ("VERIFIED HEALED").</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 10: Summary & Conclusion -->
+    <div class="slide">
+      <h2>Summary: 100% Peer-Evaluation Ready</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Mandatory Requirements</h3>
+          <p>✅ Observe $\to$ Think $\to$ Act $\to$ Verify loop<br>
+             ✅ Diff-free structured JSON patches<br>
+             ✅ Max 3 attempts + automatic hard rollback<br>
+             ✅ 5 dynamic safety guardrails<br>
+             ✅ Local models only (no cloud API)</p>
+        </div>
+        <div class="card">
+          <h3>Container & 42 Quota</h3>
+          <p>✅ Single <code>docker compose up</code><br>
+             ✅ Docker socket control<br>
+             ✅ Host UID matching (101888/4224)<br>
+             ✅ All caches redirected to <code>/tmp/</code></p>
+        </div>
+        <div class="card">
+          <h3>Bonus Suite (Chapter VI)</h3>
+          <p>✅ Tiny Symptom Classifier & cache<br>
+             ✅ Second Opinion Consensus<br>
+             ✅ Human-in-the-Loop PR manager<br>
+             ✅ 4-tab interactive web dashboard</p>
+        </div>
+      </div>
+      <div class="highlight-box" style="margin-top: 24px; text-align: center;">
+        <strong>Ready for Peer Evaluation!</strong> Execute <code>make help</code> or <code>make up</code> to inspect the running agent.
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Previous</button>
+    <div class="progress-bar-container">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+    <button class="nav-btn" onclick="nextSlide()">Next ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+
+    function updateSlide() {
+      slides.forEach((s, idx) => {
+        s.classList.toggle('active', idx === currentSlide);
+      });
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+
+    function nextSlide() {
+      if (currentSlide < totalSlides - 1) {
+        currentSlide++;
+        updateSlide();
+      }
+    }
+
+    function prevSlide() {
+      if (currentSlide > 0) {
+        currentSlide--;
+        updateSlide();
+      }
+    }
+
+    // Keyboard navigation
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+        nextSlide();
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        prevSlide();
+      } else if (e.key === 'Home') {
+        currentSlide = 0;
+        updateSlide();
+      } else if (e.key === 'End') {
+        currentSlide = totalSlides - 1;
+        updateSlide();
+      }
+    });
+  </script>
+</body>
+</html>

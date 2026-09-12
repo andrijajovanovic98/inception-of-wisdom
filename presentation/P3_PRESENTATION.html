@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Part 3: Wisdom Loop — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --accent-purple: #c084fc;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #9333ea; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-purple); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-purple); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #d8b4fe; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(147, 51, 234, 0.1); border-left: 4px solid var(--accent-purple); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-purple); width: 12.5%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Part 3</span>
+      <span>Wisdom Loop Deep-Dive — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">ACT & VERIFY PHASE</span>
+      <h1>Part 3: Wisdom Loop — Autonomous Remediation</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        The Wisdom Loop turns diagnostic insights into verified source code repairs. It coordinates diff-free JSON patching, multi-stage sanity checks, atomic Git branch management, Docker container lifecycle restarts, active verification polling, and automatic multi-attempt rollback.
+      </p>
+      <div class="highlight-box">
+        <strong>Subject Requirement:</strong> "Act on diagnosis: generate patch, apply changes, verify container recovery. Enforce safety bounds, rate limits, cooldown, hard caps, and kill-switch. Roll back automatically if verification fails after up to 3 attempts."
+      </div>
+    </div>
+
+    <!-- Slide 2: Diff-free JSON Patching -->
+    <div class="slide">
+      <h2>Diff-Free JSON Patching (p3/patcher.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Why Unified Diffs Fail with Small LLMs</h3>
+          <p>Standard diffs (<code>@@ -12,4 +12,6 @@</code>) require exact character counts and line offset mathematics. Models under 3B parameters consistently hallucinate diff headers, producing malformed patches that <code>patch(1)</code> rejects.</p>
+        </div>
+        <div class="card">
+          <h3>Structured JSON File Replacement</h3>
+          <pre>{
+  "summary": "Fix ZeroDivisionError with guard",
+  "files": [
+    {
+      "path": "demo_app/app.py",
+      "op": "replace",
+      "content": "... entire valid python code ..."
+    }
+  ]
+}</pre>
+          <ul>
+            <li>Enforces complete file replacement or creation.</li>
+            <li>No ambiguous patch hunk offsets.</li>
+            <li>System prompts strictly mandate syntactically complete code.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Sanity Bounds -->
+    <div class="slide">
+      <h2>Sanity Bounds & Guardrails (p3/sanity.py)</h2>
+      <div class="card">
+        <h3>Pre-Disk Safety Screening</h3>
+        <p>Before any generated patch touches the filesystem or Git tree, it must pass 4 strict validation filters:</p>
+        <ul>
+          <li><strong>File Count Bound:</strong> Max 3 files modified in a single remediation flight (prevents wholesale repo disruption).</li>
+          <li><strong>Shrinkage Guard:</strong> Max 60% byte size reduction compared to the original file (protects against accidental code deletion).</li>
+          <li><strong>Anti-Placeholder Heuristic:</strong> Blocks patches containing lazy AI tokens like <code># TODO</code>, <code># rest of code here</code>, or <code># implement here</code>.</li>
+          <li><strong>Syntax Validation:</strong> For Python targets, runs <code>ast.parse(content)</code> to reject syntax errors before disk write.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Slide 4: Atomic Git & Branching -->
+    <div class="slide">
+      <h2>Git Isolation & Atomic Commits (p3/git_manager.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Dedicated Healing Branch</h3>
+          <ul>
+            <li>All self-healing work occurs on isolated branch: <code>iow/auto-heal</code>.</li>
+            <li>Captures <code>pre-loop revision</code> (base commit SHA) before any modification.</li>
+            <li>Atomic file writing: writes to temp files before renaming to avoid partial writes.</li>
+            <li>Creates explicit Git commit with diagnostic summary and attempt counter.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Automatic Hard Rollback</h3>
+          <div class="highlight-box">
+            <strong>Guaranteed Zero-Corruption:</strong> If verification fails after maximum attempts (3), the loop triggers:
+            <code>git reset --hard &lt;pre_loop_sha&gt;</code>
+            The original codebase state is completely restored without developer intervention.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Active Verification & Docker Restart -->
+    <div class="slide">
+      <h2>Container Restart & Verification (p3/verifier.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Docker Engine Restart</h3>
+          <ul>
+            <li>Interacts with host Docker daemon via <code>/var/run/docker.sock</code>.</li>
+            <li>Restarts target container via Docker Engine API: <code>POST /containers/{id}/restart</code>.</li>
+            <li>Captures new container state and exit status.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Active Grace Period (20s)</h3>
+          <ul>
+            <li>Does not immediately assume success upon container up.</li>
+            <li>Polls HTTP health endpoints (<code>/health</code>, <code>/crash</code>) across the grace window.</li>
+            <li>Continuously monitors container logs for immediate re-crash loops or unhandled exceptions.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 6: 3-Attempt Feedback Loop -->
+    <div class="slide">
+      <h2>Feedback Loop & Retry Orchestration (p3/loop.py)</h2>
+      <div class="card">
+        <h3>Adaptive Multi-Turn Healing</h3>
+        <p>A single attempt may not fully resolve deep architectural bugs. The Wisdom Loop adapts across 3 turns:</p>
+        <pre>Attempt 1: Initial Diagnosis -> Patch -> Restart -> Verification Fails!
+                 │
+                 ▼ (Feedback: Container exited with status 1, Traceback included)
+Attempt 2: Augmented Prompt with Failure Context -> Refined Patch -> Pass!
+                 │
+                 └─ If Attempt 3 fails: Automatic Git Reset --hard</pre>
+        <ul>
+          <li>Error output from Attempt 1 is injected into the Attempt 2 prompt as explicit feedback.</li>
+          <li>Enables the 1.5B LLM to correct its own previous mistakes iteratively.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Slide 7: Operational Safety Controls -->
+    <div class="slide">
+      <h2>Safety Controls & Dynamic Limits (p3/safety.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>iow.config.yml Constraints</h3>
+          <ul>
+            <li><strong>Single-Flight Lock:</strong> Only one healing loop can run concurrently.</li>
+            <li><strong>Cooldown:</strong> Enforces quiet time between loop runs (e.g. 60s).</li>
+            <li><strong>Rate Limit Per Hour:</strong> Caps maximum repairs per rolling 60-minute window (e.g. 10/hr).</li>
+            <li><strong>Hard Cap:</strong> Absolute maximum allowable repairs before requiring human intervention.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Emergency Kill-Switch</h3>
+          <div class="defense-tip">
+            <strong>Subject Requirement:</strong> Setting <code>kill_switch: true</code> in <code>iow.config.yml</code> immediately disables the loop without restarting the agent!
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 8: Peer-Evaluation Checklist -->
+    <div class="slide">
+      <h2>Part 3 Peer-Evaluation Checklist</h2>
+      <div class="card">
+        <h3>Key Questions Evaluators Will Ask:</h3>
+        <ul>
+          <li><strong>Q: Why did you not use <code>git apply</code> with unified diff?</strong><br>
+              A: LLMs < 3B hallucinate line offsets in diff headers. Full-file replacement eliminates syntax patch corruption while staying within sanity limits.</li>
+          <li><strong>Q: What prevents the AI from deleting the whole codebase to 'fix' a bug?</strong><br>
+              A: Sanity checks enforce a max 3 file limit, 60% shrinkage guard, and AST syntax validation before any disk write.</li>
+          <li><strong>Q: How do you prove rollback works during the defense?</strong><br>
+              A: Trigger an unfixable syntax or configuration error; observe the agent exhaust 3 attempts, execute <code>git reset --hard</code>, and return the working directory to the pre-loop revision.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Previous</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Next ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>

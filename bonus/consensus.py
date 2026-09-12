@@ -191,3 +191,4 @@ class SecondOpinionEngine:
                 confidence=0.30,
                 error_message="Models diverged on suspect file identification."
             )
+

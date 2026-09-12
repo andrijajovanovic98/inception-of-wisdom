@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bonus Suite — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #10b981;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --accent-emerald: #34d399;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #059669; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-emerald); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-emerald); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #6ee7b7; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(16, 185, 129, 0.1); border-left: 4px solid var(--accent-emerald); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-emerald); width: 14.2%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Chapter VI</span>
+      <span>Bónusz Rendszer Részletes Bemutató — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">CHAPTER VI BÓNUSZ</span>
+      <h1>Bonus Rendszer: Vállalati Megbízhatóság és Felügyelet</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        A Chapter VI bónusz moduljai vállalati szintű kiegészítésekkel látják el az öngyógyító architektúrát: egy ezredmásodperces tünetosztályozóval (Fast-Path bypass), egy kettős promptú "Second Opinion" konszenzus motorral az AI hallucinációk kiszűrésére, valamint egy valós idejű diff előnézetet biztosító emberi felügyeleti (Human-in-the-Loop) Pull Request menedzserrel.
+      </p>
+      <div class="highlight-box">
+        <strong>Subject háttér:</strong> "Chapter VI — Bónusz rész: További képességek a megbízhatóság, sebesség és felügyelet növelésére a 100% lokális és 3B alatti szabályok szigorú betartása mellett."
+      </div>
+    </div>
+
+    <!-- Slide 2: Tiny Symptom Classifier -->
+    <div class="slide">
+      <h2>Gyorsított Tünetosztályozó (bonus/classifier.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Az LLM Késleltetés Kihívása</h3>
+          <p>A teljes RAG embedding keresés és az LLM generálás 3–8 másodpercet igényel. Determinisztikus, egyértelmű stack trace-szel rendelkező hibák esetén (pl. <code>ZeroDivisionError</code> vagy hiányzó import) ez felesleges várakozás.</p>
+        </div>
+        <div class="card">
+          <h3>Fast-Path Bypass (0.01 mp)</h3>
+          <ul>
+            <li>Fordított reguláris kifejezésekkel kinyeri a hibamintát, az exception típusát és az érintett forrásfájlt.</li>
+            <li>Megbízhatósági pontszámot (confidence score, 0.0 - 1.0) számít.</li>
+            <li>Ha a confidence &gt; 0.85: azonnali diagnózist ad ChromaDB vagy Ollama hívása nélkül!</li>
+            <li>Bizonytalan esetben észrevétlenül visszalép a Part 2 Analyst RAG folyamatához.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: Second Opinion Consensus -->
+    <div class="slide">
+      <h2>"Second Opinion" Konszenzus Motor (bonus/consensus.py)</h2>
+      <div class="card">
+        <h3>Egyetlen Prompt Hallucinációjának Kiküszöbölése</h3>
+        <p>A kis 1.5B modellek érzékenyek lehetnek a prompt megfogalmazására. A konszenzus motor két független szemszögből kérdezi le a modellt:</p>
+        <div class="grid-2" style="margin-top: 8px;">
+          <div style="background: #030712; padding: 14px; border-radius: 6px; border: 1px solid #1e293b;">
+            <strong style="color: var(--accent-emerald);">"A" Nézőpont (Gyökérok fókusz):</strong>
+            <p style="font-size: 0.9rem; margin-top: 6px;">A nyers stack trace-t és a futásidejű vezérlési folyamatot vizsgálja.</p>
+          </div>
+          <div style="background: #030712; padding: 14px; border-radius: 6px; border: 1px solid #1e293b;">
+            <strong style="color: var(--accent-blue);">"B" Nézőpont (Defenzív architektúra):</strong>
+            <p style="font-size: 0.9rem; margin-top: 6px;">A hívási szerződéseket, peremfeltételeket és bemeneti validációt vizsgálja.</p>
+          </div>
+        </div>
+        <div class="highlight-box" style="margin-top: 14px;">
+          <strong>Konszenzus Pontozás:</strong> Összeveti az érintett fájlokat és a gyökérokot. Ha mindkét nézőpont megegyezik (Score = 1.0), a javítás automatikusan jóváhagyásra kerül. Eltérés esetén emberi felülvizsgálatra küldi.
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 4: Human-in-the-Loop PR Manager -->
+    <div class="slide">
+      <h2>Emberi Felügyelet & PR Menedzser (bonus/pr_manager.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Vállalati Biztonsági Üzemmód</h3>
+          <p>Éles környezetben a szabályzatok gyakran tiltják a forráskód autonóm, emberi jóváhagyás nélküli átírását a fő ágon.</p>
+          <ul>
+            <li>Elkülönített felülvizsgálati ágat nyit: <code>iow/review/pr-&lt;timestamp&gt;</code>.</li>
+            <li>Standard unified diff formátumot generál az eredeti és a javasolt kód között.</li>
+            <li>Felfüggeszti a konténer újraindítását az emberi döntésig.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Egykattintásos Döntéshozatal a Weben</h3>
+          <pre>POST /api/bonus/prs/{pr_id}/approve  --> Merge az iow/auto-heal-re & Újraindítás
+POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre>
+          <div class="highlight-box">
+            A Dashboard 4. fülén azonnal látható a színes diff és a Jóváhagyás / Elutasítás gombok.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Bonus REST Endpoints -->
+    <div class="slide">
+      <h2>Bónusz REST Végpontok (bonus/bonus_api.py)</h2>
+      <div class="card">
+        <h3>FastAPI Bonus Router</h3>
+        <ul>
+          <li><code>POST /api/bonus/classify</code>: Nyers logok azonnali osztályozása hibatípusra és fájlra.</li>
+          <li><code>POST /api/bonus/consensus</code>: Kettős promptos értékelés lefuttatása és konszenzus score visszaadása.</li>
+          <li><code>GET /api/bonus/prs</code>: Függőben lévő Human-in-the-Loop jóváhagyások listázása.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/approve</code>: Kezelői jóváhagyás, atomikus merge és konténer újraindítás.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/reject</code>: Kezelői elutasítás és biztonságos állapotvisszaállítás.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Slide 6: Live Dashboard Demonstration -->
+    <div class="slide">
+      <h2>Bónusz Kezelőfelület a Központi Dashboardon</h2>
+      <div class="card">
+        <h3>4. Fül: "Bonus Suite"</h3>
+        <p>Szervesen beépül a központi FastAPI webes irányítópultba:</p>
+        <ul>
+          <li><strong>Valós idejű Osztályozó Tesztpad:</strong> Bármilyen logot bemásolva azonnal látható a mikromásodperces regex triage és a RAG közötti különbség.</li>
+          <li><strong>Konszenzus Mérő:</strong> Grafikus megegyezési indikátor az "A" és "B" modell-szemszögek között.</li>
+          <li><strong>Függő PR Lista:</strong> Sorról-sorra ellenőrizhető diff előnézet jóváhagyás vagy elutasítás előtt.</li>
+        </ul>
+      </div>
+      <div class="defense-tip">
+        <strong>Védési Demonstráció:</strong> Idézz elő egy hibát, mutasd meg a létrehozott Review PR diff előnézetét a webes felületen, majd kattints az "Approve" gombra az értékelő szeme láttára!
+      </div>
+    </div>
+
+    <!-- Slide 7: Peer-Evaluation Checklist -->
+    <div class="slide">
+      <h2>Chapter VI Védési Ellenőrzőlista</h2>
+      <div class="card">
+        <h3>Tipikus Értékelői Kérdések és Válaszok:</h3>
+        <ul>
+          <li><strong>K: Megsérti-e a bónusz rész a kizárólag helyi futtatás szabályát?</strong><br>
+              V: Semmiképpen sem. A konszenzus motor mindkét promptja a helyi host Ollama modellt (<code>qwen2.5-coder:1.5b</code>) használja, az osztályozó pedig 100%-ban helyi regex logikát.</li>
+          <li><strong>K: Miért van szükség a Fast-Path Classifierre, ha már van működő RAG?</strong><br>
+              V: Mert azonnali (0.01 mp) megoldást nyújt determinisztikus hibákra, megtakarítva a felesleges LLM és vektor-számítási időt.</li>
+          <li><strong>K: Mi történik, ha az operátor elutasítja a PR-t?</strong><br>
+              V: Az <code>iow/review/*</code> ág azonnal törlődik, az éles ágon egyetlen bájtot sem módosít a rendszer, az eseménynaplóban pedig rögzítésre kerül az elutasítás ténye.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Előző</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Következő ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>

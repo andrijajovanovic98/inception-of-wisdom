@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Part 2: Analyst — Inception of Wisdom</title>
+  <style>
+    :root {
+      --bg-color: #090d16;
+      --card-bg: #111827;
+      --border-color: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg-color); color: var(--text-main); font-family: var(--font-sans); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    header { padding: 14px 24px; background: #0f172a; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: #0284c7; color: #fff; }
+    .slides-container { flex: 1; position: relative; overflow: hidden; }
+    .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
+    .slide.active { display: flex; opacity: 1; }
+    h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
+    h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
+    p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+    .card h3 { font-size: 1.15rem; color: #fff; }
+    ul { list-style: square; margin-left: 20px; }
+    li { margin-bottom: 8px; font-size: 0.95rem; color: #cbd5e1; }
+    code { font-family: var(--font-mono); background: #030712; padding: 2px 6px; border-radius: 4px; color: var(--accent-blue); }
+    pre { background: #030712; border: 1px solid #1e293b; padding: 14px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.85rem; color: #93c5fd; overflow-x: auto; line-height: 1.4; }
+    .highlight-box { background: rgba(2, 132, 199, 0.1); border-left: 4px solid var(--accent-blue); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 12px; font-size: 0.95rem; }
+    .defense-tip { background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 14px; border-radius: 0 8px 8px 0; margin-top: 14px; font-size: 0.95rem; }
+    footer { padding: 14px 24px; background: #0f172a; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .progress-bar-container { width: 300px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent-blue); width: 14%; transition: width 0.2s; }
+    .nav-btn { background: #1e293b; border: 1px solid var(--border-color); color: #fff; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .nav-btn:hover { background: #334155; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+      <span class="badge">Part 2</span>
+      <span>Analyst Deep-Dive — Inception of Wisdom</span>
+    </div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+  </header>
+
+  <div class="slides-container">
+
+    <!-- Slide 1 -->
+    <div class="slide active">
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">THINK PHASE</span>
+      <h1>Part 2: Analyst — Semantic Code Intelligence</h1>
+      <p style="font-size: 1.25rem; color: #94a3b8;">
+        The Analyst bridges runtime crash symptoms with source code semantics. It decomposes the target codebase into logical AST chunks, indexes them into a local vector database, retrieves relevant code slices, and synthesizes a structured diagnosis using an offline LLM (< 3B).
+      </p>
+      <div class="highlight-box">
+        <strong>Subject Requirement:</strong> "Index target code in ChromaDB with logical chunking (preserve functions and classes, not fixed-size). Retrieve relevant chunks with similarity score. Output structured diagnosis JSON with summary and suspect files."
+      </div>
+    </div>
+
+    <!-- Slide 2: AST Chunking -->
+    <div class="slide">
+      <h2>AST Logical Chunking (p2/chunker.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Why Fixed-Size Chunking Fails</h3>
+          <p>Naive chunking (e.g. 500 characters) cuts functions in half, breaks syntax, and destroys variable scope. The subject explicitly forbids arbitrary fixed chunking.</p>
+        </div>
+        <div class="card">
+          <h3>AST-Based Decomposition</h3>
+          <ul>
+            <li>Parses Python files with the built-in <code>ast</code> module.</li>
+            <li>Identifies <code>ast.FunctionDef</code>, <code>ast.AsyncFunctionDef</code>, and <code>ast.ClassDef</code>.</li>
+            <li>Preserves leading decorators and exact start/end line bounds.</li>
+            <li>Extracts module preambles (imports, global constants) as discrete chunks.</li>
+            <li>Assigns a deterministic SHA-256 hash to each chunk.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 3: ChromaDB -->
+    <div class="slide">
+      <h2>ChromaDB & Offline Embeddings (p2/db.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>PersistentClient Mode</h3>
+          <ul>
+            <li>Uses <code>chromadb.PersistentClient(path=".chroma")</code>.</li>
+            <li><strong>Incremental updates:</strong> Compares chunk SHA-256 against stored metadata. Only newly modified functions are re-embedded.</li>
+            <li>Subject rule: The index must survive restarts and <strong>never rebuild from scratch</strong> on boot.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Local all-MiniLM-L6-v2 Embedding</h3>
+          <ul>
+            <li>Completely offline 384-dimensional dense vectors.</li>
+            <li>Models cached in <code>/tmp/iow_cache/</code> to protect student 42 disk quota.</li>
+            <li>No network connection needed during runtime.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 4: Traceback Guided Retrieval -->
+    <div class="slide">
+      <h2>Traceback-Guided RAG Retrieval (p2/retriever.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Identifier & Stack Frame Extraction</h3>
+          <p>Scans the crash log with compiled regular expressions:</p>
+          <pre>
+# Extracts: file, line, function, exception type
+File "demo_app/app.py", line 45, in crash_me
+ZeroDivisionError: division by zero
+          </pre>
+          <p>Identifies exact file targets and symbol names before querying the vector store.</p>
+        </div>
+        <div class="card">
+          <h3>Hybrid Ranking (Symbol + Semantic)</h3>
+          <ul>
+            <li>Priority 1: Code chunks matching cited traceback file and symbol.</li>
+            <li>Priority 2: Top-k semantic vector similarity using cosine distance.</li>
+            <li>Returns chunks with metadata: <code>{file_path, symbol_name, start_line, end_line, score}</code>.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 5: Structured Diagnostician -->
+    <div class="slide">
+      <h2>Structured LLM Diagnostician (p2/diagnostician.py)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Ollama Coder Prompt (< 3B)</h3>
+          <ul>
+            <li>Model: <code>qwen2.5-coder:1.5b</code> running on the host.</li>
+            <li>Enforces JSON schema: <code>{"summary": "...", "files": ["demo_app/app.py"]}</code>.</li>
+            <li>Feeds only the top retrieved context chunks into the prompt window.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Anti-Hallucination Validation</h3>
+          <div class="highlight-box">
+            <strong>The Pipeline Does Not Guess:</strong> Small 1.5B models can hallucinate non-existent files. The diagnostician strictly validates cited files against the real indexed repository files. Unknown paths are pruned!
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Slide 6: Analyst API -->
+    <div class="slide">
+      <h2>Analyst REST Endpoints (p2/analyst_api.py)</h2>
+      <div class="card">
+        <h3>FastAPI Endpoints</h3>
+        <ul>
+          <li><code>GET /api/analyst/status</code>: Total chunks indexed, embedding model name, LLM model.</li>
+          <li><code>POST /api/analyst/sync</code>: Re-scans repository and applies incremental updates.</li>
+          <li><code>POST /api/analyst/retrieve</code>: Free-text semantic code search with similarity scores.</li>
+          <li><code>POST /api/analyst/diagnose</code>: Diagnoses an incoming error log and returns structured JSON.</li>
+        </ul>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tip:</strong> In the dashboard's 2nd tab, demonstrate free-text search (e.g. "division by zero route") to show the evaluator the instant cosine similarity scores!
+      </div>
+    </div>
+
+    <!-- Slide 7: Peer-Evaluation Checklist -->
+    <div class="slide">
+      <h2>Part 2 Peer-Evaluation Checklist</h2>
+      <div class="card">
+        <h3>Key Questions Evaluators Will Ask:</h3>
+        <ul>
+          <li><strong>Q: Why AST chunking instead of LangChain RecursiveCharacterTextSplitter?</strong><br>
+              A: Subject requirement. AST guarantees that code chunks respect function and class boundaries, preventing broken syntax from reaching the LLM.</li>
+          <li><strong>Q: Does ChromaDB wipe the database when the container restarts?</strong><br>
+              A: No. It runs in <code>PersistentClient</code> mode in <code>.chroma</code> and updates incrementally based on chunk SHA-256 hashes.</li>
+          <li><strong>Q: How do you prevent the 1.5B model from hallucinating?</strong><br>
+              A: Traceback symbols anchor the context, and output file paths are cross-checked against actual known indexed files.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <button class="nav-btn" onclick="prevSlide()">◀ Previous</button>
+    <div class="progress-bar-container"><div id="progressBar" class="progress-bar"></div></div>
+    <button class="nav-btn" onclick="nextSlide()">Next ▶</button>
+  </footer>
+
+  <script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const counter = document.getElementById('slideCounter');
+    const progress = document.getElementById('progressBar');
+    function updateSlide() {
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === currentSlide));
+      counter.textContent = `Slide ${currentSlide + 1} / ${totalSlides}`;
+      progress.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+    }
+    function nextSlide() { if (currentSlide < totalSlides - 1) { currentSlide++; updateSlide(); } }
+    function prevSlide() { if (currentSlide > 0) { currentSlide--; updateSlide(); } }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') nextSlide();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prevSlide();
+      else if (e.key === 'Home') { currentSlide = 0; updateSlide(); }
+      else if (e.key === 'End') { currentSlide = totalSlides - 1; updateSlide(); }
+    });
+  </script>
+</body>
+</html>
