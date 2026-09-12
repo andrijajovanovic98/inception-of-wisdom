@@ -11,3 +11,4 @@ presentation/** linguist-vendored=true
 
 dashboard/templates/** linguist-detectable=false
 dashboard/templates/** linguist-vendored=true
+
