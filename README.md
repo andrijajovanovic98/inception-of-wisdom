@@ -71,13 +71,15 @@ Then open the dashboard in your browser:
 http://localhost:8000
 ```
 
-Three tabs, one per part:
+Four tabs, one per part + bonus:
 
 1. **Observer** - target health, live logs, deduplicated crash events.
 2. **Analyst** - free-text retrieval over the index, and the structured
    diagnosis of a selected crash event.
 3. **Wisdom Loop** - every heal attempt: diagnosis, patch JSON, commit hash,
    post-restart health.
+4. **Bonus Suite** - Tiny Symptom Classifier test bench, Second Opinion
+   consensus gauge, and Human-in-the-Loop Pull Request review with live diffs.
 
 ### Demo
 
@@ -99,8 +101,11 @@ Business logic bugs are out of scope for a 3B model.
 ├── p1/              Observer    - Docker events, log stream, HTTP probes
 ├── p2/              Analyst     - ChromaDB index, retrieval, LLM diagnosis
 ├── p3/              Wisdom Loop - patch generation, apply, commit, verify, rollback
-├── bonus/           (optional)
-├── docu/            subject
+├── bonus/           Chapter VI  - Symptom classifier, consensus, PR manager
+├── presentation/    Defense     - 10 interactive HTML presentation decks (EN & HU)
+├── dashboard/       Dashboard   - FastAPI unified UI with 4 reactive tabs
+├── demo_app/        Target App  - Flask application with iow.config.yml
+├── docu/            Subject     - Inception-of-Wisdom subject PDF
 ├── Makefile
 └── README.md
 ```
