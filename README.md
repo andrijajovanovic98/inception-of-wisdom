@@ -2,337 +2,324 @@
 
 <div align="center">
 
-![Inception of Wisdom Hero Banner](docs/assets/banner.jpg)
+![Autonomous Cloud Infrastructure Self-Healing Platform](docs/assets/banner.jpg)
 
-# ⚡ Autonomous Self-Healing Agent for Containerized Infrastructure ⚡
-**42 Budapest — Inception-of-Wisdom Project**
+# Enterprise Autonomous Self-Healing Platform for Containerized Infrastructure
+**Continuous Reliability • Intelligent Root-Cause Analysis • Automated Zero-Downtime Remediation**
 
-[![42 School](https://img.shields.io/badge/42-Budapest-000000?style=for-the-badge&logo=42&logoColor=white)](https://42budapest.hu)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![Docker](https://img.shields.io/badge/Docker-24.0+-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
-[![ChromaDB](https://img.shields.io/badge/ChromaDB-Persistent-FF6F00?style=for-the-badge)](https://www.trychroma.com/)
-[![Ollama](https://img.shields.io/badge/Ollama-Local_<3B-black?style=for-the-badge)](https://ollama.ai)
+[![Docker Engine](https://img.shields.io/badge/Docker-24.0+-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+[![ChromaDB](https://img.shields.io/badge/Vector_DB-Chroma_Persistent-FF6F00?style=for-the-badge)](https://www.trychroma.com/)
+[![Local LLM](https://img.shields.io/badge/Inference-Local_Sub--3B-black?style=for-the-badge)](https://ollama.ai)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Reactive_SSE-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Offline](https://img.shields.io/badge/Execution-100%25_Local_Offline-success?style=for-the-badge)]()
-[![Git Rollback](https://img.shields.io/badge/Safety-Atomic_Hard_Rollback-red?style=for-the-badge)]()
+[![Zero Cloud Egress](https://img.shields.io/badge/Security-100%25_Air--Gapped_/_Offline-success?style=for-the-badge)]()
+[![Git Hard Rollback](https://img.shields.io/badge/Reliability-Atomic_Git_Rollback-red?style=for-the-badge)]()
 
 <br>
 
 [System Architecture](#-system-architecture) •
-[The Wisdom Loop](#-the-four-beats-wisdom-loop) •
-[Interactive Dashboard](#-unified-command-center) •
-[Bonus Suite](#-chapter-vi-bonus-suite) •
-[Quick Start](#-quick-start) •
-[Defense Guide](#-defense-demonstration-guide) •
-[Presentations](#-presentation-suite)
+[Autonomous Resilience Workflow](#-autonomous-resilience-workflow) •
+[Unified Observability Center](#-unified-observability-center) •
+[Enterprise Reliability Extensions](#-enterprise-reliability-extensions) •
+[Production Guardrails](#-production-guardrails--configuration) •
+[Operational Guide](#-operational-guide) •
+[Interactive Documentation](#-interactive-documentation)
 
 </div>
 
 ---
 
-## 📖 Executive Summary
+## 📌 Executive Overview
 
-**Inception-of-Wisdom (IoW)** is a resilient, fully local, self-healing cyber-agent designed to oversee, diagnose, patch, and verify containerized microservices without human intervention. When a target service crashes, suffers an unhandled runtime exception, or enters a restart loop, IoW autonomously:
+**Inception-of-Wisdom (IoW)** is a production-grade autonomous site-reliability and self-healing agent engineered for containerized application stacks. By continuously intercepting infrastructure telemetry, real-time log streams, and HTTP synthetic health probes, IoW detects operational failures, identifies root causes through semantic code analysis, synthesizes corrective patches, and validates service recovery.
 
-1. **Detects** the anomaly via the Docker daemon socket and real-time log analysis.
-2. **Retrieves** the culprit source code using AST logical chunking and ChromaDB local vector embeddings.
-3. **Diagnoses** the failure using an offline coder LLM (< 3B parameters) running on the host.
-4. **Applies** full-file structured JSON patches atomically on an isolated Git branch (`iow/auto-heal`).
-5. **Verifies** container recovery across an active 20-second grace period.
-6. **Rolls back** automatically (`git reset --hard`) to the pre-loop revision if the patch fails after 3 turns.
+### Core Architectural Principles
 
-> ⚠️ **Strict Constraint:** 100% Local & Offline. Zero external cloud API calls (OpenAI, Anthropic, Gemini API) are permitted. All vector operations and LLM inferences execute on local hardware.
+* **100% Air-Gapped & Local:** All machine learning inference (embeddings via `all-MiniLM-L6-v2` and code diagnosis via `Qwen 2.5 Coder 1.5B`) runs entirely on local host hardware. No proprietary cloud LLM APIs are called, guaranteeing total data sovereignty and zero telemetry egress.
+* **Deterministic AST Code Intelligence:** Application source code is parsed into Abstract Syntax Trees, preserving discrete function and class boundaries rather than using arbitrary character chunking.
+* **Non-Destructive Atomic Patching:** Corrective changes are structured as full-file replacements and validated through strict pre-disk sanity boundaries, preventing partial corruptions and syntax regressions.
+* **Automated Rollback Guarantee:** If verification fails after maximum retry turns (default: 3), the repository executes an immediate `git reset --hard` to the baseline revision, returning the application to a clean, known-good state.
 
 ---
 
-## 🔄 The Four Beats: Wisdom Loop
+## 🔄 Autonomous Resilience Workflow
 
 <div align="center">
 
-![Wisdom Loop 4-Step Cycle](docs/assets/wisdom_loop.jpg)
+![Enterprise Systems Architecture - Autonomous Resilience Workflow](docs/assets/wisdom_loop.jpg)
 
 </div>
+
+The remediation engine operates across four deterministic phases:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Target as Target Container
-    participant Obs as Part 1: Observer
-    participant Ana as Part 2: Analyst (ChromaDB + Ollama)
-    participant Wis as Part 3: Wisdom Loop (Git + Patcher)
-    participant Ver as Part 3: Verifier
+    actor Target as Containerized Service
+    participant Obs as Phase 1: Observer
+    participant Ana as Phase 2: Analyst (Semantic RAG)
+    participant Wis as Phase 3: Wisdom Loop
+    participant Ver as Phase 4: Verifier
     
-    Target->>Obs: Crash / 5xx / Traceback in log stream
-    Note over Obs: Deduplicate event & rate-limit check
-    Obs->>Ana: Dispatch Normalized Crash Event
+    Target->>Obs: Runtime Crash / 5xx Status / Unhandled Exception
+    Note over Obs: Deduplicate event & verify sliding window
+    Obs->>Ana: Dispatch Normalized Incident Payload
     Note over Ana: Top-k AST Chunk Retrieval via Cosine Similarity
-    Ana->>Ana: Local LLM (qwen2.5-coder:1.5b) Diagnosis
-    Ana->>Wis: Structured JSON Diagnosis {summary, suspect_files}
-    Note over Wis: Pre-disk Sanity Bounds Check (max 3 files, -60% shrink guard)
-    Wis->>Wis: Atomic disk write & commit on iow/auto-heal
-    Wis->>Ver: Trigger Container Restart via Docker Socket
-    Note over Ver: 20s Active Grace Period Polling (/health & log stream)
-    alt Verification Successful
-        Ver-->>Target: Container Running & Stable
-        Ver-->>Obs: Status: VERIFIED HEALED
+    Ana->>Ana: Local LLM Synthesis (Structured JSON Diagnosis)
+    Ana->>Wis: Diagnosis Contract {summary, suspect_files}
+    Note over Wis: Pre-Disk Sanity Gate (Max 3 files, 60% shrinkage guard, AST parse)
+    Wis->>Wis: Atomic File Write & Git Commit on iow/auto-heal
+    Wis->>Ver: Issue Container Restart Command via Docker Engine API
+    Note over Ver: 20s Active Grace Period Polling (HTTP probes & log stream)
+    alt Verification Succeeded (Crash-Free Uptime)
+        Ver-->>Target: Container State Confirmed Healthy
+        Ver-->>Obs: Mark Incident As Resolved (VERIFIED HEALED)
     else Verification Failed (Attempt < 3)
-        Ver->>Ana: Re-feed Failure Traceback to LLM (Turn + 1)
-    else Verification Failed (Attempt = 3)
-        Ver->>Wis: Trigger Automatic Hard Rollback
-        Note over Wis: git reset --hard <pre_loop_sha>
-        Wis-->>Obs: Status: ABORTED (Original Code Restored)
+        Ver->>Ana: Provide Crash Diagnostics as Iterative Turn Feedback
+    else Verification Failed (Exhausted 3 Attempts)
+        Ver->>Wis: Trigger Emergency Atomic Rollback
+        Note over Wis: Execute git reset --hard <pre_loop_sha>
+        Wis-->>Obs: Mark Incident As Aborted (Baseline Codebase Restored)
     end
 ```
 
 ---
 
-## 🎛️ Unified Command Center
+## 🖥️ Unified Observability Center
 
-The central dashboard provides a real-time reactive interface powered by **FastAPI** and **Server-Sent Events (SSE)**, organized into four specialized tabs:
+The centralized administrative interface provides a modern SRE console powered by **FastAPI** and **Server-Sent Events (SSE)**:
 
 <div align="center">
 
-![IoW Command Center Mockup](docs/assets/dashboard.jpg)
+![Enterprise Software Observability Dashboard](docs/assets/dashboard.jpg)
 
 </div>
 
-### 📑 Tab Breakdown
+### Functional Modules
 
-| Tab | Component | Core Responsibilities |
-|:---:|:---|:---|
-| **1** | **Observer** | Real-time container state (`running`, `restarting`, `dead`), live terminal log stream, active HTTP probes, deduplicated alert feed. |
-| **2** | **Analyst** | Free-text semantic code search with instant cosine similarity scores, AST logical chunk inspector, structured JSON diagnosis viewer. |
-| **3** | **Wisdom Loop** | Multi-turn repair accordion, full JSON patch inspector, commit SHA tracking, safety guardrails status, manual trigger, and emergency rollback button. |
-| **4** | **Bonus Suite** | Sub-millisecond Symptom Classifier test bench, Second Opinion consensus agreement gauge, and Human-in-the-Loop PR review with live color diffs. |
+| Module | Component | Description |
+|:---|:---|:---|
+| **1. Observer** | `p1/observer_api.py` | Live container lifecycle telemetry (`running`, `restarting`, `dead`), real-time FIFO log streaming, active synthetic HTTP probes, and deduplicated incident log. |
+| **2. Analyst** | `p2/analyst_api.py` | Semantic vector search across indexed codebase chunks, real-time cosine similarity ranking, and structured root-cause diagnostic reports. |
+| **3. Wisdom Loop** | `p3/loop_api.py` | Multi-turn remediation history, full-file JSON patch inspector, commit SHA tracking, dynamic safety metrics, manual remediation trigger, and force rollback. |
+| **4. Extensions** | `bonus/bonus_api.py` | Sub-millisecond symptom classifier test bench, dual-prompt consensus evaluation gauge, and Human-in-the-Loop review queue with live color-coded diffs. |
 
 ---
 
-## 🏛️ Deep-Dive Architecture
+## ⚙️ System Architecture & Subsystems
 
 ```
 .
-├── p1/                         # PART 1: OBSERVER
-│   ├── docker_monitor.py       # Docker Engine API socket poller (/var/run/docker.sock)
-│   ├── log_streamer.py         # Real-time stdout/stderr FIFO ring-buffer & regex triage
-│   ├── http_probe.py           # Hard crash vs. soft suggestion discriminator
-│   ├── event_manager.py        # Sliding-window deduplication (10s crash / 60s soft)
-│   └── observer_api.py         # FastAPI SSE event stream & REST endpoints
+├── p1/                         # PHASE 1: TELEMETRY & OBSERVATION
+│   ├── docker_monitor.py       # Unix socket event monitoring (/var/run/docker.sock)
+│   ├── log_streamer.py         # Real-time stdout/stderr stream parser & regex triage
+│   ├── http_probe.py           # Discriminates hard crashes from soft suggestions (4xx vs 5xx)
+│   ├── event_manager.py        # Sliding-window incident deduplication (10s crash / 60s soft)
+│   └── observer_api.py         # Reactive SSE stream & telemetry REST endpoints
 │
-├── p2/                         # PART 2: ANALYST
+├── p2/                         # PHASE 2: SEMANTIC CODE ANALYSIS
 │   ├── chunker.py              # AST-based syntax tree logical chunker (functions/classes)
-│   ├── db.py                   # ChromaDB PersistentClient & all-MiniLM-L6-v2 embeddings
-│   ├── retriever.py            # Top-k cosine retrieval & traceback symbol extractor
-│   ├── diagnostician.py        # Ollama <3B JSON diagnosis engine (anti-hallucination)
-│   └── analyst_api.py          # Code search, chunk inspection & diagnosis endpoints
+│   ├── db.py                   # Persistent ChromaDB client & local embedding pipeline
+│   ├── retriever.py            # Top-k cosine similarity retrieval & stacktrace symbol extraction
+│   ├── diagnostician.py        # Host-based local LLM structured JSON diagnostic generator
+│   └── analyst_api.py          # Semantic code search & diagnostic query endpoints
 │
-├── p3/                         # PART 3: WISDOM LOOP
-│   ├── patcher.py              # Full-file structured JSON replacement ({path, op, content})
-│   ├── sanity.py               # Pre-disk safety filter: file count, shrinkage, syntax validation
+├── p3/                         # PHASE 3 & 4: REMEDIATION & VERIFICATION
+│   ├── patcher.py              # Structured full-file replacement ({path, op, content})
+│   ├── sanity.py               # Pre-disk safety filter: file count, shrinkage & AST validation
 │   ├── git_manager.py          # Atomic pre-loop snapshot, iow/auto-heal branch, hard rollback
-│   ├── verifier.py             # Docker restart coordinator & 20s active grace period monitor
+│   ├── verifier.py             # Docker restart manager & 20s active grace period verifier
 │   ├── loop.py                 # Multi-turn coordinator (up to 3 attempts with failure feedback)
-│   ├── safety.py               # Dynamic limits: single-flight, cooldown, rate-limit, kill-switch
-│   └── loop_api.py             # Wisdom Loop control, patch history & manual triggers
+│   ├── safety.py               # Production guardrails: single-flight, cooldown, rate-limit, kill-switch
+│   └── loop_api.py             # Remediation orchestration & emergency rollback API
 │
-├── bonus/                      # CHAPTER VI: BONUS SUITE
-│   ├── classifier.py           # Tiny Symptom Classifier & Patch Cache (0.01s Fast-Path bypass)
-│   ├── consensus.py            # "Second Opinion" dual-prompt consensus engine
-│   ├── pr_manager.py           # Human-in-the-Loop PR manager with live unified diff preview
-│   └── bonus_api.py            # Fast-path triage, consensus metrics & PR approve/reject API
+├── bonus/                      # ENTERPRISE RELIABILITY EXTENSIONS
+│   ├── classifier.py           # Sub-millisecond symptom classifier (0.01s Fast-Path bypass)
+│   ├── consensus.py            # "Second Opinion" dual-perspective consensus engine
+│   ├── pr_manager.py           # Human-in-the-Loop PR review manager with live unified diff
+│   └── bonus_api.py            # Fast-path triage, consensus scoring & PR approval endpoints
 │
-├── dashboard/                  # CENTRAL WEB INTERFACE
-│   ├── app.py                  # FastAPI orchestrator integrating all modules
-│   └── templates/index.html    # Reactive glassmorphism UI with 4 functional tabs
+├── dashboard/                  # UNIFIED OPERATIONS DASHBOARD
+│   ├── app.py                  # Central FastAPI application uniting all subsystems
+│   └── templates/index.html    # Modern SRE interface with 4 functional tabs
 │
-├── demo_app/                   # TARGET MICROSERVICE
-│   ├── app.py                  # Flask service with intentional /api/crash trigger
-│   ├── Dockerfile              # Target container specification
-│   ├── requirements.txt        # Flask runtime dependencies
-│   └── iow.config.yml          # Dynamic operational bounds (no hardcoding)
+├── demo_app/                   # TARGET APPLICATION SUITE
+│   ├── app.py                  # Containerized service featuring synthetic failure endpoints
+│   ├── Dockerfile              # Target microservice container definition
+│   ├── requirements.txt        # Runtime dependencies
+│   └── iow.config.yml          # Production limits & operational timing parameters
 │
-├── presentation/               # 10 DEFENSE SLIDE DECKS (100% Offline HTML5)
-│   ├── PRESENTATION.html       # Full System Architecture (EN)
-│   ├── PRESENTATION_HU.html    # Full System Architecture (HU)
-│   ├── P1_PRESENTATION.html    # Part 1: Observer Deep-Dive (EN)
-│   ├── P1_PRESENTATION_HU.html # Part 1: Observer Deep-Dive (HU)
-│   ├── P2_PRESENTATION.html    # Part 2: Analyst Deep-Dive (EN)
-│   ├── P2_PRESENTATION_HU.html # Part 2: Analyst Deep-Dive (HU)
-│   ├── P3_PRESENTATION.html    # Part 3: Wisdom Loop Deep-Dive (EN)
-│   ├── P3_PRESENTATION_HU.html # Part 3: Wisdom Loop Deep-Dive (HU)
-│   ├── BONUS_PRESENTATION.html # Chapter VI: Bonus Suite Deep-Dive (EN)
-│   └── BONUS_PRESENTATION_HU.html # Chapter VI: Bonus Suite Deep-Dive (HU)
+├── presentation/               # TECHNICAL DOCUMENTATION SUITE (10 Offline Decks)
+│   ├── PRESENTATION.html       # Complete Architecture Overview (EN)
+│   ├── PRESENTATION_HU.html    # Teljes Rendszerarchitektúra (HU)
+│   ├── P1_PRESENTATION.html    # Phase 1: Observer Deep-Dive (EN)
+│   ├── P1_PRESENTATION_HU.html # Phase 1: Observer Részletes Bemutató (HU)
+│   ├── P2_PRESENTATION.html    # Phase 2: Analyst & Semantic RAG (EN)
+│   ├── P2_PRESENTATION_HU.html # Phase 2: Analyst & Szemantikus RAG (HU)
+│   ├── P3_PRESENTATION.html    # Phase 3: Remediation & Rollback (EN)
+│   ├── P3_PRESENTATION_HU.html # Phase 3: Javítás és Visszaállítás (HU)
+│   ├── BONUS_PRESENTATION.html # Enterprise Extensions Deep-Dive (EN)
+│   └── BONUS_PRESENTATION_HU.html # Vállalati Kiegészítések Bemutató (HU)
 │
-├── docker-compose.yml          # Unified multi-container stack definition
-├── Makefile                    # Evaluation and development automation commands
-└── .gitattributes              # GitHub Linguist override (preserves 100% Python statistics)
+├── docker-compose.yml          # Orchestrated multi-container stack definition
+├── Makefile                    # Operational commands and build workflows
+└── .gitattributes              # Language metadata configuration (100% Python)
 ```
 
 ---
 
-## ⭐ Chapter VI: Bonus Suite
+## 🌟 Enterprise Reliability Extensions
 
-Chapter VI expands the mandatory self-healing loop with enterprise-grade governance and reliability features:
+To meet rigorous production reliability and compliance standards, the platform includes three high-speed governance extensions:
 
 ```mermaid
 graph LR
-    A[Raw Log Trace] --> B{Tiny Classifier}
-    B -->|Confidence > 0.85| C[⚡ Fast-Path Bypass: 0.01s Repair]
-    B -->|Uncertain| D[Full RAG + LLM Pipeline]
+    A[Incoming Failure Trace] --> B{Symptom Classifier}
+    B -->|Confidence > 0.85| C[⚡ Fast-Path Bypass: 0.01s Fix]
+    B -->|Ambiguous| D[Full Semantic RAG + LLM Pipeline]
     D --> E[Second Opinion Engine]
     E -->|Consensus = 1.0| F[Autonomous Auto-Heal]
     E -->|Consensus Diverged| G[👤 Human-in-the-Loop PR]
-    G --> H[Interactive Diff Web Preview]
+    G --> H[Interactive Diff Review]
     H -->|Approve| F
-    H -->|Reject| I[Clean Abort & Branch Purge]
+    H -->|Reject| I[Clean Abort & Branch Reset]
 ```
 
-### 1. Tiny Symptom Classifier (`bonus/classifier.py`)
-- **Problem:** Full RAG search + LLM inference takes 3–8 seconds per cycle.
-- **Solution:** Compiled regex extracts known crash signatures and target files in sub-milliseconds.
-- **Result:** When confidence $> 0.85$, instant repair bypasses ChromaDB and Ollama in **0.01 seconds**.
+### 1. Sub-Millisecond Symptom Classifier (`bonus/classifier.py`)
+* **Objective:** Eliminate LLM latency for deterministic, known failure modes.
+* **Mechanism:** Pre-compiled regular expressions extract exception signatures, module paths, and stacktrace coordinates in under 1 millisecond.
+* **Performance:** When confidence exceeds 0.85, the platform executes a verified patch in **0.01 seconds**, bypassing vector search and LLM compute overhead.
 
 ### 2. "Second Opinion" Consensus Engine (`bonus/consensus.py`)
-- **Problem:** Sub-3B parameter models can hallucinate suspect files under ambiguous stack traces.
-- **Solution:** Prompts the model from two distinct perspectives:
-  - *Perspective A:* Root cause and raw execution flow.
-  - *Perspective B:* Defensive architecture and edge-case contracts.
-- **Result:** Computes agreement score. If models diverge, autonomous write is suspended and escalated to human operator.
+* **Objective:** Mitigate single-prompt hallucination in sub-3B parameter models.
+* **Mechanism:** Evaluates the incident from two independent reasoning perspectives:
+  * *Perspective A (Root Cause Analysis):* Focuses on the immediate call-stack trace and execution context.
+  * *Perspective B (Defensive Architecture):* Focuses on defensive contracts, bounds checking, and input validation.
+* **Governance:** If both models agree on the target suspect file, autonomous remediation proceeds. If findings diverge, the incident is safely flagged for human evaluation.
 
 ### 3. Human-in-the-Loop PR Manager (`bonus/pr_manager.py`)
-- **Safe Mode:** Instead of direct commits, stages changes on isolated review branches (`iow/review/pr-<id>`).
-- **Unified Diff:** Renders line-by-line colored diffs on the dashboard.
-- **One-Click Governance:** Operator approves or rejects via single button click.
+* **Objective:** Provide auditable change management in environments prohibiting fully autonomous writes to production branches.
+* **Mechanism:** Stages candidate patches on dedicated review branches (`iow/review/pr-<timestamp>`).
+* **Interface:** Generates syntax-highlighted unified diffs directly on the dashboard, allowing operations teams to review, approve, or reject changes with a single click.
 
 ---
 
-## 🛡️ Safety Guardrails & Dynamic Configuration
+## 🛡️ Production Guardrails & Configuration
 
-All timing, cooldown, and safety limits are read dynamically from [`demo_app/iow.config.yml`](demo_app/iow.config.yml) — **no values are hard-coded**:
+All system limits, timing parameters, and safety thresholds are configured dynamically in [`demo_app/iow.config.yml`](demo_app/iow.config.yml) — **no values are hard-coded in source files**:
 
 ```yaml
 # demo_app/iow.config.yml
-grace_period: 20          # Seconds target must remain crash-free to count as HEALED
-cooldown: 300             # Minimum quiet time between identical crash signatures
-rate_limit_per_hour: 10   # Maximum autonomous repair flights per rolling hour
-hard_cap: 25              # Lifetime ceiling of repairs before human lock
-kill_switch: false        # Emergency switch: flip to 'true' to instantly freeze the loop
+grace_period: 20          # Seconds the target must remain stable to confirm recovery
+cooldown: 300             # Minimum seconds before the same incident signature may retrigger
+rate_limit_per_hour: 10   # Maximum autonomous remediation flights allowed per rolling hour
+hard_cap: 25              # Absolute total lifecycle remediation operations before manual reset
+kill_switch: false        # Immediate global kill-switch: set to true to refuse all actions
 ```
 
-### Pre-Disk Sanity Bounds (`p3/sanity.py`)
-Every patch generated by an LLM is intercepted before touching the disk:
-- 🚫 **Max 3 Files:** Blocks rogue patches that attempt to rewrite the entire repository.
-- 🚫 **60% Shrinkage Guard:** Prevents destructive deletion where files are wiped down to empty stubs.
-- 🚫 **Anti-Placeholder Filter:** Scans for lazy AI tokens (`# TODO`, `# rest of code goes here`, `# implement here`).
-- 🚫 **AST Syntax Parse:** Validates that the Python patch compiles cleanly with `ast.parse()`.
+### Pre-Disk Sanity Filters (`p3/sanity.py`)
+Before any AI-generated patch is applied to the filesystem, it must satisfy four immutable validation criteria:
+1. **File Count Bound:** Maximum 3 files modified per operation to prevent broad unintended modifications.
+2. **Shrinkage Guard:** The file size cannot decrease by more than 60% compared to baseline (protects against destructive truncation).
+3. **Anti-Placeholder Filter:** Rejects code containing stubs (`# TODO`, `# implement here`, `# rest of code`).
+4. **AST Syntax Parse:** Validates that modified Python code compiles cleanly without syntax errors before disk write.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Operational Guide
 
-### Mode A: Docker Compose Stack (Standard 42 Evaluation)
+### Primary Workflow: Docker Compose Orchestration
 
 ```sh
-# 1. Start the complete stack (Agent + Target container)
+# 1. Build and bring up the complete stack (Agent + Target container)
 make up
 
-# 2. View live streaming logs
+# 2. Follow unified live container logs
 make logs
 
-# 3. Trigger intentional application failure
+# 3. Trigger a synthetic runtime crash on the target service
 make break
 
-# 4. Trigger manual heal cycle via REST API (if not triggered automatically)
+# 4. Trigger manual remediation cycle via REST API (if needed)
 make heal
 
-# 5. Test emergency rollback mechanism
+# 5. Execute an emergency rollback to baseline revision
 make rollback
 
-# 6. Check live system status
+# 6. Query live system health and operational metrics
 make status
 
-# 7. Tear down the environment
+# 7. Gracefully tear down all containers and networks
 make down
 ```
 
-### Mode B: Local Campus Runtime (`/tmp/iow`)
+### Alternative Workflow: Local Host Development (`/tmp/iow`)
 
 ```sh
-# Set up virtual environment, dependencies, embeddings, and Ollama model
+# Initialize virtual environment, dependencies, local embeddings, and model weights
 make setup
 
-# Launch the unified dashboard on http://127.0.0.1:8000
+# Launch the unified dashboard locally on http://127.0.0.1:8000
 make run
 
-# Clean caches (preserves virtualenv)
+# Clean transient ChromaDB data and model caches
 make clean
 
-# Complete wipe of runtime cache
+# Full clean wipe of runtime directories
 make fclean
 ```
 
 ---
 
-## 🎯 Defense Demonstration Guide
-
-Follow this proven 4-step script during your peer evaluation:
-
-```
-[1. INITIALIZE]       make up      -> Open http://localhost:8000 (show 4 green tabs)
-[2. TRIGGER ERROR]    make break   -> Observer raises red alert instantly
-[3. AUTONOMOUS HEAL]  Watch UI     -> RAG retrieves chunk -> LLM patches -> restart -> 20s grace -> HEALED
-[4. FAST-PATH DEMO]   make break   -> Second break triggers instant 0.01s Classifier bypass!
-[5. ROLLBACK DEMO]    Force Button -> Click 'Force Rollback' -> terminal verifies git reset --hard
-```
-
-### 💡 Top Evaluator Questions & Key Answers
+## 📖 Technical Deep-Dives & FAQs
 
 <details>
-<summary><b>Q: Why full-file replacement instead of standard git diff / patch?</b></summary>
+<summary><b>Why full-file replacement instead of unified diffs (git apply)?</b></summary>
 <br>
-<b>A:</b> LLMs under 3B parameters (like Qwen 2.5 Coder 1.5B) frequently hallucinate line offset numbers and unified diff headers (<code>@@ -14,6 +14,8 @@</code>), causing standard <code>patch(1)</code> to fail. Full-file replacement eliminates syntax corruption entirely while staying protected under our 3-file limit and 60% shrinkage guard.
+Small LLMs (< 3B parameters) struggle with character-accurate arithmetic required for unified diff line offsets (<code>@@ -12,4 +12,6 @@</code>). Attempting to apply hallucinated diff headers results in rejection by standard patch utilities. Structured full-file replacement provides deterministic, reliable code application while remaining strictly governed by our file-count and shrinkage guards.
 </details>
 
 <details>
-<summary><b>Q: How does the agent avoid infinite crash-heal loops?</b></summary>
+<summary><b>How are infinite restart and patch loops prevented?</b></summary>
 <br>
-<b>A:</b> Through five distinct layers:
-1. Deduplication sliding window (10s for crashes).
-2. Cooldown timer per crash signature (300s).
-3. Rate limit per hour (10 heals/hr).
-4. Maximum 3 attempts per flight.
-5. Automatic <code>git reset --hard</code> restoring the pre-loop revision upon attempt 3 failure.
+Through a layered defense-in-depth approach:
+1. Event deduplication sliding window (10 seconds for crashes).
+2. Per-signature cooldown periods (300 seconds).
+3. Rolling hourly rate-limits (10 heals/hour) and hard lifetime caps.
+4. Turn-limited remediation flights (maximum 3 attempts).
+5. Automated hard rollback (<code>git reset --hard</code>) restoring the pre-incident revision if stability is not confirmed within the grace period.
 </details>
 
 <details>
-<summary><b>Q: Does ChromaDB rebuild the entire index when restarting?</b></summary>
+<summary><b>How does incremental indexing work in ChromaDB?</b></summary>
 <br>
-<b>A:</b> No. ChromaDB operates in <code>PersistentClient</code> mode under <code>.chroma/</code>. The AST chunker calculates a deterministic SHA-256 hash for every function/class. On startup, only newly modified files are re-embedded incrementally.
+ChromaDB operates in <code>PersistentClient</code> mode in <code>.chroma/</code>. The AST parser computes a deterministic SHA-256 hash for each extracted function and class chunk. Upon startup or file modification, only chunks with modified content hashes are re-embedded, eliminating unnecessary embedding re-computation.
 </details>
 
 ---
 
-## 📊 Presentation Suite
+## 📑 Interactive Documentation
 
-The repository includes **10 self-contained, offline-ready HTML5 presentations** in the [`presentation/`](presentation/) folder. They require zero CDN connections, feature full keyboard navigation, and include dedicated defense cheat-sheets:
+Ten self-contained, offline-compatible HTML5 technical presentations are available in the [`presentation/`](presentation/) directory. They require no internet connection, feature full keyboard navigation, and include architectural walkthroughs:
 
-| Deck File | Language | Topic |
+| Deck | Language | Focus |
 |:---|:---:|:---|
-| [`presentation/PRESENTATION.html`](presentation/PRESENTATION.html) | EN | Overall Architecture & 4-Beat Loop |
-| [`presentation/PRESENTATION_HU.html`](presentation/PRESENTATION_HU.html) | HU | Teljes Rendszerarchitektúra és Hurok |
-| [`presentation/P1_PRESENTATION.html`](presentation/P1_PRESENTATION.html) | EN | Part 1: Observer Deep-Dive |
-| [`presentation/P1_PRESENTATION_HU.html`](presentation/P1_PRESENTATION_HU.html) | HU | Part 1: Observer Részletes Bemutató |
-| [`presentation/P2_PRESENTATION.html`](presentation/P2_PRESENTATION.html) | EN | Part 2: Analyst & Semantic RAG |
-| [`presentation/P2_PRESENTATION_HU.html`](presentation/P2_PRESENTATION_HU.html) | HU | Part 2: Analyst & Szemantikus RAG |
-| [`presentation/P3_PRESENTATION.html`](presentation/P3_PRESENTATION.html) | EN | Part 3: Wisdom Loop & Rollback |
-| [`presentation/P3_PRESENTATION_HU.html`](presentation/P3_PRESENTATION_HU.html) | HU | Part 3: Wisdom Loop & Visszaállítás |
-| [`presentation/BONUS_PRESENTATION.html`](presentation/BONUS_PRESENTATION.html) | EN | Chapter VI: Bonus Suite Deep-Dive |
-| [`presentation/BONUS_PRESENTATION_HU.html`](presentation/BONUS_PRESENTATION_HU.html) | HU | Chapter VI: Bónusz Rendszer Bemutató |
+| [`presentation/PRESENTATION.html`](presentation/PRESENTATION.html) | EN | Overall System Architecture & The 4-Phase Loop |
+| [`presentation/PRESENTATION_HU.html`](presentation/PRESENTATION_HU.html) | HU | Teljes Rendszerarchitektúra és Működési Hurok |
+| [`presentation/P1_PRESENTATION.html`](presentation/P1_PRESENTATION.html) | EN | Phase 1: Observation, Telemetry & Ingestion |
+| [`presentation/P1_PRESENTATION_HU.html`](presentation/P1_PRESENTATION_HU.html) | HU | 1. Fázis: Megfigyelés, Telemetria és Eseménykezelés |
+| [`presentation/P2_PRESENTATION.html`](presentation/P2_PRESENTATION.html) | EN | Phase 2: AST Analysis, Vector Storage & LLM Diagnosis |
+| [`presentation/P2_PRESENTATION_HU.html`](presentation/P2_PRESENTATION_HU.html) | HU | 2. Fázis: AST Elemzés, Vektoros Keresés és Diagnosztika |
+| [`presentation/P3_PRESENTATION.html`](presentation/P3_PRESENTATION.html) | EN | Phase 3: Patch Synthesis, Verification & Atomic Rollback |
+| [`presentation/P3_PRESENTATION_HU.html`](presentation/P3_PRESENTATION_HU.html) | HU | 3. Fázis: Javítás, Verifikáció és Atomikus Rollback |
+| [`presentation/BONUS_PRESENTATION.html`](presentation/BONUS_PRESENTATION.html) | EN | Enterprise Reliability Extensions & Governance |
+| [`presentation/BONUS_PRESENTATION_HU.html`](presentation/BONUS_PRESENTATION_HU.html) | HU | Vállalati Megbízhatósági Bővítmények és Felügyelet |
 
 ---
 
 <div align="center">
 
-**Built with pride for 42 Budapest — 2026**<br>
-*Zero Cloud Dependencies • 100% Offline • Deterministic Resilience*
+**Inception-of-Wisdom (IoW)**<br>
+*Deterministic Incident Response • 100% Air-Gapped Operation • Continuous Availability*
 
 </div>
