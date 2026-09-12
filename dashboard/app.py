@@ -1,0 +1,366 @@
+"""
+Inception-of-Wisdom (IoW) — Dashboard & Central Application
+Integrates Part 1 (Observer), Part 2 (Analyst), and Part 3 (Wisdom Loop) into a unified FastAPI service.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+import json
+import logging
+import asyncio
+import threading
+from typing import Optional, Dict, Any, List
+from contextlib import asynccontextmanager
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger("iow.dashboard")
+
+# Enforce local cache directories in /tmp/ to protect user quota
+os.environ.setdefault("HF_HOME", "/tmp/iow_cache/huggingface")
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "/tmp/iow_cache/sentence_transformers")
+os.environ.setdefault("CHROMA_CACHE_DIR", "/tmp/iow_cache/chroma")
+os.environ.setdefault("TORCH_HOME", "/tmp/iow_cache/torch")
+
+# FastAPI imports
+try:
+    from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+    from fastapi.staticfiles import StaticFiles
+except ImportError:
+    FastAPI = None
+    Request = None
+    HTTPException = Exception
+    HTMLResponse = None
+    JSONResponse = None
+    FileResponse = None
+    StaticFiles = None
+
+# Part 1: Observer imports
+from p1.docker_monitor import DockerMonitor
+from p1.log_streamer import LogStreamer
+from p1.http_probe import HttpProbeManager
+from p1.event_manager import EventManager, ObserverEvent
+from p1.observer_api import create_observer_router
+
+# Part 2: Analyst imports
+from p2.chunker import AstChunker
+from p2.db import ChromaVectorDB
+from p2.retriever import CodeRetriever
+from p2.diagnostician import CrashDiagnostician
+from p2.analyst_api import create_analyst_router
+
+# Part 3: Wisdom Loop imports
+from p3.patcher import CodePatcher
+from p3.sanity import SanityChecker
+from p3.git_manager import GitManager
+from p3.verifier import TargetVerifier
+from p3.loop import WisdomLoop
+from p3.safety import SafetyManager
+from p3.loop_api import create_loop_router
+
+CONFIG_FILE = os.environ.get("IOW_CONFIG_PATH", "demo_app/iow.config.yml")
+TARGET_DIR = os.environ.get("IOW_TARGET_DIR", "demo_app")
+REPO_PATH = os.environ.get("IOW_REPO_PATH", ".")
+
+
+class InceptionOrchestrator:
+    """Central orchestrator that holds instances of all IoW subsystems
+    and connects Observer crash events to the Wisdom Loop.
+    """
+
+    def __init__(self, config_path: str = CONFIG_FILE):
+        self.config_path = config_path
+        self.auto_heal_enabled: bool = True
+        self.running: bool = False
+
+        # 1. Safety Manager
+        self.safety_manager = SafetyManager(config_path)
+        cfg = self.safety_manager.reload_config()
+
+        target_cfg = cfg.get("target", {})
+        analyst_cfg = cfg.get("analyst", {})
+
+        container_name = os.environ.get("TARGET_CONTAINER", target_cfg.get("container_name", "iow_demo_target"))
+        target_url = os.environ.get("TARGET_URL", target_cfg.get("service_url", "http://demo_app:5000"))
+        probe_interval = float(target_cfg.get("probe_interval_seconds", 3.0))
+        error_patterns = target_cfg.get("error_patterns", ["Traceback", "CRITICAL", "Error", "Exception"])
+
+        model_name = os.environ.get("OLLAMA_MODEL", analyst_cfg.get("model", "qwen2.5-coder:1.5b"))
+        embedding_model = analyst_cfg.get("embedding_model", "all-MiniLM-L6-v2")
+        ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+        # 2. Observer (Part 1)
+        self.docker_monitor = DockerMonitor(container_name=container_name)
+        self.log_streamer = LogStreamer(
+            docker_monitor=self.docker_monitor,
+            error_patterns=error_patterns
+        )
+        self.http_probe = HttpProbeManager(
+            service_url=target_url,
+            probe_paths=target_cfg.get("probe_urls", ["/", "/healthz"]),
+            interval_seconds=probe_interval
+        )
+        self.event_manager = EventManager(
+            docker_monitor=self.docker_monitor,
+            log_streamer=self.log_streamer,
+            http_probe=self.http_probe
+        )
+
+        # 3. Analyst (Part 2)
+        self.chunker = AstChunker(base_dir=REPO_PATH)
+        self.vector_db = ChromaVectorDB(persist_dir=".chroma", embedding_model_name=embedding_model)
+        self.retriever = CodeRetriever(
+            vector_db=self.vector_db,
+            default_top_k=int(analyst_cfg.get("top_k", 3))
+        )
+        self.diagnostician = CrashDiagnostician(
+            retriever=self.retriever,
+            model_name=model_name,
+            ollama_host=ollama_host
+        )
+
+        # 4. Wisdom Loop (Part 3)
+        self.git_manager = GitManager(repo_dir=REPO_PATH)
+        self.sanity_checker = SanityChecker(base_dir=REPO_PATH)
+        self.patcher = CodePatcher(
+            base_dir=REPO_PATH,
+            model_name=model_name,
+            ollama_host=ollama_host
+        )
+        self.verifier = TargetVerifier(
+            docker_monitor=self.docker_monitor,
+            http_probe=self.http_probe,
+            event_manager=self.event_manager,
+            log_streamer=self.log_streamer
+        )
+        self.wisdom_loop = WisdomLoop(
+            git_manager=self.git_manager,
+            diagnostician=self.diagnostician,
+            patcher=self.patcher,
+            sanity_checker=self.sanity_checker,
+            verifier=self.verifier,
+            docker_monitor=self.docker_monitor,
+            max_attempts=3
+        )
+
+        # Register event subscriber for autonomous healing
+        self.event_manager.add_listener(self._on_observer_event)
+
+    def _on_observer_event(self, event: ObserverEvent) -> None:
+        """Autonomously triggers the Wisdom Loop when a confirmed crash event arrives."""
+        if not self.auto_heal_enabled:
+            logger.info(f"Observer event received [{event.signature[:8]}], but auto_heal is disabled.")
+            return
+
+        if event.event_type != "crash":
+            logger.debug(f"Observer event [{event.event_type}] received; only 'crash' triggers auto-healing.")
+            return
+
+        # Check safety guardrails before starting background heal
+        allowed, reason = self.safety_manager.acquire_heal_slot(event.signature)
+        if not allowed:
+            logger.warning(f"Auto-heal blocked by safety bounds: {reason}")
+            return
+
+        # Run healing in dedicated thread so event bus is never blocked
+        threading.Thread(
+            target=self._run_autonomous_heal_thread,
+            args=(event,),
+            name=f"Heal-{event.signature[:8]}",
+            daemon=True
+        ).start()
+
+    def _run_autonomous_heal_thread(self, event: ObserverEvent) -> None:
+        """Worker thread for autonomous heal cycle."""
+        sig = event.signature
+        grace_period = self.safety_manager.get_grace_period()
+        logger.info(f"⚡ Starting autonomous Wisdom Loop for crash signature [{sig[:8]}]...")
+        try:
+            result = self.wisdom_loop.execute_heal(event, grace_period=grace_period)
+            logger.info(f"Wisdom Loop finished with status: {result.status.upper()}")
+        except Exception as e:
+            logger.error(f"Unexpected error in autonomous heal thread: {e}")
+        finally:
+            self.safety_manager.release_heal_slot(sig)
+
+    def startup(self) -> None:
+        """Starts background monitors, probes, and indexes codebase."""
+        if self.running:
+            return
+        self.running = True
+        logger.info("Initializing Inception-of-Wisdom orchestrator...")
+
+        # 1. Initial codebase AST index
+        try:
+            logger.info("Indexing target codebase into local ChromaDB...")
+            chunks = self.chunker.chunk_directory(TARGET_DIR)
+            self.vector_db.sync_chunks(chunks)
+            logger.info(f"ChromaDB synced with {len(chunks)} code chunks.")
+        except Exception as e:
+            logger.warning(f"Could not index codebase at startup: {e}")
+
+        # 2. Start Part 1 streaming and probes
+        try:
+            self.log_streamer.start()
+            self.http_probe.start()
+            self.event_manager.start()
+            logger.info("Part 1 Observer services started successfully.")
+        except Exception as e:
+            logger.error(f"Error starting observer background services: {e}")
+
+    def shutdown(self) -> None:
+        """Stops all background monitors and threads."""
+        self.running = False
+        logger.info("Shutting down Inception-of-Wisdom orchestrator...")
+        try:
+            self.event_manager.stop()
+            self.http_probe.stop()
+            self.log_streamer.stop()
+        except Exception as e:
+            logger.error(f"Error shutting down background services: {e}")
+
+    def get_overview(self) -> Dict[str, Any]:
+        """Returns high-level system summary for the top dashboard status bar."""
+        docker_status = self.docker_monitor.inspect()
+        target_healthy = self.http_probe.is_target_healthy()
+        latest_probes = self.http_probe.get_latest_results()
+        safety_status = self.safety_manager.get_status()
+
+        return {
+            "orchestrator": {
+                "running": self.running,
+                "auto_heal_enabled": self.auto_heal_enabled
+            },
+            "target": {
+                "container_name": self.docker_monitor.container_name,
+                "status": docker_status.status,
+                "exit_code": docker_status.exit_code,
+                "restart_count": docker_status.restart_count,
+                "is_crash": docker_status.is_crash,
+                "http_healthy": target_healthy,
+                "latest_probes": latest_probes
+            },
+            "analyst": {
+                "chunks_count": self.vector_db.count(),
+                "embedding_model": self.vector_db.embedding_model_name,
+                "llm_model": self.diagnostician.model_name
+            },
+            "wisdom_loop": {
+                "active": self.wisdom_loop.is_active(),
+                "history_count": len(self.wisdom_loop.history),
+                "git_branch": self.git_manager.get_current_branch(),
+                "git_head": self.git_manager.get_current_head(),
+                "safety": safety_status
+            }
+        }
+
+
+# Global orchestrator instance
+orchestrator = InceptionOrchestrator()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    orchestrator.startup()
+    yield
+    # Shutdown
+    orchestrator.shutdown()
+
+
+def create_app() -> FastAPI:
+    """Creates and configures the main FastAPI application."""
+    if FastAPI is None:
+        raise RuntimeError("FastAPI is not installed.")
+
+    app = FastAPI(
+        title="Inception of Wisdom (IoW) Dashboard",
+        description="Autonomous Self-Healing Agent: Observer, Analyst, and Wisdom Loop",
+        version="1.0.0",
+        lifespan=lifespan
+    )
+
+    # Wire API routers
+    observer_router = create_observer_router(
+        docker_monitor=orchestrator.docker_monitor,
+        log_streamer=orchestrator.log_streamer,
+        http_probe=orchestrator.http_probe,
+        event_manager=orchestrator.event_manager
+    )
+    if observer_router:
+        app.include_router(observer_router)
+
+    analyst_router = create_analyst_router(
+        vector_db=orchestrator.vector_db,
+        retriever=orchestrator.retriever,
+        diagnostician=orchestrator.diagnostician,
+        chunker=orchestrator.chunker,
+        target_dir=TARGET_DIR
+    )
+    if analyst_router:
+        app.include_router(analyst_router)
+
+    loop_router = create_loop_router(
+        wisdom_loop=orchestrator.wisdom_loop,
+        safety_manager=orchestrator.safety_manager,
+        event_manager=orchestrator.event_manager
+    )
+    if loop_router:
+        app.include_router(loop_router)
+
+    # High-level overview endpoint
+    @app.get("/api/overview")
+    async def get_overview() -> Dict[str, Any]:
+        return orchestrator.get_overview()
+
+    # Toggle autonomous healing
+    @app.post("/api/auto-heal/toggle")
+    async def toggle_auto_heal(enable: Optional[bool] = None) -> Dict[str, Any]:
+        if enable is not None:
+            orchestrator.auto_heal_enabled = enable
+        else:
+            orchestrator.auto_heal_enabled = not orchestrator.auto_heal_enabled
+        logger.info(f"Auto-heal toggled to: {orchestrator.auto_heal_enabled}")
+        return {"auto_heal_enabled": orchestrator.auto_heal_enabled}
+
+    # Serve index.html template on root path
+    @app.get("/", response_class=HTMLResponse)
+    async def serve_dashboard():
+        template_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+        if os.path.isfile(template_path):
+            with open(template_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return HTMLResponse(content=content)
+        return HTMLResponse(
+            content="""<!DOCTYPE html>
+<html>
+<head><title>Inception of Wisdom</title></head>
+<body style="font-family: sans-serif; background: #0f172a; color: #f8fafc; padding: 40px;">
+  <h1>Inception of Wisdom (IoW)</h1>
+  <p>Dashboard template is being initialized. API endpoints are fully active:</p>
+  <ul>
+    <li><a style="color: #38bdf8;" href="/api/overview">/api/overview</a></li>
+    <li><a style="color: #38bdf8;" href="/api/observer/status">/api/observer/status</a></li>
+    <li><a style="color: #38bdf8;" href="/api/analyst/status">/api/analyst/status</a></li>
+    <li><a style="color: #38bdf8;" href="/api/loop/status">/api/loop/status</a></li>
+    <li><a style="color: #38bdf8;" href="/docs">/docs (Interactive Swagger UI)</a></li>
+  </ul>
+</body>
+</html>"""
+        )
+
+    return app
+
+
+# Application entry point for uvicorn (uvicorn dashboard.app:app)
+app = None
+if FastAPI is not None:
+    app = create_app()

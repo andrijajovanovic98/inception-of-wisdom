@@ -44,16 +44,29 @@ reaches it over the host network.
 
 ## Quick start
 
+### Mode A: Docker Compose (Standard Evaluation)
 ```sh
-make up      # build + start the agent, the LLM runtime and the demo target
-make down    # tear everything down
-make logs    # follow the stack logs
-make re      # down + up
-make break   # break the demo target on purpose (see Demo below)
+make up        # Build + start the agent and demo target via Docker Compose
+make logs      # Follow the container logs in real time
+make break     # Trigger intentional crash on the target service
+make heal      # Trigger manual heal cycle via REST API
+make rollback  # Force emergency git rollback to pre-loop revision
+make status    # Query live overview status via CLI
+make down      # Tear everything down cleanly
 ```
 
-Then open the dashboard:
+### Mode B: Local Campus Runtime (under `/tmp/iow`)
+```sh
+make setup     # Prepare /tmp/iow (virtualenv, dependencies, embeddings, Ollama model)
+make run       # Launch the unified Dashboard on http://127.0.0.1:8000
+make p1        # Launch with Observer focus
+make p2        # Launch with Analyst focus
+make p3        # Launch with Wisdom Loop focus
+make clean     # Clean ChromaDB and caches (keeps venv)
+make fclean    # Complete wipe of /tmp/iow
+```
 
+Then open the dashboard in your browser:
 ```
 http://localhost:8000
 ```

@@ -1,0 +1,81 @@
+# Inception-of-Wisdom (IoW) — Multi-Container Docker Compose Stack
+# Subject requirement: The entire environment must launch with a single 'docker compose up' command.
+
+services:
+  # ============================================================================
+  # 1. Target Application (Monitored & Self-Healed Service)
+  # ============================================================================
+  demo_app:
+    build:
+      context: ./demo_app
+      dockerfile: Dockerfile
+      args:
+        UID: 101888
+        GID: 4224
+    container_name: iow_demo_target
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    volumes:
+      # Live-mount target code so Wisdom Loop patches immediately take effect
+      - ./demo_app:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=5000
+    networks:
+      - iow-net
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ============================================================================
+  # 2. Inception-of-Wisdom Agent (Observer, Analyst & Wisdom Loop + Dashboard)
+  # ============================================================================
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: 101888
+        GID: 4224
+    container_name: iow_agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount Docker socket to inspect, follow logs, and restart target container
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount workspace to allow git atomic commits and rollbacks on iow/auto-heal branch
+      - .:/workspace
+      # Protect user 42 quota: map caches to host /tmp
+      - /tmp/iow_cache:/tmp/iow_cache
+    environment:
+      - TARGET_CONTAINER=iow_demo_target
+      - TARGET_URL=http://demo_app:5000
+      - IOW_CONFIG_PATH=/workspace/demo_app/iow.config.yml
+      - IOW_TARGET_DIR=/workspace/demo_app
+      - IOW_REPO_PATH=/workspace
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - HF_HOME=/tmp/iow_cache/huggingface
+      - SENTENCE_TRANSFORMERS_HOME=/tmp/iow_cache/sentence_transformers
+      - CHROMA_CACHE_DIR=/tmp/iow_cache/chroma
+      - TORCH_HOME=/tmp/iow_cache/torch
+    extra_hosts:
+      # Route host.docker.internal to host bridge gateway for host-running Ollama
+      - "host.docker.internal:host-gateway"
+    networks:
+      - iow-net
+    depends_on:
+      - demo_app
+
+# ==============================================================================
+# Isolated Bridge Network
+# ==============================================================================
+networks:
+  iow-net:
+    name: iow-network
+    driver: bridge
+

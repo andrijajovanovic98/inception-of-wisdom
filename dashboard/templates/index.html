@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inception of Wisdom (IoW) — Autonomous Self-Healing Agent</title>
+  <style>
+    :root {
+      --bg-dark: #090d16;
+      --bg-card: #131b2e;
+      --bg-card-hover: #1b2640;
+      --border-color: #233152;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #10b981;
+      --accent-red: #ef4444;
+      --accent-yellow: #f59e0b;
+      --accent-purple: #a855f7;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Navigation / Status Bar */
+    header {
+      background-color: #0c1222;
+      border-bottom: 1px solid var(--border-color);
+      padding: 14px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .logo {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #fff;
+    }
+
+    .logo-badge {
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      color: #fff;
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-weight: 800;
+    }
+
+    .status-ribbon {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.85rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge-green { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-red { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-yellow { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-blue { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); }
+    .badge-purple { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: currentColor;
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    /* Tab Switcher */
+    .tabs-nav {
+      display: flex;
+      gap: 8px;
+      background: #0f172a;
+      padding: 4px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 8px 18px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+      color: #fff;
+    }
+
+    .tab-btn.active {
+      background: #1e293b;
+      color: var(--accent-blue);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .tab-content {
+      display: none;
+      flex-direction: column;
+      gap: 20px;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+
+    .tab-content.active {
+      display: flex;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Grid Layouts */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 20px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      padding-bottom: 12px;
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #e2e8f0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Terminal & Log Viewer */
+    .terminal-box {
+      background: #060911;
+      border: 1px solid #1a2338;
+      border-radius: 8px;
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.5;
+      height: 460px;
+      overflow-y: auto;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .terminal-line {
+      display: flex;
+      gap: 12px;
+    }
+
+    .terminal-line.error { color: #f87171; background: rgba(239, 68, 68, 0.08); }
+    .terminal-line.warn { color: #fbbf24; }
+    .terminal-line.success { color: #34d399; }
+    .terminal-ts { color: #475569; user-select: none; }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.02);
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+
+    tr:hover td {
+      background: rgba(255,255,255,0.02);
+    }
+
+    /* Forms and Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+    }
+
+    .btn-primary {
+      background: #0284c7;
+      color: #fff;
+    }
+    .btn-primary:hover { background: #0369a1; }
+
+    .btn-danger {
+      background: #dc2626;
+      color: #fff;
+    }
+    .btn-danger:hover { background: #b91c1c; }
+
+    .btn-secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid var(--border-color);
+    }
+    .btn-secondary:hover { background: #334155; color: #fff; }
+
+    .form-input {
+      background: #0a0f1d;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 10px 14px;
+      color: #fff;
+      font-size: 0.85rem;
+      outline: none;
+      width: 100%;
+    }
+    .form-input:focus { border-color: var(--accent-blue); }
+
+    /* Metric Stat Card */
+    .stat-card {
+      background: #0d1424;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+
+    .stat-value {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #fff;
+      font-family: var(--font-mono);
+    }
+
+    /* Accordion & Cycle cards */
+    .cycle-card {
+      background: #0f1629;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .cycle-header {
+      padding: 14px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      background: rgba(255,255,255,0.01);
+      border-bottom: 1px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .cycle-header:hover {
+      background: rgba(255,255,255,0.03);
+    }
+
+    .cycle-header.open {
+      border-bottom: 1px solid var(--border-color);
+      background: rgba(255,255,255,0.02);
+    }
+
+    .cycle-body {
+      padding: 18px;
+      display: none;
+      flex-direction: column;
+      gap: 16px;
+      font-size: 0.85rem;
+      background: #0b1020;
+    }
+
+    .cycle-body.open {
+      display: flex;
+    }
+
+    .attempt-box {
+      border-left: 3px solid var(--accent-blue);
+      padding: 12px 16px;
+      background: rgba(2, 132, 199, 0.05);
+      border-radius: 0 6px 6px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .attempt-box.failed {
+      border-left-color: var(--accent-red);
+      background: rgba(239, 68, 68, 0.05);
+    }
+
+    .code-preview {
+      background: #050811;
+      padding: 10px;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      overflow-x: auto;
+      border: 1px solid #162035;
+      color: #94a3b8;
+      max-height: 250px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Bar -->
+  <header>
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-badge">IoW</span>
+        <span>Inception of Wisdom</span>
+      </div>
+      <div class="tabs-nav">
+        <button class="tab-btn active" onclick="switchTab('observer')">1. Observer</button>
+        <button class="tab-btn" onclick="switchTab('analyst')">2. Analyst</button>
+        <button class="tab-btn" onclick="switchTab('loop')">3. Wisdom Loop</button>
+      </div>
+    </div>
+
+    <div class="status-ribbon">
+      <div id="targetStatusBadge" class="badge badge-yellow">
+        <span class="pulse-dot"></span>
+        <span id="targetStatusText">Connecting...</span>
+      </div>
+      <div id="gitBadge" class="badge badge-blue">
+        <span>BRANCH:</span>
+        <strong id="gitBranchText">main</strong>
+        <span id="gitHeadText" style="font-family: var(--font-mono); font-size: 0.7rem;"></span>
+      </div>
+      <div id="loopStatusBadge" class="badge badge-green">
+        <span id="loopStatusText">Auto-Heal Active</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Tabs Area -->
+  <main>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 1: OBSERVER -->
+    <!-- ===================================================================== -->
+    <div id="tab-observer" class="tab-content active">
+      <div class="grid-4">
+        <div class="stat-card">
+          <span class="stat-label">Target Container</span>
+          <span class="stat-value" id="obsContainerName">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Container State</span>
+          <span class="stat-value" id="obsContainerState">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">HTTP Health Probe</span>
+          <span class="stat-value" id="obsHttpState">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Restart Count</span>
+          <span class="stat-value" id="obsRestartCount">0</span>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- Live Log Stream -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <span>Live Stdout/Stderr Log Stream</span>
+              <span id="streamStatusBadge" class="badge badge-blue">SSE Active</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="clearLogs()">Clear</button>
+              <button id="toggleScrollBtn" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="toggleAutoScroll()">Pause Scroll</button>
+            </div>
+          </div>
+          <div id="terminalBox" class="terminal-box">
+            <div style="color: #64748b; font-style: italic;">Connecting to /api/observer/stream SSE channel...</div>
+          </div>
+        </div>
+
+        <!-- Observer Events & HTTP Probes -->
+        <div style="display: flex; flex-direction: column; gap: 20px;">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Detected Incident Events (Deduplicated)</div>
+              <span id="eventsCountBadge" class="badge badge-purple">0 Events</span>
+            </div>
+            <div style="max-height: 200px; overflow-y: auto;">
+              <table id="eventsTable">
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Signature</th>
+                    <th>Summary</th>
+                    <th>Count</th>
+                    <th>Time</th>
+                  </tr>
+                </thead>
+                <tbody id="eventsTableBody">
+                  <tr><td colspan="5" style="text-align: center; color: #64748b;">No events recorded yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">HTTP Probe Endpoints Status</div>
+            </div>
+            <table id="probesTable">
+              <thead>
+                <tr>
+                  <th>URL</th>
+                  <th>Status</th>
+                  <th>Latency</th>
+                  <th>Classification</th>
+                </tr>
+              </thead>
+              <tbody id="probesTableBody">
+                <tr><td colspan="4" style="text-align: center; color: #64748b;">Loading probe status...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 2: ANALYST -->
+    <!-- ===================================================================== -->
+    <div id="tab-analyst" class="tab-content">
+      <div class="grid-3">
+        <div class="stat-card">
+          <span class="stat-label">ChromaDB Indexed Chunks</span>
+          <span class="stat-value" id="anaChunkCount">0</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Embedding Model (Offline)</span>
+          <span class="stat-value" style="font-size: 1.05rem;" id="anaEmbeddingModel">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Coder LLM (< 3B Local)</span>
+          <span class="stat-value" style="font-size: 1.05rem;" id="anaLlmModel">-</span>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- Top-k Semantic Search -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Free-Text Semantic Code Retrieval (RAG)</div>
+            <span class="badge badge-blue">Top-K</span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <input id="retrievalQuery" type="text" class="form-input" placeholder="e.g. crash division by zero in route..." />
+            <button class="btn btn-primary" onclick="performSearch()">Search</button>
+          </div>
+          <div id="searchResults" style="display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow-y: auto;">
+            <div style="color: #64748b; font-size: 0.85rem; text-align: center; padding: 30px;">
+              Enter a search query to inspect AST code chunks retrieved by ChromaDB.
+            </div>
+          </div>
+        </div>
+
+        <!-- Structured Diagnosis Tester -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Structured Crash Diagnosis (Ollama JSON)</div>
+            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="loadLatestCrashLog()">Insert Latest Error</button>
+          </div>
+          <textarea id="diagLogExcerpt" class="form-input" style="height: 140px; font-family: var(--font-mono); font-size: 0.75rem;" placeholder="Paste traceback / error log excerpt here..."></textarea>
+          <div style="display: flex; justify-content: flex-end;">
+            <button id="diagnoseBtn" class="btn btn-primary" onclick="requestDiagnosis()">Generate Diagnosis</button>
+          </div>
+          <div id="diagnosisOutput" style="display: flex; flex-direction: column; gap: 10px; font-size: 0.85rem;">
+            <div style="color: #64748b; text-align: center; padding: 20px;">
+              No diagnosis requested yet.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 3: WISDOM LOOP -->
+    <!-- ===================================================================== -->
+    <div id="tab-loop" class="tab-content">
+      <!-- Safety Guardrails & Dynamic Controls -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Wisdom Loop Safety Guardrails (iow.config.yml)</div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn btn-danger" onclick="triggerManualRollback()">Emergency Git Rollback</button>
+            <button class="btn btn-primary" onclick="triggerManualHeal()">⚡ Trigger Heal Now</button>
+          </div>
+        </div>
+        <div class="grid-4" style="margin-top: 6px;">
+          <div class="stat-card">
+            <span class="stat-label">Single-Flight</span>
+            <span class="stat-value" id="sfActiveVal">IDLE</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Hourly Rate Limit</span>
+            <span class="stat-value" id="hourlyRateVal">0 / 5</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Process Hard Cap</span>
+            <span class="stat-value" id="hardCapVal">0 / 20</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Kill Switch</span>
+            <span class="stat-value" id="killSwitchVal" style="color: #34d399;">OFF</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Heal History Stream -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Autonomous Heal History & Attempt Log</div>
+          <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLoopHistory()">Refresh</button>
+        </div>
+        <div id="cycleHistoryList" style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="text-align: center; color: #64748b; padding: 40px;">No heal cycles recorded yet. Trigger a crash to observe healing!</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // Tab switching
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      document.querySelector(`button[onclick="switchTab('${tabName}')"]`).classList.add('active');
+      document.getElementById(`tab-${tabName}`).classList.add('active');
+    }
+
+    // State
+    let autoScroll = true;
+    let sseSource = null;
+    let latestErrorExcerpt = "";
+
+    function toggleAutoScroll() {
+      autoScroll = !autoScroll;
+      document.getElementById('toggleScrollBtn').textContent = autoScroll ? "Pause Scroll" : "Resume Scroll";
+    }
+
+    function clearLogs() {
+      document.getElementById('terminalBox').innerHTML = "";
+    }
+
+    // SSE Log & Event Stream
+    function initSSE() {
+      if (sseSource) {
+        sseSource.close();
+      }
+      sseSource = new EventSource('/api/observer/stream');
+      const term = document.getElementById('terminalBox');
+      const streamBadge = document.getElementById('streamStatusBadge');
+
+      sseSource.onopen = () => {
+        streamBadge.className = "badge badge-green";
+        streamBadge.textContent = "SSE Connected";
+      };
+
+      sseSource.onerror = () => {
+        streamBadge.className = "badge badge-red";
+        streamBadge.textContent = "Reconnecting...";
+      };
+
+      sseSource.addEventListener('log', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          const line = document.createElement('div');
+          line.className = `terminal-line ${data.is_error ? 'error' : ''}`;
+
+          if (data.is_error) {
+            latestErrorExcerpt += data.line + "\n";
+          }
+
+          const ts = new Date(data.timestamp * 1000).toLocaleTimeString();
+          line.innerHTML = `<span class="terminal-ts">[${ts}]</span><span>${escapeHtml(data.line)}</span>`;
+          term.appendChild(line);
+
+          if (autoScroll) {
+            term.scrollTop = term.scrollHeight;
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      });
+
+      sseSource.addEventListener('event', (e) => {
+        refreshOverview();
+        refreshEvents();
+      });
+    }
+
+    function escapeHtml(str) {
+      return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // Refresh Overview periodically
+    async function refreshOverview() {
+      try {
+        const res = await fetch('/api/overview');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Header status
+        const tStatus = data.target.status || "unknown";
+        const targetBadge = document.getElementById('targetStatusBadge');
+        const targetText = document.getElementById('targetStatusText');
+
+        if (tStatus === "running" && data.target.http_healthy) {
+          targetBadge.className = "badge badge-green";
+          targetText.textContent = "TARGET: HEALTHY";
+        } else if (data.target.is_crash || tStatus === "restarting" || tStatus === "exited") {
+          targetBadge.className = "badge badge-red";
+          targetText.textContent = `TARGET: ${tStatus.toUpperCase()}`;
+        } else {
+          targetBadge.className = "badge badge-yellow";
+          targetText.textContent = `TARGET: ${tStatus.toUpperCase()}`;
+        }
+
+        // Git badge
+        document.getElementById('gitBranchText').textContent = data.wisdom_loop.git_branch || "unknown";
+        const headSha = data.wisdom_loop.git_head ? `(${data.wisdom_loop.git_head.slice(0, 7)})` : "";
+        document.getElementById('gitHeadText').textContent = headSha;
+
+        // Loop active badge
+        const loopBadge = document.getElementById('loopStatusBadge');
+        const loopText = document.getElementById('loopStatusText');
+        if (data.wisdom_loop.active) {
+          loopBadge.className = "badge badge-yellow";
+          loopText.textContent = "HEALING IN PROGRESS";
+        } else {
+          loopBadge.className = "badge badge-green";
+          loopText.textContent = data.orchestrator.auto_heal_enabled ? "AUTO-HEAL ACTIVE" : "AUTO-HEAL PAUSED";
+        }
+
+        // Tab 1 stats
+        document.getElementById('obsContainerName').textContent = data.target.container_name;
+        document.getElementById('obsContainerState').textContent = tStatus;
+        document.getElementById('obsHttpState').textContent = data.target.http_healthy ? "200 OK" : "Degraded";
+        document.getElementById('obsRestartCount').textContent = data.target.restart_count || 0;
+
+        // Tab 2 stats
+        document.getElementById('anaChunkCount').textContent = data.analyst.chunks_count || 0;
+        document.getElementById('anaEmbeddingModel').textContent = data.analyst.embedding_model;
+        document.getElementById('anaLlmModel').textContent = data.analyst.llm_model;
+
+        // Tab 3 Safety stats
+        const sf = data.wisdom_loop.safety || {};
+        document.getElementById('sfActiveVal').textContent = sf.single_flight_active ? "RUNNING" : "IDLE";
+        document.getElementById('sfActiveVal').style.color = sf.single_flight_active ? "#fbbf24" : "#34d399";
+        document.getElementById('hourlyRateVal').textContent = `${sf.hourly_heal_count || 0} / ${(sf.config || {}).rate_limit_per_hour || 5}`;
+        document.getElementById('hardCapVal').textContent = `${sf.lifetime_heal_count || 0} / ${(sf.config || {}).hard_cap || 20}`;
+        const ks = (sf.config || {}).kill_switch;
+        document.getElementById('killSwitchVal').textContent = ks ? "ACTIVE (BLOCKED)" : "OFF";
+        document.getElementById('killSwitchVal').style.color = ks ? "#f87171" : "#34d399";
+
+        // Render probes table
+        const pTable = document.getElementById('probesTableBody');
+        const probeEntries = Object.entries(data.target.latest_probes || {});
+        if (probeEntries.length > 0) {
+          pTable.innerHTML = probeEntries.map(([url, pr]) => `
+            <tr>
+              <td><strong>${escapeHtml(url)}</strong></td>
+              <td><span class="badge ${pr.is_healthy ? 'badge-green' : 'badge-red'}">${pr.status_code || 'CONN_ERR'}</span></td>
+              <td>${pr.response_time_ms} ms</td>
+              <td>${pr.is_crash ? '<span style="color: #f87171;">Hard Crash</span>' : (pr.is_suggestion ? '<span style="color: #fbbf24;">Soft Suggestion</span>' : '<span style="color: #34d399;">Healthy</span>')}</td>
+            </tr>
+          `).join('');
+        }
+      } catch (err) {
+        console.error("Failed to fetch overview:", err);
+      }
+    }
+
+    // Refresh events table
+    async function refreshEvents() {
+      try {
+        const res = await fetch('/api/observer/events');
+        if (!res.ok) return;
+        const events = await res.json();
+        document.getElementById('eventsCountBadge').textContent = `${events.length} Events`;
+        const tbody = document.getElementById('eventsTableBody');
+        if (events.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #64748b;">No events recorded yet.</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = events.slice(0, 8).map(ev => `
+          <tr>
+            <td><span class="badge ${ev.event_type === 'crash' ? 'badge-red' : 'badge-yellow'}">${ev.event_type}</span></td>
+            <td><code style="font-size: 0.75rem; color: #38bdf8;">${ev.signature.slice(0, 8)}</code></td>
+            <td>${escapeHtml(ev.summary)}</td>
+            <td><strong>x${ev.count}</strong></td>
+            <td style="color: #64748b;">${new Date(ev.timestamp * 1000).toLocaleTimeString()}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error("Failed to fetch events:", err);
+      }
+    }
+
+    // Free-text semantic search
+    async function performSearch() {
+      const query = document.getElementById('retrievalQuery').value.trim();
+      if (!query) return;
+      const resBox = document.getElementById('searchResults');
+      resBox.innerHTML = `<div style="text-align: center; color: #38bdf8;">Retrieving top-k chunks...</div>`;
+
+      try {
+        const res = await fetch('/api/analyst/retrieve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: query, top_k: 3 })
+        });
+        const data = await res.json();
+        if (!data.chunks || data.chunks.length === 0) {
+          resBox.innerHTML = `<div style="text-align: center; color: #64748b;">No matching chunks found.</div>`;
+          return;
+        }
+
+        resBox.innerHTML = data.chunks.map((c, i) => `
+          <div style="background: #090f1e; border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <strong style="color: #38bdf8;">${escapeHtml(c.file_path)}</strong>
+                <span style="color: #94a3b8; font-size: 0.75rem;">(Symbol: ${escapeHtml(c.symbol_name || 'module')})</span>
+              </div>
+              <span class="badge badge-blue">Score: ${typeof c.score === 'number' ? c.score.toFixed(3) : 'N/A'}</span>
+            </div>
+            <pre class="code-preview">Lines ${c.start_line}-${c.end_line}\n${escapeHtml(c.content)}</pre>
+          </div>
+        `).join('');
+      } catch (err) {
+        resBox.innerHTML = `<div style="color: #f87171;">Search error: ${err}</div>`;
+      }
+    }
+
+    // Diagnostic trigger
+    function loadLatestCrashLog() {
+      if (latestErrorExcerpt) {
+        document.getElementById('diagLogExcerpt').value = latestErrorExcerpt.trim();
+      } else {
+        document.getElementById('diagLogExcerpt').value = "Traceback (most recent call last):\n  File \"demo_app/app.py\", line 45, in crash_me\n    val = 1 / 0\nZeroDivisionError: division by zero";
+      }
+    }
+
+    async function requestDiagnosis() {
+      const excerpt = document.getElementById('diagLogExcerpt').value.trim();
+      if (!excerpt) return;
+      const btn = document.getElementById('diagnoseBtn');
+      const out = document.getElementById('diagnosisOutput');
+
+      btn.disabled = true;
+      btn.textContent = "Diagnosing with LLM...";
+      out.innerHTML = `<div style="color: #38bdf8; text-align: center;">Running Ollama structured diagnosis (< 3B)...</div>`;
+
+      try {
+        const res = await fetch('/api/analyst/diagnose', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ log_excerpt: excerpt, top_k: 3 })
+        });
+        const data = await res.json();
+        out.innerHTML = `
+          <div style="background: #090f1e; border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; justify-content: space-between;">
+              <strong style="color: #34d399;">Diagnosis Result</strong>
+              <span class="badge ${data.success ? 'badge-green' : 'badge-red'}">${data.success ? 'Success' : 'Failed'}</span>
+            </div>
+            <p><strong>Summary:</strong> ${escapeHtml(data.summary)}</p>
+            <p><strong>Suspect Files:</strong> ${data.files && data.files.length ? data.files.map(f => `<code style="color: #38bdf8;">${escapeHtml(f)}</code>`).join(', ') : 'None'}</p>
+          </div>
+        `;
+      } catch (err) {
+        out.innerHTML = `<div style="color: #f87171;">Diagnosis failed: ${err}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Generate Diagnosis";
+      }
+    }
+
+    // Wisdom Loop actions
+    async function triggerManualHeal() {
+      if (!confirm("Start an autonomous Wisdom Loop heal cycle now?")) return;
+      try {
+        const res = await fetch('/api/loop/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ log_excerpt: latestErrorExcerpt, run_async: true })
+        });
+        const data = await res.json();
+        if (data.status === "refused") {
+          alert("Heal cycle refused by safety bounds:\n" + data.reason);
+        } else {
+          alert("Heal cycle accepted and running in background!");
+        }
+        refreshLoopHistory();
+      } catch (err) {
+        alert("Failed to trigger heal: " + err);
+      }
+    }
+
+    async function triggerManualRollback() {
+      if (!confirm("EMERGENCY ROLLBACK: Revert git working tree to pre-loop revision and restart target?")) return;
+      try {
+        const res = await fetch('/api/loop/rollback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        alert(`Rollback completed!\nRestored revision: ${data.target_revision}\nContainer restarted: ${data.container_restarted}`);
+        refreshOverview();
+        refreshLoopHistory();
+      } catch (err) {
+        alert("Rollback failed: " + err);
+      }
+    }
+
+    async function refreshLoopHistory() {
+      try {
+        const res = await fetch('/api/loop/history?limit=10');
+        if (!res.ok) return;
+        const history = await res.json();
+        const container = document.getElementById('cycleHistoryList');
+
+        if (!history || history.length === 0) {
+          container.innerHTML = `<div style="text-align: center; color: #64748b; padding: 40px;">No heal cycles recorded yet. Trigger a crash to observe healing!</div>`;
+          return;
+        }
+
+        container.innerHTML = history.map((c, i) => {
+          const statusBadgeClass = c.status === 'healed' ? 'badge-green' : (c.status === 'rolled_back' ? 'badge-red' : 'badge-yellow');
+          const startTime = new Date(c.start_time * 1000).toLocaleTimeString();
+          const attemptsHtml = (c.attempts || []).map(a => `
+            <div class="attempt-box ${a.verification && a.verification.healed ? '' : 'failed'}">
+              <div style="display: flex; justify-content: space-between; font-weight: 600;">
+                <span>Attempt #${a.attempt_number}</span>
+                <span class="badge ${a.verification && a.verification.healed ? 'badge-green' : 'badge-red'}">
+                  ${a.verification && a.verification.healed ? 'VERIFIED HEALED' : 'UNVERIFIED'}
+                </span>
+              </div>
+              <div><strong>Diagnosis:</strong> ${(a.diagnosis || {}).summary || 'N/A'}</div>
+              <div><strong>Sanity Check:</strong> ${(a.sanity || {}).passed ? 'Passed (Bounds verified)' : 'Failed: ' + ((a.sanity || {}).reasons || []).join(', ')}</div>
+              <div><strong>Git Commit:</strong> <code style="color: #38bdf8;">${(a.commit_hash || 'none').slice(0, 8)}</code></div>
+              ${a.patch && a.patch.files ? `
+                <div style="margin-top: 4px;"><strong>Applied Patch Files (${a.patch.files.length}):</strong></div>
+                ${a.patch.files.map(pf => `<pre class="code-preview"># ${escapeHtml(pf.path)} [${pf.op}]\n${escapeHtml(pf.content)}</pre>`).join('')}
+              ` : ''}
+            </div>
+          `).join('');
+
+          return `
+            <div class="cycle-card">
+              <div class="cycle-header" onclick="toggleCycleAccordion(${i})">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <span class="badge ${statusBadgeClass}">${c.status.toUpperCase()}</span>
+                  <strong>Cycle [${c.cycle_id}]</strong>
+                  <span style="color: #64748b; font-size: 0.8rem;">Started: ${startTime}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <span style="font-size: 0.8rem; color: #94a3b8;">${(c.attempts || []).length} attempt(s)</span>
+                  <span style="font-size: 0.8rem; color: #38bdf8;">Pre-loop: ${c.pre_loop_hash.slice(0, 7)}</span>
+                </div>
+              </div>
+              <div id="cycle-body-${i}" class="cycle-body">
+                <div><strong>Initial Crash:</strong> ${escapeHtml((c.initial_crash || {}).summary || 'Unknown')}</div>
+                <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 6px;">
+                  ${attemptsHtml || '<div style="color: #64748b;">No attempts recorded.</div>'}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (err) {
+        console.error("Failed to load history:", err);
+      }
+    }
+
+    function toggleCycleAccordion(idx) {
+      const body = document.getElementById(`cycle-body-${idx}`);
+      if (body) {
+        body.classList.toggle('open');
+      }
+    }
+
+    // Startup timers
+    window.addEventListener('DOMContentLoaded', () => {
+      initSSE();
+      refreshOverview();
+      refreshEvents();
+      refreshLoopHistory();
+
+      // Poll overview every 3 seconds
+      setInterval(() => {
+        refreshOverview();
+      }, 3000);
+    });
+  </script>
+</body>
+</html>
+
