@@ -827,7 +827,7 @@
           <div class="card-title">Wisdom Loop Safety Guardrails (iow.config.yml)</div>
           <div style="display: flex; gap: 10px;">
             <button class="btn btn-danger" onclick="triggerManualRollback()">Emergency Git Rollback</button>
-            <button class="btn btn-primary" onclick="triggerManualHeal()">⚡ Trigger Heal Now</button>
+            <button class="btn btn-primary" onclick="triggerManualHeal()">Trigger Heal Now</button>
           </div>
         </div>
         <div class="grid-4" style="margin-top: 6px;">
@@ -930,6 +930,20 @@
         <div class="card-header">
           <div class="card-title">Human-in-the-Loop Pull Requests & Review Artifacts</div>
           <span id="prStatusBadge" class="badge badge-blue">PR Mode Available</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px;">
+          <div style="font-size: 0.85rem; color: #94a3b8; line-height: 1.45;">
+            <strong style="color: #cbd5e1;">How to open a Gitea PR from the UI:</strong>
+            turn on <em>Human-in-the-Loop</em>, then click <em>Open Gitea Pull Request</em>
+            (Evaluate Consensus alone never creates a PR).
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+            <button id="hitlToggleBtn" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;"
+                    onclick="toggleHitlFlag()">Human-in-the-Loop: OFF</button>
+            <button id="openPrBtn" class="btn btn-primary" style="padding: 6px 14px; font-size: 0.8rem;"
+                    onclick="openGiteaPullRequest()">Open Gitea Pull Request</button>
+            <span id="hitlHint" style="font-size: 0.75rem; color: #64748b;"></span>
+          </div>
         </div>
         <div id="prListContainer" class="iow-scroll" style="display: flex; flex-direction: column; gap: 12px; max-height: 480px; overflow-y: auto;">
           <div style="color: #64748b; text-align: center; padding: 30px;">No pending review Pull Requests at this time.</div>
@@ -1611,6 +1625,7 @@
         document.getElementById('bonusSympCount').textContent = clf.total_learned_symptoms || 0;
         document.getElementById('bonusBypassCount').textContent = clf.total_fast_path_bypasses || 0;
         document.getElementById('bonusPendingPRs').textContent = (data.pull_requests || {}).pending || 0;
+        updateHitlToggleUi((data.flags || {}).human_in_the_loop === true);
 
         // Populate learned symptoms table
         const tbody = document.getElementById('classifierTableBody');
@@ -1728,6 +1743,103 @@ ZeroDivisionError: division by zero`;
       } finally {
         btn.disabled = false;
         btn.textContent = "Evaluate Consensus (2x LLM)";
+      }
+    }
+
+
+    function updateHitlToggleUi(enabled) {
+      const btn = document.getElementById('hitlToggleBtn');
+      const hint = document.getElementById('hitlHint');
+      if (!btn) return;
+      btn.textContent = enabled ? 'Human-in-the-Loop: ON' : 'Human-in-the-Loop: OFF';
+      btn.className = enabled ? 'btn btn-primary' : 'btn btn-secondary';
+      btn.style.padding = '6px 12px';
+      btn.style.fontSize = '0.8rem';
+      if (hint) {
+        hint.textContent = enabled
+          ? 'Next heal opens a Gitea PR instead of auto-applying.'
+          : 'OFF = auto-heal unless Second Opinion diverges.';
+      }
+    }
+
+    async function toggleHitlFlag() {
+      try {
+        const res = await fetch('/api/bonus/flags/toggle?flag_name=human_in_the_loop', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'toggle failed');
+        updateHitlToggleUi(!!(data.flags || {}).human_in_the_loop);
+        await showAlert(
+          (data.flags || {}).human_in_the_loop
+            ? 'Human-in-the-Loop ON. Click "Open Gitea Pull Request" (or Loop → Trigger Heal).'
+            : 'Human-in-the-Loop OFF.',
+          'info',
+          'HITL'
+        );
+      } catch (err) {
+        await showAlert('Failed to toggle HITL: ' + err, 'error', 'HITL');
+      }
+    }
+
+    async function openGiteaPullRequest() {
+      const btn = document.getElementById('openPrBtn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Opening PR...'; }
+      try {
+        // Force HITL on (prefer /flags/set; fall back to toggle if old server)
+        let res = await fetch('/api/bonus/flags/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ human_in_the_loop: true })
+        });
+        let data = {};
+        try { data = await res.json(); } catch (_) { data = {}; }
+        if (res.status === 404) {
+          const st = await fetch('/api/bonus/status').then(r => r.json());
+          if (!(st.flags || {}).human_in_the_loop) {
+            res = await fetch('/api/bonus/flags/toggle?flag_name=human_in_the_loop', { method: 'POST' });
+            data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'failed to enable HITL');
+          }
+        } else if (!res.ok) {
+          throw new Error(data.detail || 'failed to enable HITL');
+        }
+        updateHitlToggleUi(true);
+
+        const sampleLog = `Traceback (most recent call last):
+  File "demo_app/app.py", line 45, in crash_me
+    val = 1 / 0
+ZeroDivisionError: division by zero`;
+
+        res = await fetch('/api/loop/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            log_excerpt: sampleLog,
+            summary: 'UI HITL: open Gitea review PR',
+            run_async: true
+          })
+        });
+        data = await res.json();
+        if (data.status === 'refused') {
+          await showAlert('Heal refused by safety bounds:\n' + data.reason, 'warn', 'Safety Bounds');
+          return;
+        }
+        await showAlert(
+          'HITL heal started. Wait a few seconds, then the PR list below will refresh. Also check Gitea at http://localhost:3000',
+          'success',
+          'Gitea PR'
+        );
+        // Poll PR list a few times while LLM works
+        for (let i = 0; i < 8; i++) {
+          await new Promise(r => setTimeout(r, 2500));
+          await refreshBonus();
+          const prs = await fetch('/api/bonus/prs').then(r => r.json()).catch(() => []);
+          if (Array.isArray(prs) && prs.some(pr => pr.status === 'pending_review')) break;
+        }
+        await refreshBonus();
+      } catch (err) {
+        await showAlert('Failed to open Gitea PR: ' + err, 'error', 'Gitea PR');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Open Gitea Pull Request'; }
       }
     }
 

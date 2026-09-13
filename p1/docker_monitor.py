@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import logging
+import threading
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, asdict
 
@@ -46,6 +47,7 @@ class DockerMonitor:
         self.container_name = container_name
         self.base_url = base_url or "unix:///var/run/docker.sock"
         self._client: Optional[docker.DockerClient] = None
+        self._client_lock = threading.Lock()
         self._last_state: Optional[ContainerState] = None
 
     def _get_client(self) -> Optional[docker.DockerClient]:
@@ -54,34 +56,35 @@ class DockerMonitor:
             logger.error("The 'docker' python library is not installed.")
             return None
 
-        if self._client is not None:
-            try:
-                self._client.ping()
-                return self._client
-            except Exception:
-                logger.warning("Docker daemon ping failed. Attempting to reconnect...")
-                self._client = None
+        with self._client_lock:
+            if self._client is not None:
+                try:
+                    self._client.ping()
+                    return self._client
+                except Exception:
+                    logger.warning("Docker daemon ping failed. Attempting to reconnect...")
+                    self._client = None
 
-        try:
-            # Prefer env (DOCKER_HOST) then unix socket - campus users often lack
-            # docker-group access to /var/run/docker.sock from the Python client.
             try:
-                self._client = docker.from_env()
-                self._client.ping()
-            except Exception:
-                self._client = docker.DockerClient(base_url=self.base_url)
-                self._client.ping()
-            logger.info(f"Connected to Docker daemon at {self.base_url}")
-            return self._client
-        except Exception as e:
-            logger.warning(
-                "Unable to connect to Docker daemon (%s). "
-                "Is the process allowed to access the socket "
-                "(user in 'docker' group), or is the daemon running?",
-                e,
-            )
-            self._client = None
-            return None
+                # Prefer env (DOCKER_HOST) then unix socket - campus users often lack
+                # docker-group access to /var/run/docker.sock from the Python client.
+                try:
+                    self._client = docker.from_env()
+                    self._client.ping()
+                except Exception:
+                    self._client = docker.DockerClient(base_url=self.base_url)
+                    self._client.ping()
+                logger.info(f"Connected to Docker daemon at {self.base_url}")
+                return self._client
+            except Exception as e:
+                logger.warning(
+                    "Unable to connect to Docker daemon (%s). "
+                    "Is the process allowed to access the socket "
+                    "(user in 'docker' group), or is the daemon running?",
+                    e,
+                )
+                self._client = None
+                return None
 
     def inspect(self) -> ContainerState:
         """Inspects the target container and determines if a crash condition exists.

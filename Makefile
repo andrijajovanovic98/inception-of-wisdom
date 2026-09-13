@@ -49,10 +49,14 @@ export OLLAMA_MODELS     := $(OLLAMA_DIR)
 export OLLAMA_HOST
 export DOCKER_CONFIG     := $(DOCKER_CONFIG_DIR)
 
-.PHONY: all up down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus gitea \
+.PHONY: all up up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus gitea \
 	break heal rollback status logs setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
-	ensure-embed ensure-lint-tools ensure-target ensure-gitea flake mypy lint
+	ensure-embed ensure-lint-tools ensure-target ensure-gitea ensure-dashboard-port \
+	flake mypy lint
+
+# Infra for host make bonus/p1/p2/p3/run. Containerized dashboard is opt-in (up-agent).
+DOCKER_INFRA := demo_app gitea
 
 all: help
 
@@ -60,12 +64,12 @@ help:
 	@echo "================================================================================"
 	@echo "                    INCEPTION OF WISDOM (IoW) - COMMANDS                        "
 	@echo "================================================================================"
-	@echo " make up               - build and launch containerized IoW via Docker Compose"
-	@echo "                         (demo_app + agent + Gitea at http://localhost:3000)"
+	@echo " make up               - Docker infra: demo_app + gitea (host dashboard via make bonus)"
+	@echo " make up-agent         - also start iow_agent dashboard in Docker on :8000"
 	@echo " make gitea            - ensure Gitea forge ready (wait + bootstrap, fail on error)"
-	@echo " make bonus            - bonus dashboard (auto-starts Gitea for remote PRs)"
+	@echo " make bonus            - host dashboard on :8000 (Gitea + target; does not need iow_agent)"
 	@echo " make down             - stop and tear down Docker containers"
-	@echo " make docker-restart   - rebuild images and recreate IoW containers"
+	@echo " make docker-restart   - recreate demo_app + gitea (leaves :8000 free for make bonus)"
 	@echo " make docker-clean     - remove IoW containers/network (keep images)"
 	@echo " make docker-fclean    - remove IoW containers/network/volumes/images"
 	@echo " make setup            - prepare $(IOW_DIR) (venv, pip, embeddings, ollama)"
@@ -78,10 +82,25 @@ help:
 	@echo "================================================================================"
 
 up: ensure-dirs
-	@echo "[*] Launching containerized IoW stack (demo_app + gitea + agent)..."
+	@echo "[*] Launching IoW Docker infra ($(DOCKER_INFRA))..."
 	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR) $(IOW_DIR)/gitea 2>/dev/null || true
-	@docker compose up --build -d 2>/dev/null || docker-compose up --build -d
-	@echo "[+] Target: http://localhost:5001  Dashboard: http://localhost:8000  Gitea: http://localhost:3000"
+	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
+	@# Keep :8000 free for host make bonus/p1/p2/p3/run (same app as iow_agent)
+	@docker compose stop agent >/dev/null 2>&1 || docker-compose stop agent >/dev/null 2>&1 || true
+	@docker stop iow_agent >/dev/null 2>&1 || true
+	@docker compose up --build -d $(DOCKER_INFRA) 2>/dev/null \
+		|| docker-compose up --build -d $(DOCKER_INFRA)
+	@$(MAKE) ensure-gitea
+	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
+	@echo "[+] Target: http://localhost:5001  Gitea: http://localhost:3000"
+	@echo "    Dashboard: make bonus | p1 | p2 | p3 | run  → http://127.0.0.1:$(PORT)"
+	@echo "    (optional Docker dashboard: make up-agent)"
+
+up-agent: up
+	@echo "[*] Starting containerized dashboard (iow_agent on :$(PORT))..."
+	@echo "[!] Stop host make bonus/p1/p2/p3/run first if it is using :$(PORT)"
+	@docker compose up --build -d agent 2>/dev/null || docker-compose up --build -d agent
+	@echo "[+] iow_agent → http://127.0.0.1:$(PORT)"
 
 down:
 	@docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
@@ -108,7 +127,7 @@ ensure-gitea: ensure-dirs
 		i=$$((i + 1)); \
 		sleep 2; \
 		if [ $$i -ge 60 ]; then \
-			echo "[!] Gitea did not become ready in time — logs:"; \
+			echo "[!] Gitea did not become ready in time - logs:"; \
 			docker logs iow_gitea 2>&1 | tail -n 40 || true; \
 			exit 1; \
 		fi; \
@@ -125,20 +144,20 @@ ensure-gitea: ensure-dirs
 		fi; \
 	fi; \
 	if [ "$$need_init" = "1" ]; then \
-		echo "[*] Bootstrapping Gitea admin/token/repo via gitea-init..."; \
+		echo "[*] Bootstrapping Gitea admin/token/repo via gitea-init (run --rm)..."; \
 		docker rm -f iow_gitea_init >/dev/null 2>&1 || true; \
-		if docker compose run --rm --no-deps gitea-init; then \
+		if docker compose --profile bootstrap run --rm --no-deps gitea-init; then \
 			true; \
-		elif docker-compose run --rm --no-deps gitea-init; then \
+		elif docker-compose --profile bootstrap run --rm --no-deps gitea-init; then \
 			true; \
 		else \
 			echo "[!] gitea-init FAILED"; \
-			docker logs iow_gitea_init 2>&1 | tail -n 50 || true; \
 			exit 1; \
 		fi; \
 	else \
 		echo "[*] Gitea credentials already valid: $(IOW_DIR)/gitea/gitea.env"; \
 	fi
+	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
 	@if [ ! -f "$(IOW_DIR)/gitea/gitea.env" ]; then \
 		echo "[!] Missing $(IOW_DIR)/gitea/gitea.env after bootstrap"; \
 		exit 1; \
@@ -150,9 +169,16 @@ gitea: ensure-gitea
 
 docker-restart: ensure-dirs
 	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
-	@docker compose up --build -d --force-recreate 2>/dev/null \
-		|| docker-compose up --build -d --force-recreate
-	@echo "[+] docker-restart done (rebuild + recreate IoW containers)"
+	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
+	@# Recreate infra only — do not bring back iow_agent (host make bonus owns :8000)
+	@docker compose stop agent >/dev/null 2>&1 || docker-compose stop agent >/dev/null 2>&1 || true
+	@docker stop iow_agent >/dev/null 2>&1 || true
+	@docker compose up --build -d --force-recreate $(DOCKER_INFRA) 2>/dev/null \
+		|| docker-compose up --build -d --force-recreate $(DOCKER_INFRA)
+	@$(MAKE) ensure-gitea
+	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
+	@echo "[+] docker-restart done (demo_app + gitea; :8000 free for make bonus)"
+	@echo "    Optional: make up-agent  if you want the dashboard inside Docker instead"
 
 # Soft Docker cleanup (IoW only): containers + project network, keep images.
 # Idempotent: missing Docker / Gitea / containers never fails the target.
@@ -363,6 +389,43 @@ lint: flake mypy
 
 UVICORN_OPTS := --host 127.0.0.1 --port $(PORT) --timeout-graceful-shutdown 0
 
+# Host make p1/p2/p3/bonus/run = dashboard on the host.
+# `make up` also runs the same dashboard inside iow_agent on :8000 — only one may own the port.
+# Stopping iow_agent is intentional; demo_app + gitea keep running.
+ensure-dashboard-port:
+	@bash -c 'set +e; \
+		PORT="$(PORT)"; \
+		if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then \
+			if docker ps --format "{{.Names}} {{.Ports}}" 2>/dev/null \
+				| grep -E "^iow_agent( |$$)" | grep -q "8000"; then \
+				echo "[*] Host dashboard mode: stop iow_agent (same app on :$$PORT; demo_app + gitea stay up)"; \
+				docker stop iow_agent >/dev/null 2>&1 || true; \
+			fi; \
+		fi; \
+		pgrep -af "uvicorn dashboard.app:app" 2>/dev/null | while read -r pid rest; do \
+			case "$$rest" in \
+				*"--port $$PORT"*|*"--port=$$PORT"*) \
+					echo "[*] Stopping leftover host uvicorn pid $$pid on :$$PORT"; \
+					kill "$$pid" 2>/dev/null || true; \
+					;; \
+			esac; \
+		done; \
+		i=0; \
+		while [ $$i -lt 20 ]; do \
+			if ! ss -ltn 2>/dev/null | grep -qE "[:.]$$PORT[[:space:]]"; then \
+				break; \
+			fi; \
+			i=$$((i + 1)); \
+			sleep 0.25; \
+		done; \
+		if ss -ltn 2>/dev/null | grep -qE "[:.]$$PORT[[:space:]]"; then \
+			echo "[!] Port $$PORT still in use after freeing IoW dashboard holders:"; \
+			ss -ltnp 2>/dev/null | grep -E "[:.]$$PORT[[:space:]]" || true; \
+			echo "[!] Stop the other process, or: docker stop iow_agent"; \
+			exit 1; \
+		fi; \
+		echo "[+] Host port $$PORT free for dashboard"'
+
 # Run uvicorn; treat Ctrl+C / SIGTERM as clean exit (no make "Interrupt" noise).
 define IOW_UVICORN
 	@bash -c 'set +e; \
@@ -374,30 +437,30 @@ define IOW_UVICORN
 		exit $$ec'
 endef
 
-run: ensure-ready ensure-ollama-quick ensure-target
+run: ensure-ready ensure-ollama-quick ensure-target ensure-dashboard-port
 	@echo "[*] Full stack - all tabs unlocked on :$(PORT) (target auto-started)"
 	@echo "    Dashboard: http://127.0.0.1:$(PORT)  Target: $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,full)
 
-p1: ensure-ready ensure-ollama-quick ensure-target
+p1: ensure-ready ensure-ollama-quick ensure-target ensure-dashboard-port
 	@echo "[*] Part 1 - Observer (Docker events & HTTP probes) on :$(PORT)"
 	@echo "    tabs: all visible - Observer unlocked (Analyst/Loop/Bonus locked)"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p1)
 
-p2: ensure-ready ensure-ollama-quick ensure-target
+p2: ensure-ready ensure-ollama-quick ensure-target ensure-dashboard-port
 	@echo "[*] Part 2 - Analyst (RAG retrieve & diagnose) on :$(PORT)"
 	@echo "    tabs: all visible - Observer + Analyst unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p2)
 
-p3: ensure-ready ensure-ollama-quick ensure-target
+p3: ensure-ready ensure-ollama-quick ensure-target ensure-dashboard-port
 	@echo "[*] Part 3 - Wisdom Loop (heal / rollback / safety) on :$(PORT)"
 	@echo "    tabs: all visible - Observer + Analyst + Loop unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p3)
 
-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea
+bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-dashboard-port
 	@echo "[*] Bonus Suite (classifier / consensus / Gitea PRs) on :$(PORT)"
 	@echo "    tabs: all visible - all unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"

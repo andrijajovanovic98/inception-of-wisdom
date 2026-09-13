@@ -64,7 +64,7 @@ class LogStreamer:
     def start(self) -> None:
         """Starts the background log streaming worker thread."""
         if self._worker_thread is not None and self._worker_thread.is_alive():
-            logger.warning("LogStreamer worker thread is already running.")
+            logger.debug("LogStreamer worker thread is already running.")
             return
 
         self._stop_event.clear()

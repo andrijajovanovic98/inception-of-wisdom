@@ -58,9 +58,11 @@ services:
       retries: 30
       start_period: 15s
 
+  # One-shot bootstrap only (make ensure-gitea / up / docker-restart via
+  # `compose run --rm`). Profile keeps it out of `compose up` so no red Exited container.
   gitea-init:
     image: gitea/gitea:1.22.6
-    container_name: iow_gitea_init
+    profiles: ["bootstrap"]
     restart: "no"
     depends_on:
       gitea:
@@ -118,8 +120,8 @@ services:
     depends_on:
       demo_app:
         condition: service_started
-      gitea-init:
-        condition: service_completed_successfully
+      gitea:
+        condition: service_healthy
 
 networks:
   iow-net:

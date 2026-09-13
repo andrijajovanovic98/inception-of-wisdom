@@ -210,7 +210,7 @@ class InceptionOrchestrator:
 
     def _on_pr_merged(self, pr_record) -> None:
         """Restart target container after a HITL PR is approved and merged."""
-        logger.info(f"PR [{pr_record.pr_id}] merged — restarting target container...")
+        logger.info(f"PR [{pr_record.pr_id}] merged - restarting target container...")
         try:
             self.docker_monitor.restart_target()
             logger.info("Target container restarted after PR merge.")
@@ -227,7 +227,7 @@ class InceptionOrchestrator:
     ) -> None:
         """Create a Gitea Pull Request instead of auto-applying the patch."""
         logger.info(
-            f"Human-in-the-Loop gate active for [{cycle_id}] — opening Gitea PR."
+            f"Human-in-the-Loop gate active for [{cycle_id}] - opening Gitea PR."
         )
         try:
             pr = self.pr_manager.create_pull_request(
@@ -238,7 +238,7 @@ class InceptionOrchestrator:
             )
             gitea_ref = f" Gitea #{pr.remote_pr_number}" if pr.remote_pr_number else ""
             logger.info(
-                f"HITL PR [{pr.pr_id}]{gitea_ref} created — awaiting human review."
+                f"HITL PR [{pr.pr_id}]{gitea_ref} created - awaiting human review."
             )
         except Exception as e:
             logger.error(f"Failed to create HITL PR for [{cycle_id}]: {e}")
@@ -267,21 +267,24 @@ class InceptionOrchestrator:
             daemon=True
         ).start()
 
-    def _run_autonomous_heal_thread(self, event: ObserverEvent) -> None:
-        """Worker thread for autonomous heal cycle."""
+    def run_heal_cycle(self, event: ObserverEvent, grace_period: float) -> None:
+        """HITL-aware heal used by observer thread and Loop API Trigger Heal."""
         sig = event.signature
-        grace_period = self.safety_manager.get_grace_period()
-        log_excerpt = event.details.get("log_excerpt", "")
+        log_excerpt = (
+            event.details.get("log_excerpt")
+            or event.details.get("context_excerpt")
+            or event.details.get("matched_line")
+            or event.summary
+            or ""
+        )
 
-        # Bonus: Check classifier for Fast Path bypass
         match = self.classifier.classify(log_excerpt, raw_signature=sig)
         if match.matched and match.cached_patch and bonus_flags.get("fast_path_classifier", True):
             logger.info(
-                f"🎯 BONUS FAST PATH: Symptom [{match.symptom_id}] matched "
+                f"BONUS FAST PATH: Symptom [{match.symptom_id}] matched "
                 "by Tiny Classifier! Applying cached patch."
             )
 
-        # Bonus: Second Opinion consensus gate
         consensus_diverged = False
         if bonus_flags.get("second_opinion_mandatory", True) and self.consensus_engine:
             try:
@@ -289,7 +292,7 @@ class InceptionOrchestrator:
                 if not report.consensus_reached:
                     consensus_diverged = True
                     logger.warning(
-                        f"Second Opinion DIVERGED for [{sig[:8]}] — routing to HITL PR."
+                        f"Second Opinion DIVERGED for [{sig[:8]}] - routing to HITL PR."
                     )
             except Exception as e:
                 logger.warning(f"Consensus evaluation failed: {e}")
@@ -297,7 +300,7 @@ class InceptionOrchestrator:
         hitl_required = bonus_flags.get("human_in_the_loop", False) or consensus_diverged
 
         if hitl_required:
-            cycle_id = sig[:8] + "-" + str(int(time.time()))
+            cycle_id = (sig[:8] if sig else "manual") + "-" + str(int(time.time()))
             try:
                 diagnosis = self.diagnostician.diagnose_crash(log_excerpt)
                 diag_summary = diagnosis.summary if diagnosis else "Unknown crash"
@@ -310,26 +313,27 @@ class InceptionOrchestrator:
                     self._propose_hitl_patch(
                         event, log_excerpt, diag_summary, patch_files, cycle_id
                     )
-                else:
-                    logger.warning("HITL gate active but patch generation failed; falling back to loop.")
-                    hitl_required = False
+                    return
+                logger.warning("HITL gate active but patch generation failed; falling back to loop.")
             except Exception as e:
                 logger.error(f"HITL patch proposal failed: {e}; falling back to Wisdom Loop.")
-                hitl_required = False
 
-        if hitl_required:
-            self.safety_manager.release_heal_slot(sig)
-            return
+        logger.info(f"Starting autonomous Wisdom Loop for crash signature [{sig[:8]}]...")
+        result = self.wisdom_loop.execute_heal(event, grace_period=grace_period)
+        logger.info(f"Wisdom Loop finished with status: {result.status.upper()}")
+        if result.status == "healed" and result.attempts:
+            last_att = result.attempts[-1]
+            if last_att.patch:
+                self.classifier.record_successful_heal(
+                    log_excerpt, last_att.patch, raw_signature=sig
+                )
 
-        logger.info(f"⚡ Starting autonomous Wisdom Loop for crash signature [{sig[:8]}]...")
+    def _run_autonomous_heal_thread(self, event: ObserverEvent) -> None:
+        """Worker thread for autonomous heal cycle."""
+        sig = event.signature
+        grace_period = self.safety_manager.get_grace_period()
         try:
-            result = self.wisdom_loop.execute_heal(event, grace_period=grace_period)
-            logger.info(f"Wisdom Loop finished with status: {result.status.upper()}")
-
-            if result.status == "healed" and result.attempts:
-                last_att = result.attempts[-1]
-                if last_att.patch:
-                    self.classifier.record_successful_heal(log_excerpt, last_att.patch, raw_signature=sig)
+            self.run_heal_cycle(event, grace_period)
         except Exception as e:
             logger.error(f"Unexpected error in autonomous heal thread: {e}")
         finally:
@@ -351,10 +355,8 @@ class InceptionOrchestrator:
         except Exception as e:
             logger.warning(f"Could not index codebase at startup: {e}")
 
-        # 2. Start Part 1 streaming and probes
+        # 2. Start Part 1 Observer (event_manager starts log_streamer + http_probe once)
         try:
-            self.log_streamer.start()
-            self.http_probe.start()
             self.event_manager.start()
             logger.info("Part 1 Observer services started successfully.")
         except Exception as e:
@@ -483,7 +485,8 @@ def create_app() -> FastAPI:
     loop_router = create_loop_router(
         wisdom_loop=orchestrator.wisdom_loop,
         safety_manager=orchestrator.safety_manager,
-        event_manager=orchestrator.event_manager
+        event_manager=orchestrator.event_manager,
+        heal_executor=orchestrator.run_heal_cycle,
     )
     if loop_router:
         app.include_router(loop_router)

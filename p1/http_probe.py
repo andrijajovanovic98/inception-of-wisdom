@@ -68,7 +68,7 @@ class HttpProbeManager:
     def start(self) -> None:
         """Starts the background HTTP probing thread."""
         if self._thread is not None and self._thread.is_alive():
-            logger.warning("HttpProbeManager worker is already running.")
+            logger.debug("HttpProbeManager worker is already running.")
             return
 
         self._stop_event.clear()
