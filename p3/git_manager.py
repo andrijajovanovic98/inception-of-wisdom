@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 3: Wisdom Loop
+Inception-of-Wisdom (IoW) - Part 3: Wisdom Loop
 Git Manager: Atomic Patch Application, iow/auto-heal Branching & Snapshot Rollback
 """
 
@@ -210,7 +210,7 @@ class GitManager:
             return False
 
         current_branch = self.get_current_branch()
-        # Never hard-reset main/master — that wipes local WIP outside heal attempts
+        # Never hard-reset main/master - that wipes local WIP outside heal attempts
         if current_branch not in (self.heal_branch,):
             logger.error(
                 f"Refusing rollback on branch '{current_branch}': "

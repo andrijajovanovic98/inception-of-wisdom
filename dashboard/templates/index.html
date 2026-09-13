@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Inception of Wisdom (IoW) — Autonomous Self-Healing Agent</title>
+  <title>Inception of Wisdom (IoW) - Autonomous Self-Healing Agent</title>
   <style>
     :root {
       --bg-dark: #090d16;
@@ -299,7 +299,7 @@
       gap: 8px;
     }
 
-    /* Terminal & Log Viewer — full-width monospace; long lines scroll horizontally */
+    /* Terminal & Log Viewer - full-width monospace; long lines scroll horizontally */
     .terminal-box {
       background: #060911;
       border: 1px solid #1a2338;
@@ -704,7 +704,7 @@
               <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" id="restartLogsBtn" title="Reattach Docker log follow (Shift+R)">Restart Stream</button>
               <button type="button" id="toggleScrollBtn" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" aria-pressed="true">Following</button>
             </div>
-            <p class="card-hint" id="followHint">Following: view sticks to newest lines as they arrive. Click to unfollow — lines still arrive, view stays put.</p>
+            <p class="card-hint" id="followHint">Following: view sticks to newest lines as they arrive. Click to unfollow - lines still arrive, view stays put.</p>
           </div>
           <div id="terminalBox" class="terminal-box">
             <div class="terminal-placeholder">Connecting to /events SSE channel...</div>
@@ -1116,7 +1116,7 @@
       document.body.setAttribute("data-iow-mode", mode);
     }
 
-    // Tab switching — locked tabs stay visible but do nothing
+    // Tab switching - locked tabs stay visible but do nothing
     function switchTab(tabName) {
       const mode = window.IOW_MODE || "full";
       const allowed = unlockedTabs(mode);
@@ -1135,7 +1135,7 @@
       }
     }
 
-    // State — autoScroll is shared for Observer logs in every mode (p1/p2/p3/bonus)
+    // State - autoScroll is shared for Observer logs in every mode (p1/p2/p3/bonus)
     let autoScroll = true;
     let sseSource = null;
     let latestErrorExcerpt = "";
@@ -1151,7 +1151,7 @@
       btn.classList.toggle("btn-secondary", !autoScroll);
       if (hint) {
         hint.textContent = autoScroll
-          ? "Following: view sticks to newest lines as they arrive. Click to unfollow — lines still arrive, view stays put."
+          ? "Following: view sticks to newest lines as they arrive. Click to unfollow - lines still arrive, view stays put."
           : "Not following: lines still arrive; view stays where you scrolled. Click Following to jump to latest and stick again.";
       }
     }
@@ -1192,7 +1192,7 @@
       if (isError) {
         latestErrorExcerpt += text + "\n";
       }
-      // Raw docker line only (already has timestamp/level columns) — keep monospace alignment
+      // Raw docker line only (already has timestamp/level columns) - keep monospace alignment
       line.textContent = text;
       term.appendChild(line);
       if (autoScroll) {
@@ -1213,7 +1213,7 @@
         if (logs.length === 0) {
           term.insertAdjacentHTML(
             'beforeend',
-            '<div class="terminal-placeholder" style="color:#64748b;font-style:italic;">SSE connected — waiting for container stdout/stderr…</div>'
+            '<div class="terminal-placeholder" style="color:#64748b;font-style:italic;">SSE connected - waiting for container stdout/stderr…</div>'
           );
           return;
         }
@@ -1224,7 +1224,7 @@
       }
     }
 
-    // SSE Log & Event Stream — eventually shows live docker logs from iow_demo_target
+    // SSE Log & Event Stream - eventually shows live docker logs from iow_demo_target
     function initSSE() {
       if (sseSource) {
         sseSource.close();

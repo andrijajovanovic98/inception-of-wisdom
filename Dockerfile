@@ -1,4 +1,4 @@
-# Inception-of-Wisdom (IoW) — Agent Service Dockerfile
+# Inception-of-Wisdom (IoW) - Agent Service Dockerfile
 # Campus/rootless Docker often rejects USER/chown (chown /dev/stdout: invalid argument).
 # Stay root in-container like IoC; host bind mounts + /tmp/iow handle permissions.
 FROM python:3.11-slim

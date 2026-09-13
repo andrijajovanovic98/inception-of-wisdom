@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Chapter VI: Bonus Part
+Inception-of-Wisdom (IoW) - Chapter VI: Bonus Part
 Second Opinion Diagnostician: Dual-Prompt Consensus Voting Engine
 Subject requirement: 'Add a second opinion mode where two prompts vote on the
 same diagnosis and only an agreement triggers the patch.'
@@ -177,7 +177,7 @@ class SecondOpinionEngine:
                 f"is the root cause location. Primary cause: {opinion_a.summary}"
             )
             confidence = 0.95 if files_a == files_b else 0.80
-            logger.info(f"✅ Consensus REACHED on files: {common_files} (confidence: {confidence})")
+            logger.info(f"[OK] Consensus REACHED on files: {common_files} (confidence: {confidence})")
 
             return ConsensusReport(
                 consensus_reached=True,
@@ -194,7 +194,7 @@ class SecondOpinionEngine:
                 f"Opinion A suggested {list(files_a)}, whereas Opinion B suggested {list(files_b)}. "
                 f"Blind patching aborted to prevent hallucinations."
             )
-            logger.warning(f"❌ Consensus FAILED: {consensus_summary}")
+            logger.warning(f"[KO] Consensus FAILED: {consensus_summary}")
 
             return ConsensusReport(
                 consensus_reached=False,

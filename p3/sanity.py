@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 3: Wisdom Loop
+Inception-of-Wisdom (IoW) - Part 3: Wisdom Loop
 Sanity Bounds: Pre-Disk Write Verification and Safety Guardrails
 """
 

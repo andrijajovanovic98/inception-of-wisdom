@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 1: Observer
+Inception-of-Wisdom (IoW) - Part 1: Observer
 HTTP Probe: Endpoint Health Monitoring (Hard Crash vs. Soft Suggestion)
 """
 
@@ -15,7 +15,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("p1.http_probe")
-# Probe GETs every few seconds — keep them out of the dashboard terminal
+# Probe GETs every few seconds - keep them out of the dashboard terminal
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 

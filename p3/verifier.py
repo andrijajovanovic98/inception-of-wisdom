@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 3: Wisdom Loop
+Inception-of-Wisdom (IoW) - Part 3: Wisdom Loop
 Verifier: Container Restart & Dynamic Grace Period Health Verification
 """
 

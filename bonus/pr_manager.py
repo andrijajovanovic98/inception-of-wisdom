@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Chapter VI: Bonus Part
+Inception-of-Wisdom (IoW) - Chapter VI: Bonus Part
 Pull Request & Human-in-the-Loop Review Manager
 Subject requirement: 'Open a Pull Request on a real remote (Gitea or local mirror)
 so a human can review the auto-heal before it lands.'

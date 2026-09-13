@@ -1,4 +1,4 @@
-# Inception-of-Wisdom (IoW) — Multi-Mode Automation & Campus Runtime under /tmp/iow
+# Inception-of-Wisdom (IoW) - Multi-Mode Automation & Campus Runtime under /tmp/iow
 # Usage:
 #   make up / down / docker-restart / docker-clean / docker-fclean
 #   make flake / mypy / lint
@@ -16,7 +16,7 @@ CHROMA_DIR   := $(IOW_DIR)/chroma_db
 OLLAMA_DIR   := $(IOW_DIR)/ollama
 MYPY_CACHE   := $(IOW_DIR)/mypy_cache
 # All IoW runtime products live only under $(IOW_DIR) (= /tmp/iow), like IoC's /tmp/ioc.
-# IOW_LEGACY: old stray dirs from earlier layouts — fclean still deletes them if present.
+# IOW_LEGACY: old stray dirs from earlier layouts - fclean still deletes them if present.
 IOW_LEGACY   := /tmp/iow_cache /tmp/iow-lint /tmp/iow-lint-pip-cache /tmp/iow_docker
 
 # Avoid campus 11434 and IoC 11435
@@ -58,7 +58,7 @@ all: help
 
 help:
 	@echo "================================================================================"
-	@echo "                    INCEPTION OF WISDOM (IoW) — COMMANDS                        "
+	@echo "                    INCEPTION OF WISDOM (IoW) - COMMANDS                        "
 	@echo "================================================================================"
 	@echo " make up               - build and launch containerized IoW via Docker Compose"
 	@echo " make down             - stop and tear down Docker containers"
@@ -93,7 +93,7 @@ docker-restart: ensure-dirs
 # Soft Docker cleanup (IoW only): containers + project network, keep images.
 docker-clean:
 	@if ! command -v docker >/dev/null 2>&1; then \
-		echo "[*] Docker not available — skip docker-clean"; \
+		echo "[*] Docker not available - skip docker-clean"; \
 	else \
 		echo "[*] Docker clean (container/network; keep images)"; \
 		docker compose down --remove-orphans >/dev/null 2>&1 \
@@ -112,7 +112,7 @@ docker-clean:
 # Never fails when Docker/IoW artifacts are absent.
 docker-fclean:
 	@if ! command -v docker >/dev/null 2>&1; then \
-		echo "[*] Docker not available — skip docker-fclean"; \
+		echo "[*] Docker not available - skip docker-fclean"; \
 	else \
 		echo "[*] Docker fclean (container/network/volume/image for IoW only)"; \
 		docker compose down --rmi local --volumes --remove-orphans >/dev/null 2>&1 \
@@ -149,7 +149,7 @@ break:
 	@curl -s -X POST http://localhost:5001/api/crash 2>/dev/null \
 		|| curl -s -X POST http://127.0.0.1:5000/api/crash 2>/dev/null \
 		|| echo "[!] Target unreachable"
-	@echo "[!] Crash sent — watch dashboard :8000"
+	@echo "[!] Crash sent - watch dashboard :8000"
 
 heal:
 	@curl -s -X POST http://localhost:8000/api/loop/trigger -H "Content-Type: application/json" -d '{}' \
@@ -244,7 +244,7 @@ setup: ensure-deps ensure-ollama ensure-embed
 	@echo "    Docker: make up | down | docker-restart | docker-clean | docker-fclean"
 
 # ---------------------------------------------------------------------------
-# Lint (flake8 + mypy) — IoC-style: tools live in $(VENV) under $(IOW_DIR).
+# Lint (flake8 + mypy) - IoC-style: tools live in $(VENV) under $(IOW_DIR).
 # After `make fclean`, run `make lint` (or `make setup`) to reinstall.
 # ---------------------------------------------------------------------------
 
@@ -254,7 +254,7 @@ ensure-lint-tools: ensure-venv
 	else \
 		echo "[*] Installing flake8 + mypy into $(VENV)"; \
 		if ! $(VENV)/bin/pip install --cache-dir $(PIP_CACHE) flake8 'mypy<2' types-PyYAML; then \
-			echo "[*] Campus index failed — retrying lint install via PyPI"; \
+			echo "[*] Campus index failed - retrying lint install via PyPI"; \
 			$(VENV)/bin/pip install --cache-dir $(PIP_CACHE) \
 				--index-url https://pypi.org/simple flake8 'mypy<2' types-PyYAML; \
 		fi; \
@@ -287,31 +287,31 @@ define IOW_UVICORN
 endef
 
 run: ensure-ready ensure-ollama-quick ensure-target
-	@echo "[*] Full stack — all tabs unlocked on :$(PORT) (target auto-started)"
+	@echo "[*] Full stack - all tabs unlocked on :$(PORT) (target auto-started)"
 	@echo "    Dashboard: http://127.0.0.1:$(PORT)  Target: $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,full)
 
 p1: ensure-ready ensure-ollama-quick ensure-target
 	@echo "[*] Part 1 - Observer (Docker events & HTTP probes) on :$(PORT)"
-	@echo "    tabs: all visible — Observer unlocked (Analyst/Loop/Bonus locked)"
+	@echo "    tabs: all visible - Observer unlocked (Analyst/Loop/Bonus locked)"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p1)
 
 p2: ensure-ready ensure-ollama-quick ensure-target
 	@echo "[*] Part 2 - Analyst (RAG retrieve & diagnose) on :$(PORT)"
-	@echo "    tabs: all visible — Observer + Analyst unlocked"
+	@echo "    tabs: all visible - Observer + Analyst unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p2)
 
 p3: ensure-ready ensure-ollama-quick ensure-target
 	@echo "[*] Part 3 - Wisdom Loop (heal / rollback / safety) on :$(PORT)"
-	@echo "    tabs: all visible — Observer + Analyst + Loop unlocked"
+	@echo "    tabs: all visible - Observer + Analyst + Loop unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p3)
 
 bonus: ensure-ready ensure-ollama-quick ensure-target
 	@echo "[*] Bonus Suite (classifier / consensus / PRs) on :$(PORT)"
-	@echo "    tabs: all visible — all unlocked"
+	@echo "    tabs: all visible - all unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,bonus)
 
@@ -323,7 +323,7 @@ stop:
 		echo "[*] Stopped ollama via $(IOW_DIR)/ollama.pid"; \
 	fi
 	@# Orphans after clean/fclean (pid file already gone): only IoW-bound ollama
-	@# (campus /opt/ollama and IoC :11435 are left alone). Match /proc environ —
+	@# (campus /opt/ollama and IoC :11435 are left alone). Match /proc environ -
 	@# OLLAMA_* is not on argv, so plain pkill -f OLLAMA_MODELS=… misses orphans.
 	@for pid in $$(pgrep -x ollama 2>/dev/null || true); do \
 		envfile="/proc/$$pid/environ"; \
@@ -359,7 +359,7 @@ fclean: stop docker-fclean
 	@rm -rf $(IOW_DIR) $(IOW_LEGACY) .chroma .mypy_cache .lint-venv 2>/dev/null || true
 	@if [ -e $(IOW_DIR) ] || ls -d $(IOW_LEGACY) >/dev/null 2>&1; then \
 		if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then \
-			echo "[*] Residual IoW paths not user-removable — wiping via Docker"; \
+			echo "[*] Residual IoW paths not user-removable - wiping via Docker"; \
 			docker run --rm -v /tmp:/hosttmp alpine:3.20 sh -c \
 				'rm -rf /hosttmp/iow /hosttmp/iow_cache /hosttmp/iow-lint \
 				 /hosttmp/iow-lint-pip-cache /hosttmp/iow_docker' \
@@ -367,7 +367,7 @@ fclean: stop docker-fclean
 		fi; \
 	fi
 	@if [ -e $(IOW_DIR) ]; then \
-		echo "[!] Could not fully remove $(IOW_DIR) — check: ls -la $(IOW_DIR)"; \
+		echo "[!] Could not fully remove $(IOW_DIR) - check: ls -la $(IOW_DIR)"; \
 		ls -la $(IOW_DIR) 2>/dev/null || true; \
 		exit 1; \
 	fi

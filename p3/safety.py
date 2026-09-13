@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 3: Wisdom Loop
+Inception-of-Wisdom (IoW) - Part 3: Wisdom Loop
 Safety Guardrails: Single-Flight, Cooldown, Rate Limit, Hard Cap & Kill-Switch
 """
 

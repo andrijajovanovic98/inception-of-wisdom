@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 2: Analyst
+Inception-of-Wisdom (IoW) - Part 2: Analyst
 Analyst API: Free-Text Retrieval & Structured Crash Diagnosis Endpoints
 """
 

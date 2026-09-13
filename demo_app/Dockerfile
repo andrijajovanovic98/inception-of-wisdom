@@ -1,6 +1,6 @@
-# Inception-of-Wisdom (IoW) — Demo Target Service Dockerfile
+# Inception-of-Wisdom (IoW) - Demo Target Service Dockerfile
 # Note: campus/rootless Docker often rejects USER/chown (chown /dev/stdout: invalid argument).
-# Run as root like IoC's container — the demo is a sacrificial crash target, not a hardened prod image.
+# Run as root like IoC's container - the demo is a sacrificial crash target, not a hardened prod image.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

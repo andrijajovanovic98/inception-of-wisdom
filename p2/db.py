@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 2: Analyst
+Inception-of-Wisdom (IoW) - Part 2: Analyst
 ChromaDB PersistentClient & Local all-MiniLM-L6-v2 Embeddings
 """
 

@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 1: Observer
+Inception-of-Wisdom (IoW) - Part 1: Observer
 Event Manager: Central Event Hub & Sliding Window Deduplication
 """
 

@@ -1,4 +1,4 @@
-# Inception-of-Wisdom (IoW) — Agent Dependencies
+# Inception-of-Wisdom (IoW) - Agent Dependencies
 
 # Web framework & Live Dashboard
 fastapi>=0.110.0,<0.116.0
