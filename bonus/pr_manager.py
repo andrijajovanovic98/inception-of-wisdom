@@ -8,18 +8,29 @@ so a human can review the auto-heal before it lands.'
 from __future__ import annotations
 
 import os
-import time
 import json
+import time
 import difflib
 import logging
-from typing import Optional, List, Dict, Any, Tuple
+import urllib.error
+import urllib.request
+from typing import Optional, List, Dict, Any, Tuple, Callable
 from dataclasses import dataclass, asdict, field
+from urllib.parse import quote
+
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment,misc]
 
 from p3.git_manager import GitManager
 
 logger = logging.getLogger("bonus.pr_manager")
 
 DEFAULT_PR_STORE = os.environ.get("IOW_PR_STORE", "/tmp/iow/pull_requests.json")
+DEFAULT_CREDS_FILE = os.environ.get("GITEA_CREDS_FILE", "/tmp/iow/gitea/gitea.env")
+DEFAULT_GITEA_URL = os.environ.get("GITEA_URL", "http://gitea:3000")
+DEFAULT_GITEA_PUBLIC = os.environ.get("GITEA_PUBLIC_URL", "http://localhost:3000")
 
 
 @dataclass
@@ -37,9 +48,19 @@ class PullRequestRecord:
     created_at: float = field(default_factory=time.time)
     resolved_at: Optional[float] = None
     reviewer_comment: Optional[str] = None
+    remote_pr_number: Optional[int] = None
+    remote_html_url: Optional[str] = None
+    remote_api_url: Optional[str] = None
+    base_branch: str = "main"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PullRequestRecord":
+        known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        filtered = {k: v for k, v in data.items() if k in known}
+        return cls(**filtered)
 
 
 class PullRequestManager:
@@ -48,39 +69,194 @@ class PullRequestManager:
     def __init__(
         self,
         git_manager: GitManager,
-        store_path: Optional[str] = None
+        store_path: Optional[str] = None,
+        creds_file: Optional[str] = None,
     ):
         self.git_manager = git_manager
         self.store_path = os.path.abspath(store_path or DEFAULT_PR_STORE)
+        self.creds_file = os.path.abspath(creds_file or DEFAULT_CREDS_FILE)
         self.prs: Dict[str, PullRequestRecord] = {}
-
+        self._creds: Dict[str, str] = {}
+        self._load_creds()
         self._load_store()
 
+    # ------------------------------------------------------------------
+    # Credentials & HTTP helpers
+    # ------------------------------------------------------------------
+    def _load_creds(self) -> None:
+        """Load Gitea credentials from env file and environment overrides."""
+        creds: Dict[str, str] = {
+            "GITEA_URL": DEFAULT_GITEA_URL,
+            "GITEA_PUBLIC_URL": DEFAULT_GITEA_PUBLIC,
+            "GITEA_USER": os.environ.get("GITEA_USER", "iow"),
+            "GITEA_PASSWORD": os.environ.get("GITEA_PASSWORD", "iowiow123"),
+            "GITEA_TOKEN": os.environ.get("GITEA_TOKEN", ""),
+            "GITEA_OWNER": os.environ.get("GITEA_OWNER", "iow"),
+            "GITEA_REPO": os.environ.get("GITEA_REPO", "inception-of-wisdom"),
+        }
+        if os.path.isfile(self.creds_file):
+            try:
+                with open(self.creds_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        key, _, val = line.partition("=")
+                        creds[key.strip()] = val.strip()
+            except Exception as e:
+                logger.warning(f"Could not read Gitea creds from {self.creds_file}: {e}")
+        for k in list(creds.keys()):
+            env_val = os.environ.get(k)
+            if env_val:
+                creds[k] = env_val
+        self._creds = creds
+
+    def _api_base(self) -> str:
+        return self._creds.get("GITEA_URL", DEFAULT_GITEA_URL).rstrip("/")
+
+    def _public_base(self) -> str:
+        return self._creds.get("GITEA_PUBLIC_URL", DEFAULT_GITEA_PUBLIC).rstrip("/")
+
+    def _owner(self) -> str:
+        return self._creds.get("GITEA_OWNER") or self._creds.get("GITEA_USER", "iow")
+
+    def _repo(self) -> str:
+        return self._creds.get("GITEA_REPO", "inception-of-wisdom")
+
+    def _token(self) -> str:
+        return self._creds.get("GITEA_TOKEN", "")
+
+    def _auth_headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        token = self._token()
+        if token:
+            headers["Authorization"] = f"token {token}"
+        return headers
+
+    def _http_request(
+        self,
+        method: str,
+        path: str,
+        body: Optional[Dict[str, Any]] = None,
+        timeout: float = 15.0,
+    ) -> Tuple[int, Any]:
+        """Perform HTTP request via httpx (preferred) or urllib fallback."""
+        url = path if path.startswith("http") else f"{self._api_base()}{path}"
+        headers = self._auth_headers()
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+
+        if httpx is not None:
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.request(method.upper(), url, headers=headers, content=payload)
+                    try:
+                        data = resp.json() if resp.content else {}
+                    except Exception:
+                        data = {"raw": resp.text}
+                    return resp.status_code, data
+            except Exception as e:
+                logger.debug(f"httpx request failed: {e}")
+                return 0, {"error": str(e)}
+
+        req = urllib.request.Request(url, data=payload, headers=headers, method=method.upper())
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                try:
+                    return resp.status, json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    return resp.status, {"raw": raw}
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", errors="replace")
+            try:
+                return e.code, json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                return e.code, {"raw": raw, "error": str(e)}
+        except Exception as e:
+            return 0, {"error": str(e)}
+
+    def remote_status(self) -> Dict[str, Any]:
+        """Report Gitea connectivity and configuration."""
+        self._load_creds()
+        token = self._token()
+        configured = bool(token and self._owner() and self._repo())
+        reachable = False
+        detail: Dict[str, Any] = {}
+        if configured:
+            code, data = self._http_request("GET", f"/api/v1/repos/{self._owner()}/{self._repo()}")
+            reachable = code == 200
+            if reachable:
+                detail = {"default_branch": data.get("default_branch", "main")}
+            else:
+                detail = {"http_code": code, "error": data.get("message") or data.get("error")}
+        return {
+            "configured": configured,
+            "reachable": reachable,
+            "gitea_url": self._api_base(),
+            "public_url": self._public_base(),
+            "owner": self._owner(),
+            "repo": self._repo(),
+            "creds_file": self.creds_file,
+            "detail": detail,
+        }
+
+    def ensure_remote_ready(self) -> Tuple[bool, str]:
+        """Ensure git remote 'gitea' exists and heal branch is pushed."""
+        status = self.remote_status()
+        if not status["configured"]:
+            return False, "Gitea not configured (missing token or repo info)."
+        owner = self._owner()
+        repo = self._repo()
+        token = self._token()
+        remote_url = (
+            f"{self._api_base().replace('://', f'://{quote(owner)}:{quote(token)}@')}"
+            f"/{owner}/{repo}.git"
+        )
+        remote_name = "gitea"
+        _, remotes_out, _ = self.git_manager._run_git(["remote"], check=False)
+        remotes = [r.strip() for r in remotes_out.splitlines() if r.strip()]
+        if remote_name not in remotes:
+            rc, _, err = self.git_manager._run_git(["remote", "add", remote_name, remote_url], check=False)
+            if rc != 0:
+                return False, f"Failed to add remote '{remote_name}': {err}"
+            logger.info(f"Added git remote '{remote_name}' -> {owner}/{repo}")
+        else:
+            self.git_manager._run_git(["remote", "set-url", remote_name, remote_url], check=False)
+
+        heal_branch = self.git_manager.heal_branch
+        rc, _, err = self.git_manager._run_git(
+            ["push", "-u", remote_name, f"{heal_branch}:{heal_branch}"],
+            check=False,
+        )
+        if rc != 0:
+            logger.warning(f"Push heal branch warning: {err}")
+        return True, f"Remote '{remote_name}' ready for {owner}/{repo}"
+
+    # ------------------------------------------------------------------
+    # Store persistence
+    # ------------------------------------------------------------------
     def _load_store(self) -> None:
-        """Loads PR records from disk."""
         if not os.path.isfile(self.store_path):
             self.prs = {}
             return
-
         try:
             with open(self.store_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                for pr_dict in data.get("prs", []):
-                    rec = PullRequestRecord(**pr_dict)
-                    self.prs[rec.pr_id] = rec
-                logger.info(f"Loaded {len(self.prs)} pull requests from {self.store_path}")
+            for pr_dict in data.get("prs", []):
+                rec = PullRequestRecord.from_dict(pr_dict)
+                self.prs[rec.pr_id] = rec
+            logger.info(f"Loaded {len(self.prs)} pull requests from {self.store_path}")
         except Exception as e:
             logger.error(f"Failed to load PR store from {self.store_path}: {e}")
             self.prs = {}
 
     def _save_store(self) -> None:
-        """Saves PR records atomically to disk."""
         try:
-            os.makedirs(os.path.dirname(self.store_path), exist_ok=True)
+            os.makedirs(os.path.dirname(self.store_path) or ".", exist_ok=True)
             tmp_file = f"{self.store_path}.tmp.{os.getpid()}"
             payload = {
                 "updated_at": time.time(),
-                "prs": [pr.to_dict() for pr in self.prs.values()]
+                "prs": [pr.to_dict() for pr in self.prs.values()],
             }
             with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
@@ -89,46 +265,45 @@ class PullRequestManager:
             logger.error(f"Failed to save PR store to {self.store_path}: {e}")
 
     def generate_diff(self, file_path: str, new_content: str) -> str:
-        """Generates unified diff between original on-disk file and proposed new content."""
         full_path = os.path.join(self.git_manager.repo_dir, file_path)
-        old_lines = []
+        old_lines: List[str] = []
         if os.path.isfile(full_path):
             try:
                 with open(full_path, "r", encoding="utf-8", errors="replace") as f:
                     old_lines = f.readlines()
             except Exception as e:
                 logger.warning(f"Could not read old file {full_path} for diff: {e}")
-
         new_lines = [
             line if line.endswith("\n") else line + "\n"
             for line in new_content.splitlines(keepends=True)
         ]
-
         diff = difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=f"a/{file_path}",
-            tofile=f"b/{file_path}",
-            lineterm=""
+            old_lines, new_lines,
+            fromfile=f"a/{file_path}", tofile=f"b/{file_path}", lineterm="",
         )
         return "\n".join(diff)
+
+    def _resolve_base_branch(self) -> str:
+        status = self.remote_status()
+        if status.get("reachable") and status.get("detail", {}).get("default_branch"):
+            return status["detail"]["default_branch"]
+        return "main"
 
     def create_pull_request(
         self,
         cycle_id: str,
         diagnosis_summary: str,
         patch_files: List[Dict[str, Any]],
-        base_revision: Optional[str] = None
+        base_revision: Optional[str] = None,
     ) -> PullRequestRecord:
-        """Creates a review branch and generates a formatted Pull Request."""
+        """Creates a review branch, pushes to Gitea, and opens a remote Pull Request."""
         pr_id = f"pr-{cycle_id}"
         branch_name = f"iow/review/{cycle_id}"
         base_rev = base_revision or self.git_manager.get_current_head() or "HEAD"
+        base_branch = self._resolve_base_branch()
 
-        # Generate combined unified diff
         diff_chunks: List[str] = []
         files_changed: List[str] = []
-
         for pf in patch_files:
             rel_path = pf.get("path", "unknown")
             content = pf.get("content", "")
@@ -136,20 +311,18 @@ class PullRequestManager:
             f_diff = self.generate_diff(rel_path, content)
             if f_diff:
                 diff_chunks.append(f_diff)
-
         full_diff = "\n\n".join(diff_chunks) if diff_chunks else "No textual diff generated."
 
-        # Build Markdown PR description
         title = f"[IoW Auto-Heal] Fix: {diagnosis_summary[:60]}..."
         markdown_body = f"""# {title}
 
-### 📋 Incident Diagnosis
+### Incident Diagnosis
 {diagnosis_summary}
 
-### 🛠️ Modified Files ({len(files_changed)})
+### Modified Files ({len(files_changed)})
 {chr(10).join([f"- `{f}`" for f in files_changed])}
 
-### 🔍 Unified Diff Preview
+### Unified Diff Preview
 ```diff
 {full_diff}
 ```
@@ -158,41 +331,78 @@ class PullRequestManager:
 *Created autonomously by Inception of Wisdom (IoW) Human-in-the-Loop Review Agent.*
 """
 
-        # Create isolated git review branch
         try:
             self.git_manager._run_git(["checkout", "-B", branch_name], check=False)
-            # Apply files to review branch
             for pf in patch_files:
                 rel_path = str(pf.get("path") or "unknown")
                 self.git_manager._write_file_atomically(rel_path, pf.get("content", ""))
             self.git_manager._run_git(["add", "-A"], check=False)
             self.git_manager._run_git(["commit", "-m", f"review: {title}"], check=False)
-            # Switch back to base
             self.git_manager._run_git(["checkout", self.git_manager.heal_branch], check=False)
             logger.info(f"Created review branch '{branch_name}' for PR [{pr_id}]")
         except Exception as e:
             logger.error(f"Error creating git branch for PR: {e}")
+
+        remote_pr_number: Optional[int] = None
+        remote_html_url: Optional[str] = None
+        remote_api_url: Optional[str] = None
+
+        ready, msg = self.ensure_remote_ready()
+        if ready:
+            rc, _, err = self.git_manager._run_git(
+                ["push", "-u", "gitea", f"{branch_name}:{branch_name}"],
+                check=False,
+            )
+            if rc != 0:
+                logger.warning(f"Push review branch failed: {err}")
+            else:
+                owner, repo = self._owner(), self._repo()
+                code, data = self._http_request(
+                    "POST",
+                    f"/api/v1/repos/{owner}/{repo}/pulls",
+                    body={
+                        "title": title,
+                        "body": markdown_body,
+                        "head": branch_name,
+                        "base": base_branch,
+                    },
+                )
+                if code in (200, 201):
+                    remote_pr_number = data.get("number")
+                    remote_html_url = data.get("html_url") or (
+                        f"{self._public_base()}/{owner}/{repo}/pulls/{remote_pr_number}"
+                    )
+                    remote_api_url = data.get("url") or (
+                        f"{self._api_base()}/api/v1/repos/{owner}/{repo}/pulls/{remote_pr_number}"
+                    )
+                    logger.info(f"Gitea PR #{remote_pr_number} opened: {remote_html_url}")
+                else:
+                    logger.warning(f"Gitea PR create failed (HTTP {code}): {data}")
+        else:
+            logger.warning(f"Remote not ready: {msg}")
 
         pr_record = PullRequestRecord(
             pr_id=pr_id,
             title=title,
             branch_name=branch_name,
             base_revision=base_rev,
+            base_branch=base_branch,
             status="pending_review",
             diagnosis_summary=diagnosis_summary,
             files_changed=files_changed,
             unified_diff=full_diff,
             markdown_body=markdown_body,
-            created_at=time.time()
+            created_at=time.time(),
+            remote_pr_number=remote_pr_number,
+            remote_html_url=remote_html_url,
+            remote_api_url=remote_api_url,
         )
-
         self.prs[pr_id] = pr_record
         self._save_store()
-        logger.info(f"📬 Pull Request [{pr_id}] registered and waiting for human review.")
+        logger.info(f"Pull Request [{pr_id}] registered and waiting for human review.")
         return pr_record
 
     def list_prs(self, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Returns list of PRs, newest first."""
         results = list(self.prs.values())
         if status_filter:
             results = [pr for pr in results if pr.status == status_filter]
@@ -202,47 +412,73 @@ class PullRequestManager:
     def get_pr(self, pr_id: str) -> Optional[PullRequestRecord]:
         return self.prs.get(pr_id)
 
-    def merge_pr(self, pr_id: str, comment: Optional[str] = None) -> Tuple[bool, str]:
-        """Human approval: merges review branch into active heal branch."""
+    def _close_remote_pr(self, pr: PullRequestRecord) -> None:
+        if not pr.remote_pr_number:
+            return
+        owner, repo = self._owner(), self._repo()
+        code, data = self._http_request(
+            "PATCH",
+            f"/api/v1/repos/{owner}/{repo}/pulls/{pr.remote_pr_number}",
+            body={"state": "closed"},
+        )
+        if code not in (200, 201):
+            logger.warning(f"Failed to close Gitea PR #{pr.remote_pr_number}: {data}")
+
+    def merge_pr(
+        self,
+        pr_id: str,
+        comment: Optional[str] = None,
+        on_merged: Optional[Callable[[PullRequestRecord], None]] = None,
+    ) -> Tuple[bool, str]:
+        """Human approval: merge via Gitea API (if remote) then locally into heal branch."""
         pr = self.prs.get(pr_id)
         if not pr:
             return False, f"PR '{pr_id}' not found."
-
         if pr.status != "pending_review":
             return False, f"PR '{pr_id}' is already {pr.status}."
 
+        if pr.remote_pr_number:
+            owner, repo = self._owner(), self._repo()
+            code, data = self._http_request(
+                "POST",
+                f"/api/v1/repos/{owner}/{repo}/pulls/{pr.remote_pr_number}/merge",
+                body={"Do": "merge", "merge_message_field": f"Merge PR {pr_id}: {pr.title}"},
+            )
+            if code not in (200, 201):
+                logger.warning(f"Gitea merge API returned {code}: {data}; attempting local merge.")
+
         try:
-            # Checkout heal branch and merge review branch
             self.git_manager._run_git(["checkout", self.git_manager.heal_branch])
             merge_msg = f"Merge PR #{pr_id}: {pr.title}"
             self.git_manager._run_git(["merge", "--no-ff", pr.branch_name, "-m", merge_msg])
-
             pr.status = "merged"
             pr.resolved_at = time.time()
             pr.reviewer_comment = comment or "Approved and merged by human operator."
             self._save_store()
-
-            logger.info(f"🎉 Pull Request [{pr_id}] successfully MERGED into {self.git_manager.heal_branch}")
+            logger.info(f"Pull Request [{pr_id}] successfully MERGED into {self.git_manager.heal_branch}")
+            if on_merged:
+                try:
+                    on_merged(pr)
+                except Exception as cb_err:
+                    logger.error(f"on_merged callback failed: {cb_err}")
             return True, f"PR [{pr_id}] merged successfully."
         except Exception as e:
             logger.error(f"Failed to merge PR [{pr_id}]: {e}")
             return False, f"Git merge error: {str(e)}"
 
     def reject_pr(self, pr_id: str, reason: Optional[str] = None) -> Tuple[bool, str]:
-        """Human rejection: discards the review branch."""
+        """Human rejection: close remote PR and discard review branch."""
         pr = self.prs.get(pr_id)
         if not pr:
             return False, f"PR '{pr_id}' not found."
-
         try:
-            # Delete review branch
+            self._close_remote_pr(pr)
             self.git_manager._run_git(["branch", "-D", pr.branch_name], check=False)
             pr.status = "rejected"
             pr.resolved_at = time.time()
             pr.reviewer_comment = reason or "Rejected by human reviewer."
             self._save_store()
-
-            logger.info(f"🚫 Pull Request [{pr_id}] REJECTED.")
+            logger.info(f"Pull Request [{pr_id}] REJECTED.")
             return True, f"PR [{pr_id}] rejected."
         except Exception as e:
             logger.error(f"Failed to reject PR [{pr_id}]: {e}")

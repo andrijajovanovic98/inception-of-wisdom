@@ -6,6 +6,7 @@ Integrates Part 1 (Observer), Part 2 (Analyst), and Part 3 (Wisdom Loop) into a 
 from __future__ import annotations
 
 import os
+import time
 import logging
 import asyncio
 import threading
@@ -93,6 +94,14 @@ from bonus.classifier import TinySymptomClassifier  # noqa: E402
 from bonus.consensus import SecondOpinionEngine  # noqa: E402
 from bonus.pr_manager import PullRequestManager  # noqa: E402
 from bonus.bonus_api import create_bonus_router  # noqa: E402
+
+
+# Bonus operational flags (shared with bonus router)
+bonus_flags: Dict[str, bool] = {
+    "human_in_the_loop": False,
+    "second_opinion_mandatory": True,
+    "fast_path_classifier": True,
+}
 
 CONFIG_FILE = os.environ.get("IOW_CONFIG_PATH", "demo_app/iow.config.yml")
 TARGET_DIR = os.environ.get("IOW_TARGET_DIR", "demo_app")
@@ -199,6 +208,41 @@ class InceptionOrchestrator:
         # Register event subscriber for autonomous healing
         self.event_manager.add_listener(self._on_observer_event)
 
+    def _on_pr_merged(self, pr_record) -> None:
+        """Restart target container after a HITL PR is approved and merged."""
+        logger.info(f"PR [{pr_record.pr_id}] merged — restarting target container...")
+        try:
+            self.docker_monitor.restart_target()
+            logger.info("Target container restarted after PR merge.")
+        except Exception as e:
+            logger.error(f"Failed to restart target after PR merge: {e}")
+
+    def _propose_hitl_patch(
+        self,
+        event: ObserverEvent,
+        log_excerpt: str,
+        diagnosis_summary: str,
+        patch_files: list,
+        cycle_id: str,
+    ) -> None:
+        """Create a Gitea Pull Request instead of auto-applying the patch."""
+        logger.info(
+            f"Human-in-the-Loop gate active for [{cycle_id}] — opening Gitea PR."
+        )
+        try:
+            pr = self.pr_manager.create_pull_request(
+                cycle_id=cycle_id,
+                diagnosis_summary=diagnosis_summary,
+                patch_files=patch_files,
+                base_revision=self.git_manager.get_current_head(),
+            )
+            gitea_ref = f" Gitea #{pr.remote_pr_number}" if pr.remote_pr_number else ""
+            logger.info(
+                f"HITL PR [{pr.pr_id}]{gitea_ref} created — awaiting human review."
+            )
+        except Exception as e:
+            logger.error(f"Failed to create HITL PR for [{cycle_id}]: {e}")
+
     def _on_observer_event(self, event: ObserverEvent) -> None:
         """Autonomously triggers the Wisdom Loop when a confirmed crash event arrives."""
         if not self.auto_heal_enabled:
@@ -231,18 +275,57 @@ class InceptionOrchestrator:
 
         # Bonus: Check classifier for Fast Path bypass
         match = self.classifier.classify(log_excerpt, raw_signature=sig)
-        if match.matched and match.cached_patch:
+        if match.matched and match.cached_patch and bonus_flags.get("fast_path_classifier", True):
             logger.info(
                 f"🎯 BONUS FAST PATH: Symptom [{match.symptom_id}] matched "
                 "by Tiny Classifier! Applying cached patch."
             )
+
+        # Bonus: Second Opinion consensus gate
+        consensus_diverged = False
+        if bonus_flags.get("second_opinion_mandatory", True) and self.consensus_engine:
+            try:
+                report = self.consensus_engine.evaluate_consensus(log_excerpt, top_k=3)
+                if not report.consensus_reached:
+                    consensus_diverged = True
+                    logger.warning(
+                        f"Second Opinion DIVERGED for [{sig[:8]}] — routing to HITL PR."
+                    )
+            except Exception as e:
+                logger.warning(f"Consensus evaluation failed: {e}")
+
+        hitl_required = bonus_flags.get("human_in_the_loop", False) or consensus_diverged
+
+        if hitl_required:
+            cycle_id = sig[:8] + "-" + str(int(time.time()))
+            try:
+                diagnosis = self.diagnostician.diagnose_crash(log_excerpt)
+                diag_summary = diagnosis.summary if diagnosis else "Unknown crash"
+                patch = self.patcher.generate_patch(diagnosis, log_excerpt)
+                if patch.success and patch.files:
+                    patch_files = [
+                        {"path": f.path, "content": f.content}
+                        for f in patch.files
+                    ]
+                    self._propose_hitl_patch(
+                        event, log_excerpt, diag_summary, patch_files, cycle_id
+                    )
+                else:
+                    logger.warning("HITL gate active but patch generation failed; falling back to loop.")
+                    hitl_required = False
+            except Exception as e:
+                logger.error(f"HITL patch proposal failed: {e}; falling back to Wisdom Loop.")
+                hitl_required = False
+
+        if hitl_required:
+            self.safety_manager.release_heal_slot(sig)
+            return
 
         logger.info(f"⚡ Starting autonomous Wisdom Loop for crash signature [{sig[:8]}]...")
         try:
             result = self.wisdom_loop.execute_heal(event, grace_period=grace_period)
             logger.info(f"Wisdom Loop finished with status: {result.status.upper()}")
 
-            # Bonus reinforcement: record successful heal to classifier
             if result.status == "healed" and result.attempts:
                 last_att = result.attempts[-1]
                 if last_att.patch:
@@ -323,6 +406,8 @@ class InceptionOrchestrator:
                 "safety": safety_status
             },
             "bonus": {
+                "flags": bonus_flags,
+                "gitea": self.pr_manager.remote_status(),
                 "classifier": self.classifier.get_stats(),
                 "prs_total": len(self.pr_manager.prs),
                 "prs_pending": len(self.pr_manager.list_prs(status_filter="pending_review"))
@@ -406,7 +491,9 @@ def create_app() -> FastAPI:
     bonus_router = create_bonus_router(
         classifier=orchestrator.classifier,
         consensus_engine=orchestrator.consensus_engine,
-        pr_manager=orchestrator.pr_manager
+        pr_manager=orchestrator.pr_manager,
+        flags=bonus_flags,
+        on_pr_merged=orchestrator._on_pr_merged,
     )
     if bonus_router:
         app.include_router(bonus_router)

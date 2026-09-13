@@ -1,10 +1,8 @@
 # Inception-of-Wisdom (IoW) - Multi-Container Docker Compose Stack
 # Subject requirement: The entire environment must launch with a single 'docker compose up' command.
+# Includes a local Gitea forge so auto-heal opens real remote Pull Requests for human review.
 
 services:
-  # ============================================================================
-  # 1. Target Application (Monitored & Self-Healed Service)
-  # ============================================================================
   demo_app:
     build:
       context: ./demo_app
@@ -14,7 +12,6 @@ services:
     ports:
       - "5001:5000"
     volumes:
-      # Live-mount target code so Wisdom Loop patches immediately take effect
       - ./demo_app:/app
     environment:
       - PYTHONUNBUFFERED=1
@@ -28,9 +25,62 @@ services:
       retries: 3
       start_period: 5s
 
-  # ============================================================================
-  # 2. Inception-of-Wisdom Agent (Observer, Analyst & Wisdom Loop + Dashboard)
-  # ============================================================================
+  gitea:
+    image: gitea/gitea:1.22.6
+    container_name: iow_gitea
+    restart: unless-stopped
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__server__DOMAIN=localhost
+      - GITEA__server__ROOT_URL=http://localhost:3000/
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__server__DISABLE_SSH=true
+      - GITEA__service__DISABLE_REGISTRATION=true
+      - GITEA__service__REQUIRE_SIGNIN_VIEW=false
+      - GITEA__webhook__ALLOWED_HOST_LIST=*
+    volumes:
+      - gitea-data:/data
+    ports:
+      - "3000:3000"
+    networks:
+      - iow-net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O /dev/null http://127.0.0.1:3000/api/v1/version 2>/dev/null || curl -sf http://127.0.0.1:3000/api/v1/version >/dev/null || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  gitea-init:
+    image: gitea/gitea:1.22.6
+    container_name: iow_gitea_init
+    restart: "no"
+    depends_on:
+      gitea:
+        condition: service_healthy
+    environment:
+      - GITEA_HTTP=http://gitea:3000
+      - GITEA_PUBLIC_URL=http://localhost:3000
+      - GITEA_ADMIN_USER=iow
+      - GITEA_ADMIN_PASSWORD=iowiow123
+      - GITEA_ADMIN_EMAIL=iow@iow.local
+      - GITEA_REPO=inception-of-wisdom
+      - CREDS_DIR=/creds
+    volumes:
+      - gitea-data:/data
+      - /tmp/iow/gitea:/creds
+      - ./scripts/gitea_bootstrap.sh:/gitea_bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/gitea_bootstrap.sh"]
+    networks:
+      - iow-net
+
   agent:
     build:
       context: .
@@ -40,12 +90,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Mount Docker socket to inspect, follow logs, and restart target container
       - /var/run/docker.sock:/var/run/docker.sock
-      # Mount workspace to allow git atomic commits and rollbacks on iow/auto-heal branch
       - .:/workspace
-      # Protect user 42 quota: map caches to host /tmp
       - /tmp/iow_cache:/tmp/iow_cache
+      - /tmp/iow/gitea:/tmp/iow/gitea
     environment:
       - TARGET_CONTAINER=iow_demo_target
       - TARGET_URL=http://demo_app:5000
@@ -57,18 +105,27 @@ services:
       - SENTENCE_TRANSFORMERS_HOME=/tmp/iow_cache/sentence_transformers
       - CHROMA_CACHE_DIR=/tmp/iow_cache/chroma
       - TORCH_HOME=/tmp/iow_cache/torch
+      - GITEA_URL=http://gitea:3000
+      - GITEA_PUBLIC_URL=http://localhost:3000
+      - GITEA_OWNER=iow
+      - GITEA_REPO=inception-of-wisdom
+      - GITEA_CREDS_FILE=/tmp/iow/gitea/gitea.env
+      - IOW_PR_STORE=/tmp/iow/gitea/pull_requests.json
     extra_hosts:
-      # Route host.docker.internal to host bridge gateway for host-running Ollama
       - "host.docker.internal:host-gateway"
     networks:
       - iow-net
     depends_on:
-      - demo_app
+      demo_app:
+        condition: service_started
+      gitea-init:
+        condition: service_completed_successfully
 
-# ==============================================================================
-# Isolated Bridge Network
-# ==============================================================================
 networks:
   iow-net:
     name: iow-network
     driver: bridge
+
+volumes:
+  gitea-data:
+    name: iow-gitea-data
