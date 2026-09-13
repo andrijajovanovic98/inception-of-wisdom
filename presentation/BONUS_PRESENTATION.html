@@ -52,7 +52,7 @@
       <span class="badge">Chapter VI</span>
       <span>Bonus Suite Deep-Dive - Inception of Wisdom</span>
     </div>
-    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
   </header>
 
   <div class="slides-container">
@@ -126,7 +126,7 @@
         </div>
         <div class="card">
           <h3>One-Click Review via Web UI</h3>
-          <pre>POST /api/bonus/prs/{pr_id}/approve  --> Merges into iow/auto-heal & Restarts
+          <pre>POST /api/bonus/prs/{pr_id}/merge    --> Merges into iow/auto-heal & Restarts
 POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
           <div class="highlight-box">
             The dashboard displays color-coded diffs directly inside the 4th tab with instant Approve / Reject controls.
@@ -141,11 +141,12 @@ POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
       <div class="card">
         <h3>FastAPI Bonus Router</h3>
         <ul>
-          <li><code>POST /api/bonus/classify</code>: Instantly categorizes raw logs into error class + suspect file.</li>
-          <li><code>POST /api/bonus/consensus</code>: Runs dual-prompt evaluation and returns consensus score.</li>
+          <li><code>GET /api/bonus/classifier/stats</code>: Returns learned symptom and verified-heal cache statistics.</li>
+          <li><code>POST /api/bonus/consensus/evaluate</code>: Runs dual-prompt evaluation and returns the consensus report.</li>
           <li><code>GET /api/bonus/prs</code>: Lists pending Human-in-the-Loop pull requests.</li>
-          <li><code>POST /api/bonus/prs/{pr_id}/approve</code>: Operator approves PR, triggering atomic merge & container restart.</li>
-          <li><code>POST /api/bonus/prs/{pr_id}/reject</code>: Operator rejects PR, safely resetting git state.</li>
+          <li><code>POST /api/bonus/prs/create</code>: Creates a review branch and local/Gitea pull request.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/merge</code>: Operator approves and merges the PR; <code>/approve</code> is an alias.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/reject</code>: Operator rejects the PR and discards its review branch.</li>
         </ul>
       </div>
     </div>
@@ -167,7 +168,33 @@ POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
       </div>
     </div>
 
-    <!-- Slide 7: Peer-Evaluation Checklist -->
+    <!-- Slide 7: Gitea HITL & GitOps -->
+    <div class="slide">
+      <h2>Gitea HITL & Argo CD GitOps Operations</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Auditable Gitea Review</h3>
+          <ul>
+            <li>Run <code>make up</code>, then host <code>make pr-bonus</code>.</li>
+            <li>Review local pull requests in Gitea at <code>http://127.0.0.1:3000</code>.</li>
+            <li>Merge or reject from the dashboard/API with an auditable operator decision.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Campus-Safe GitOps Redeploy</h3>
+          <ul>
+            <li><code>make argocd-bonus</code> creates privileged <code>iow-k3s</code>, not nested k3d.</li>
+            <li>Argo CD syncs <code>k8s/demo-app</code> from local Gitea.</li>
+            <li>Argo UI: <code>:8080</code>; demo NodePort: <code>:30051</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tip:</strong> Show the PR in Gitea first, then show Argo CD reporting the desired state synced and healthy.
+      </div>
+    </div>
+
+    <!-- Slide 8: Peer-Evaluation Checklist -->
     <div class="slide">
       <h2>Chapter VI Peer-Evaluation Checklist</h2>
       <div class="card">

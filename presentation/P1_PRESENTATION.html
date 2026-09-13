@@ -160,6 +160,7 @@ target:
   probe_interval_seconds: 3
   probe_urls: ["/", "/healthz"]
           </pre>
+          <p>Inside Compose the agent uses <code>http://demo_app:5000</code>; host-run commands use <code>TARGET_URL=http://127.0.0.1:5001</code>.</p>
           <p>Reports response time in milliseconds for the dashboard latency monitor.</p>
         </div>
       </div>

@@ -47,7 +47,6 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 purge_k3d_leftovers() {
-  # Old nested-k3d attempts leave stuck nodes; remove so they don't confuse doctor.
   if command -v k3d >/dev/null 2>&1; then
     k3d cluster delete "${CLUSTER}" >/dev/null 2>&1 || true
   fi
@@ -70,14 +69,12 @@ purge_cluster() {
 
 write_kubeconfig() {
   docker cp "${K3S_NAME}:/etc/rancher/k3s/k3s.yaml" "${KUBECONFIG}"
-  # Always talk to the published host port.
   sed -i.bak \
     -e "s#server: https://127.0.0.1:6443#server: https://127.0.0.1:${API_PORT}#g" \
     -e "s#server: https://localhost:6443#server: https://127.0.0.1:${API_PORT}#g" \
     -e "s#0\\.0\\.0\\.0#127.0.0.1#g" \
     "${KUBECONFIG}" 2>/dev/null || true
   rm -f "${KUBECONFIG}.bak"
-  # If sed left a non-loopback server, force it.
   if ! grep -q "server: https://127.0.0.1:${API_PORT}" "${KUBECONFIG}"; then
     python3 - "${KUBECONFIG}" "${API_PORT}" <<'PY'
 import re, sys
@@ -98,9 +95,8 @@ cluster_healthy() {
 }
 
 start_k3s() {
-  echo "[*] Starting k3s container '${K3S_NAME}' (privileged + cgroupns=host - campus rootless fix)"
+  echo "[*] Starting k3s container '${K3S_NAME}' (privileged + cgroupns=host — campus rootless fix)"
   echo "    image=${K3S_IMAGE}  api=127.0.0.1:${API_PORT}  nodePort=${NODE_PORT}"
-  # Prefer compose network so Gitea is reachable by container IP (rootless host-gateway is broken).
   local net_args=()
   if docker network inspect iow-network >/dev/null 2>&1; then
     net_args=(--network iow-network)
@@ -120,7 +116,6 @@ start_k3s() {
     --kubelet-arg=feature-gates=KubeletInUserNamespace=true \
     --kubelet-arg=cgroups-per-qos=false \
     --kubelet-arg=enforce-node-allocatable=
-  # If started on default bridge, still attach to iow-network when present.
   if docker network inspect iow-network >/dev/null 2>&1; then
     docker network connect iow-network "${K3S_NAME}" >/dev/null 2>&1 || true
   fi
@@ -130,12 +125,12 @@ gitea_ip() {
   docker inspect iow_gitea --format '{{with index .NetworkSettings.Networks "iow-network"}}{{.IPAddress}}{{end}}' 2>/dev/null
 }
 
-# Push k8s/demo-app into local Gitea so Argo has a real git source.
-# Prints Gitea bridge IP on stdout (for capture); logs go to stderr.
+# Push demo_app/ (same as workspace) + k8s manifests to Gitea.
+# stdout = IP only (for capture); logs on stderr.
 publish_manifests_to_gitea() {
   local creds="${IOW_DIR}/gitea/gitea.env"
   if [ ! -f "${creds}" ]; then
-    echo "[!] Missing ${creds} - skip git publish" >&2
+    echo "[!] Missing ${creds} — skip git publish" >&2
     return 1
   fi
   # shellcheck disable=SC1090
@@ -150,23 +145,25 @@ publish_manifests_to_gitea() {
   work="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '${work}'" RETURN
-  echo "[*] Publishing k8s/demo-app → Gitea (main + iow/auto-heal) via ${ip}..." >&2
+  echo "[*] Publishing demo_app/ + k8s/demo-app → Gitea (same sources as workspace)..." >&2
   git clone "http://${GITEA_USER}:${GITEA_TOKEN}@127.0.0.1:3000/iow/inception-of-wisdom.git" "${work}/repo" >/dev/null 2>&1
-  mkdir -p "${work}/repo/k8s/demo-app"
+  mkdir -p "${work}/repo/k8s/demo-app" "${work}/repo/demo_app"
   cp -a "${ROOT}/k8s/demo-app/." "${work}/repo/k8s/demo-app/"
+  cp -a "${ROOT}/demo_app/." "${work}/repo/demo_app/"
   (
     cd "${work}/repo"
     git config user.email "iow@iow.local"
     git config user.name "iow"
-    git add k8s/demo-app
-    git diff --cached --quiet || git commit -m "IoW: demo-app manifests for Argo CD" >/dev/null
+    git add k8s/demo-app demo_app
+    git diff --cached --quiet || git commit -m "IoW: sync demo_app + k8s manifests for Argo CD" >/dev/null
     git push origin HEAD:main >/dev/null
     git push origin HEAD:iow/auto-heal >/dev/null 2>&1 || git push -u origin HEAD:iow/auto-heal >/dev/null
   )
-  echo "[+] Manifests published to Gitea" >&2
+  echo "[+] Gitea demo_app/ matches ${ROOT}/demo_app" >&2
   printf '%s\n' "${ip}"
 }
 
+# stdout = URL only (kubectl noise suppressed).
 register_argocd_repo() {
   local ip="$1"
   local creds="${IOW_DIR}/gitea/gitea.env"
@@ -178,10 +175,10 @@ register_argocd_repo() {
     --from-literal=url="${url}" \
     --from-literal=username="${GITEA_USER}" \
     --from-literal=password="${GITEA_TOKEN}" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl -n "${NS_ARGO}" label secret iow-gitea-repo \
     argocd.argoproj.io/secret-type=repository --overwrite >/dev/null
-  echo "${url}"
+  printf '%s\n' "${url}"
 }
 
 wait_ready() {
@@ -206,21 +203,41 @@ wait_ready() {
   return 1
 }
 
+# Always rebuild from ROOT/demo_app so the k8s image matches the workspace app.
 import_demo_image() {
   local img="inception-of-wisdom-demo_app:latest"
+  echo "[*] Building demo image from ${ROOT}/demo_app (same as compose iow_demo_target)..."
+  (cd "${ROOT}" && docker compose build demo_app)
   if ! docker image inspect "${img}" >/dev/null 2>&1; then
-    echo "[*] Building demo image via compose..."
-    (cd "${ROOT}" && docker compose build demo_app) || true
-  fi
-  if ! docker image inspect "${img}" >/dev/null 2>&1; then
-    echo "[!] ${img} missing - cluster will try to pull (may fail offline)"
-    return 0
+    echo "[!] ${img} missing after build"
+    return 1
   fi
   echo "[*] Importing ${img} into k3s containerd..."
   docker save "${img}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import - || {
-    echo "[!] ctr import failed - trying crictl/ctr alternate"
-    docker save "${img}" | docker exec -i "${K3S_NAME}" k3s ctr images import - || true
+    echo "[!] ctr import failed — trying k3s ctr"
+    docker save "${img}" | docker exec -i "${K3S_NAME}" k3s ctr images import -
   }
+}
+
+apply_argocd_application() {
+  local repo_url="$1"
+  python3 - "${ROOT}/k8s/argocd/application.yaml" "${repo_url}" <<'PY' | kubectl apply -f -
+import sys
+from pathlib import Path
+src, repo = Path(sys.argv[1]), sys.argv[2]
+text = src.read_text(encoding="utf-8")
+out = []
+for line in text.splitlines():
+    if line.strip().startswith("repoURL:"):
+        indent = line[: len(line) - len(line.lstrip())]
+        out.append(f"{indent}repoURL: {repo}")
+    elif line.strip().startswith("targetRevision:"):
+        indent = line[: len(line) - len(line.lstrip())]
+        out.append(f"{indent}targetRevision: main")
+    else:
+        out.append(line)
+print("\n".join(out) + "\n")
+PY
 }
 
 ensure_port_forward() {
@@ -262,7 +279,7 @@ ensure_cluster() {
       kubectl get nodes
       return 0
     fi
-    echo "[!] Existing ${K3S_NAME} unhealthy - recreating"
+    echo "[!] Existing ${K3S_NAME} unhealthy — recreating"
   fi
   purge_cluster
   start_k3s
@@ -278,7 +295,7 @@ write_kubeconfig
 echo "[*] Installing Argo CD into namespace ${NS_ARGO}..."
 kubectl create namespace "${NS_ARGO}" --dry-run=client -o yaml | kubectl apply -f -
 if ! kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.3/manifests/install.yaml; then
-  echo "[!] Could not fetch Argo CD install.yaml from GitHub - retry once..."
+  echo "[!] Could not fetch Argo CD install.yaml from GitHub — retry once..."
   sleep 2
   kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.3/manifests/install.yaml
 fi
@@ -286,37 +303,37 @@ echo "[*] Waiting for argocd-server (up to 3 min)..."
 kubectl -n "${NS_ARGO}" rollout status deployment/argocd-server --timeout=180s || true
 
 kubectl create namespace "${NS_DEMO}" --dry-run=client -o yaml | kubectl apply -f -
-import_demo_image
 
-# Attach to compose network (idempotent) so Argo can reach Gitea by container IP.
 if docker network inspect iow-network >/dev/null 2>&1; then
   docker network connect iow-network "${K3S_NAME}" >/dev/null 2>&1 || true
 fi
 
-GITEA_IP="$(publish_manifests_to_gitea)"
+# Build+import AFTER namespace exists so we can restart deployment.
+import_demo_image
+
+GITEA_IP="$(publish_manifests_to_gitea | tail -n1)"
 REPO_URL="${IOW_GITOPS_REPO_URL:-}"
 if [ -z "${REPO_URL}" ]; then
   if [ -n "${GITEA_IP}" ]; then
-    REPO_URL="$(register_argocd_repo "${GITEA_IP}")"
+    REPO_URL="$(register_argocd_repo "${GITEA_IP}" | tail -n1)"
   else
     REPO_URL="http://$(gitea_ip):3000/iow/inception-of-wisdom.git"
   fi
 fi
+# Strip any accidental whitespace/newlines from capture.
+REPO_URL="$(printf '%s' "${REPO_URL}" | tr -d '\r\n' | head -c 500)"
 echo "[*] Applying Argo CD Application (repo=${REPO_URL})..."
-# Prefer main (always exists after publish); heal branch also pushed.
-sed -e "s|repoURL:.*|repoURL: ${REPO_URL}|" \
-    -e "s|targetRevision:.*|targetRevision: main|" \
-    "${ROOT}/k8s/argocd/application.yaml" \
-  | kubectl apply -f -
+apply_argocd_application "${REPO_URL}"
 
 kubectl apply -f "${ROOT}/k8s/demo-app/deployment.yaml" || true
+# Ensure pods use the image we just imported (tag:latest may have been cached).
+kubectl -n "${NS_DEMO}" rollout restart deployment/iow-demo >/dev/null 2>&1 || true
+kubectl -n "${NS_DEMO}" rollout status deployment/iow-demo --timeout=90s || true
 
 echo "[*] Verifying demo namespace..."
 kubectl -n "${NS_DEMO}" get pods,svc || true
 
-# NodePort is published on the k3s container; also keep a port-forward fallback.
 ensure_port_forward demo "${NS_DEMO}" iow-demo "${NODE_PORT}" 5000 || true
-# Argo CD UI on :8080 (what you tried earlier)
 ensure_port_forward argocd "${NS_ARGO}" argocd-server 8080 80 || true
 
 ARGO_PASS="$(kubectl -n "${NS_ARGO}" get secret argocd-initial-admin-secret \
@@ -338,7 +355,8 @@ EOF
 echo ""
 echo "[+] argocd-bonus READY"
 echo "    kubectl:  source ${IOW_DIR}/gitops/path.env && kubectl get nodes"
-echo "    demo:     http://127.0.0.1:${NODE_PORT}"
+echo "    demo:     http://127.0.0.1:${NODE_PORT}  (same image as demo_app/)"
+echo "    compose:  http://127.0.0.1:5001          (iow_demo_target)"
 echo "    Argo CD:  http://127.0.0.1:8080  (user=admin pass=${ARGO_PASS:-<see secret>})"
 kubectl get nodes
 kubectl -n "${NS_DEMO}" get pods,svc || true

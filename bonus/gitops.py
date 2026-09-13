@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) - Bonus: GitOps redeploy helpers (Argo CD + k3d).
+Inception-of-Wisdom (IoW) - Bonus: GitOps redeploy helpers (Argo CD + iow-k3s).
 
 When IOW_REDEPLOY_MODE=gitops, a heal commit (+ push) should be enough for the
 cluster to pick up the change; the agent waits for sync/rollout instead of

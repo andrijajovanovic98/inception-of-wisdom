@@ -193,7 +193,7 @@
  │ 4. VERIFY    │◄─────────────────────────────────┤ 3. ACT       │
  │  (Verifier)  │      Commit az iow/auto-heal-en  │ (Wisdom Loop)│
  └──────────────┘                                  └──────────────┘
-  (3 sikertelen kísérlet után: Git reset --hard visszaállítás az eredetire)
+  (3 sikertelen kísérlet után csak a demo_app/ hatókör áll vissza)
       </pre>
       <div class="grid-2">
         <div class="card">
@@ -217,21 +217,21 @@
             <li><strong>demo_app:</strong> Konténerizált Flask célalkalmazás (5001:5000 port) <code>./demo_app:/app</code> kötéssel.</li>
             <li><strong>agent:</strong> IoW ágens és FastAPI dashboard (8000:8000 port).</li>
             <li><strong>/var/run/docker.sock:</strong> Csatolva az ágensbe a konténer újraindításához és vizsgálatához.</li>
-            <li><strong>UID / GID Matching:</strong> Az ágens a host felhasználó (101888/4224) jogaival fut, elkerülve a fájljogosultsági hibákat a bind mounton.</li>
+            <li><strong>Campus-biztos fájlírás:</strong> Az ágens image nem rögzít <code>USER</code>-t és nem igényel host-specifikus chown-t; campuson a hoston futó ágens az ajánlott.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Offline Host LLM Kapcsolat</h3>
           <ul>
             <li><strong>Helyi Ollama:</strong> A modell a hoston fut az erőforrások kímélése érdekében.</li>
-            <li><strong>Bridge Híd:</strong> <code>host.docker.internal:host-gateway</code> biztosítja a kapcsolatot a belső hálózaton (172.17.0.1:11434).</li>
+            <li><strong>Bridge Híd:</strong> A <code>host.docker.internal:host-gateway</code> kapcsolja a konténert a host helyi Ollama szolgáltatásához a <code>:11436</code> porton.</li>
             <li><strong>Modell:</strong> <code>qwen2.5-coder:1.5b</code> (< 3B paraméter, a subject előírása szerint).</li>
             <li><strong>Embedding:</strong> <code>all-MiniLM-L6-v2</code> offline cache a <code>/tmp/iow/</code>-ben (42 kvótavédelem).</li>
           </ul>
         </div>
       </div>
       <div class="defense-tip">
-        <strong>Defense Tipp:</strong> Az értékelők ellenőrizni fogják, hogy külső API-t hívsz-e. Mutasd meg nekik a <code>docker-compose.yml</code>-ben az <code>extra_hosts</code> és a <code>host.docker.internal:11434</code> beállításokat!
+        <strong>Defense Tipp:</strong> Az értékelők ellenőrizni fogják, hogy külső API-t hívsz-e. Mutasd meg nekik a <code>docker-compose.yml</code> <code>extra_hosts</code> beállítását és a helyi <code>host.docker.internal:11436</code> Ollama hidat!
       </div>
     </div>
 
@@ -260,7 +260,7 @@
         </div>
         <div class="card">
           <h3>HTTP Szondák és Osztályozás</h3>
-          <p>3 másodpercenként lekérdezi a végpontokat:</p>
+          <p>3 másodpercenként lekérdezi a <code>/</code> és <code>/healthz</code> végpontokat:</p>
           <ul>
             <li><strong>2xx:</strong> Egészséges működés</li>
             <li><strong>4xx:</strong> Soft szuggesztió (EMBERI feladat, nem javítja automatikusan)</li>
@@ -283,7 +283,7 @@
             <li>A subject kifejezetten tiltja a fix méretű darabolást (pl. 500 karakter).</li>
             <li>Python <code>ast</code> modullal logikai függvény- és osztályhatárok mentén szeletel.</li>
             <li>Minden chunkhoz SHA-256 lenyomatot rendel.</li>
-            <li>A ChromaDB <code>PersistentClient</code> a <code>.chroma</code> mappában újraindításkor átugorja a változatlan kódkockákat.</li>
+            <li>A ChromaDB <code>PersistentClient</code> a <code>/tmp/iow/chroma_db</code> mappában újraindításkor átugorja a változatlan kódkockákat.</li>
           </ul>
         </div>
         <div class="card">
@@ -321,11 +321,11 @@
         </div>
         <div class="card">
           <h3>GitManager és Ágkezelés</h3>
-          <p>Pre-loop snapshot sha mentése. Atomi írás <code>os.replace</code>-szel. Automatikus commit a dedikált <code>iow/auto-heal</code> ágra.</p>
+          <p>Pre-loop snapshot mentése, <code>demo_app/</code>-ra korlátozott atomi írás <code>os.replace</code>-szel, majd commit a dedikált <code>iow/auto-heal</code> ágra.</p>
         </div>
       </div>
       <div class="defense-tip">
-        <strong>A 3-Kísérletes Garancia:</strong> Ha 3 javítási kísérlet után sem áll talpra a célalkalmazás, a GitManager azonnal kiad egy <code>git reset --hard &lt;pre_loop_hash&gt;</code> parancsot, újraindítja a konténert, és tisztán hagyja a repót.
+        <strong>A 3-Kísérletes Garancia:</strong> Ha mindhárom kísérlet sikertelen, a GitManager mixed resetet és célzott <code>demo_app/</code> visszaállítást végez. A repó más részein lévő ágens- és dashboard-munka megmarad.
       </div>
     </div>
 
@@ -377,7 +377,7 @@ kill_switch: false
         </div>
       </div>
       <div class="highlight-box">
-        Minden bónusz modul a <code>bonus/</code> könyvtárban található, így a kötelező rész kódja teljesen tiszta marad.
+        A Gitea HITL a <code>make pr-bonus</code> paranccsal, a <code>:3000</code> porton fut. A <code>make argocd-bonus</code> campus-biztos <code>iow-k3s</code>-t használ (nem nested k3d-t), az Argo UI a <code>:8080</code>, a demo NodePort a <code>:30051</code> porton érhető el.
       </div>
     </div>
 
@@ -388,8 +388,11 @@ kill_switch: false
         <div class="card">
           <h3>1. Lépés: Indítás és Alapállapot</h3>
           <pre>
-# Verem indítása
+# demo_app + Gitea infrastruktúra indítása
 make up
+
+# Host dashboard és bónusz szolgáltatások
+make bonus
 
 # Nyisd meg a Dashboardot böngészőben:
 http://localhost:8000
@@ -423,23 +426,23 @@ make break
           <h3>Kötelező Követelmények</h3>
           <p>* Observe $\to$ Think $\to$ Act $\to$ Verify hurok<br>
              * Diff-mentes strukturált JSON patchek<br>
-             * Max 3 kísérlet + automatikus hard rollback<br>
+             * Max 3 kísérlet + hatókörös mixed rollback<br>
              * 5 dinamikus biztonsági korlát<br>
              * Kizárólag helyi modellek</p>
         </div>
         <div class="card">
           <h3>Konténer és Kvóta</h3>
-          <p>* Egyetlen <code>docker compose up</code><br>
+          <p>* <code>make up</code> + host <code>make bonus</code><br>
              * Docker socket vezérlés<br>
-             * Host UID illesztés (101888/4224)<br>
+             * Nincs rögzített konténer UID/GID követelmény<br>
              * Minden cache a <code>/tmp/</code> mappába irányítva</p>
         </div>
         <div class="card">
           <h3>Bónusz Csomag (Chapter VI)</h3>
           <p>* Tiny Classifier & gyorsítótár<br>
              * Second Opinion kettős konszenzus<br>
-             * Human-in-the-Loop PR menedzser<br>
-             * 4-fülből álló webes felület</p>
+             * Gitea HITL PR menedzser a <code>:3000</code> porton<br>
+             * Argo CD GitOps az <code>iow-k3s</code> klaszteren</p>
         </div>
       </div>
       <div class="highlight-box" style="margin-top: 24px; text-align: center;">

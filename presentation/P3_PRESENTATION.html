@@ -93,6 +93,7 @@
             <li>Enforces complete file replacement or creation.</li>
             <li>No ambiguous patch hunk offsets.</li>
             <li>System prompts strictly mandate syntactically complete code.</li>
+            <li>If the generated patch fails, a surgical patcher can disarm the known intentional-crash marker.</li>
           </ul>
         </div>
       </div>
@@ -127,11 +128,9 @@
           </ul>
         </div>
         <div class="card">
-          <h3>Automatic Hard Rollback</h3>
+          <h3>Scoped Mixed Rollback</h3>
           <div class="highlight-box">
-            <strong>Guaranteed Zero-Corruption:</strong> If verification fails after maximum attempts (3), the loop triggers:
-            <code>git reset --hard &lt;pre_loop_sha&gt;</code>
-            The original codebase state is completely restored without developer intervention.
+            <strong>Protected Working State:</strong> If verification fails after 3 attempts, GitManager uses mixed reset and targeted restore for <code>demo_app/</code> only. It does not wipe unrelated uncommitted agent or dashboard work.
           </div>
         </div>
       </div>
@@ -145,7 +144,8 @@
           <h3>Docker Engine Restart</h3>
           <ul>
             <li>Interacts with host Docker daemon via <code>/var/run/docker.sock</code>.</li>
-            <li>Restarts target container via Docker Engine API: <code>POST /containers/{id}/restart</code>.</li>
+            <li>Restarts the target via Docker Engine API by default.</li>
+            <li>With <code>IOW_REDEPLOY_MODE=gitops</code>, waits for Argo CD/kubectl rollout instead.</li>
             <li>Captures new container state and exit status.</li>
           </ul>
         </div>
@@ -153,7 +153,8 @@
           <h3>Active Grace Period (20s)</h3>
           <ul>
             <li>Does not immediately assume success upon container up.</li>
-            <li>Polls HTTP health endpoints (<code>/health</code>, <code>/crash</code>) across the grace window.</li>
+            <li>Polls <code>/</code> and <code>/healthz</code> across the grace window.</li>
+            <li><code>/api/crash</code> is only the intentional <code>make break</code> trigger; it is not a health probe.</li>
             <li>Continuously monitors container logs for immediate re-crash loops or unhandled exceptions.</li>
           </ul>
         </div>
@@ -171,7 +172,7 @@
                  ▼ (Feedback: Container exited with status 1, Traceback included)
 Attempt 2: Augmented Prompt with Failure Context -> Refined Patch -> Pass!
                  │
-                 └─ If Attempt 3 fails: Automatic Git Reset --hard</pre>
+                 └─ If Attempt 3 fails: scoped demo_app/ mixed rollback</pre>
         <ul>
           <li>Error output from Attempt 1 is injected into the Attempt 2 prompt as explicit feedback.</li>
           <li>Enables the 1.5B LLM to correct its own previous mistakes iteratively.</li>
@@ -187,9 +188,9 @@ Attempt 2: Augmented Prompt with Failure Context -> Refined Patch -> Pass!
           <h3>iow.config.yml Constraints</h3>
           <ul>
             <li><strong>Single-Flight Lock:</strong> Only one healing loop can run concurrently.</li>
-            <li><strong>Cooldown:</strong> Enforces quiet time between loop runs (e.g. 60s).</li>
-            <li><strong>Rate Limit Per Hour:</strong> Caps maximum repairs per rolling 60-minute window (e.g. 10/hr).</li>
-            <li><strong>Hard Cap:</strong> Absolute maximum allowable repairs before requiring human intervention.</li>
+            <li><strong>Cooldown:</strong> Enforces 300s quiet time for the same incident signature.</li>
+            <li><strong>Rate Limit Per Hour:</strong> Caps repairs at 5 per rolling 60-minute window.</li>
+            <li><strong>Hard Cap:</strong> Allows at most 20 repairs per process lifetime.</li>
           </ul>
         </div>
         <div class="card">
@@ -212,7 +213,7 @@ Attempt 2: Augmented Prompt with Failure Context -> Refined Patch -> Pass!
           <li><strong>Q: What prevents the AI from deleting the whole codebase to 'fix' a bug?</strong><br>
               A: Sanity checks enforce a max 3 file limit, 60% shrinkage guard, and AST syntax validation before any disk write.</li>
           <li><strong>Q: How do you prove rollback works during the defense?</strong><br>
-              A: Trigger an unfixable syntax or configuration error; observe the agent exhaust 3 attempts, execute <code>git reset --hard</code>, and return the working directory to the pre-loop revision.</li>
+              A: Trigger an unfixable syntax or configuration error; observe 3 failed attempts, then verify that only <code>demo_app/</code> returns to its pre-loop state while unrelated work remains intact.</li>
         </ul>
       </div>
     </div>
