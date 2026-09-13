@@ -260,10 +260,16 @@ logs:
 	@docker compose logs -f 2>/dev/null || docker-compose logs -f
 
 break:
-	@curl -s -X POST http://localhost:5001/api/crash 2>/dev/null \
-		|| curl -s -X POST http://127.0.0.1:5000/api/crash 2>/dev/null \
-		|| echo "[!] Target unreachable"
-	@echo "[!] Crash sent - watch dashboard :8000"
+	@code=$$(curl -s -o /tmp/iow-break.body -w '%{http_code}' -X POST http://127.0.0.1:5001/api/crash 2>/dev/null || echo 000); \
+	 body=$$(head -c 200 /tmp/iow-break.body 2>/dev/null || true); \
+	 if [ "$$code" = "500" ]; then \
+	   echo "[!] Crash triggered (HTTP $$code) - watch dashboard :8000"; \
+	 elif [ "$$code" = "200" ]; then \
+	   echo "[*] /api/crash already healed (HTTP $$code): $$body"; \
+	   echo "    Restore bug: git checkout main -- demo_app/app.py && docker restart iow_demo_target"; \
+	 else \
+	   echo "[!] Unexpected HTTP $$code from /api/crash: $$body"; \
+	 fi
 
 heal:
 	@curl -s -X POST http://localhost:8000/api/loop/trigger -H "Content-Type: application/json" -d '{}' \

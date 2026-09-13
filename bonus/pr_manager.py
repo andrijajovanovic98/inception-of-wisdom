@@ -402,6 +402,124 @@ class PullRequestManager:
         logger.info(f"Pull Request [{pr_id}] registered and waiting for human review.")
         return pr_record
 
+    def open_verified_heal_pr(
+        self,
+        cycle_id: str,
+        diagnosis_summary: str,
+        files_changed: Optional[List[str]] = None,
+        commit_sha: Optional[str] = None,
+    ) -> Optional[PullRequestRecord]:
+        """After a verified auto-heal, push iow/auto-heal and open a Gitea PR into main.
+
+        Unlike HITL review PRs (separate review branches), this exposes the already-committed
+        heal branch so evaluators can see a real PR without turning HITL on.
+        """
+        heal_branch = self.git_manager.heal_branch
+        base_branch = self._resolve_base_branch()
+        files = files_changed or []
+        summary = (diagnosis_summary or "Verified auto-heal").strip()
+        title = f"[IoW Verified Heal] {summary[:70]}"
+        body = f"""# {title}
+
+### Status
+Verified healthy after Wisdom Loop auto-heal.
+
+### Cycle
+`{cycle_id}`
+
+### Commit
+`{commit_sha or self.git_manager.get_current_head() or "unknown"}`
+
+### Modified files
+{chr(10).join([f"- `{f}`" for f in files]) if files else "- (see branch diff)"}
+
+### Branch
+`{heal_branch}` → `{base_branch}`
+
+---
+*Opened automatically after a successful Wisdom Loop verification.*
+"""
+
+        ready, msg = self.ensure_remote_ready()
+        if not ready:
+            logger.warning(f"Cannot open verified heal PR: {msg}")
+            return None
+
+        owner, repo = self._owner(), self._repo()
+        existing = self._find_open_pr(heal_branch, base_branch)
+        remote_pr_number: Optional[int] = None
+        remote_html_url: Optional[str] = None
+        remote_api_url: Optional[str] = None
+
+        if existing:
+            remote_pr_number = existing.get("number")
+            remote_html_url = existing.get("html_url") or (
+                f"{self._public_base()}/{owner}/{repo}/pulls/{remote_pr_number}"
+            )
+            remote_api_url = existing.get("url")
+            logger.info(
+                f"Verified heal PR already open: Gitea #{remote_pr_number} ({remote_html_url})"
+            )
+        else:
+            code, data = self._http_request(
+                "POST",
+                f"/api/v1/repos/{owner}/{repo}/pulls",
+                body={
+                    "title": title,
+                    "body": body,
+                    "head": heal_branch,
+                    "base": base_branch,
+                },
+            )
+            if code in (200, 201):
+                remote_pr_number = data.get("number")
+                remote_html_url = data.get("html_url") or (
+                    f"{self._public_base()}/{owner}/{repo}/pulls/{remote_pr_number}"
+                )
+                remote_api_url = data.get("url")
+                logger.info(f"Gitea verified heal PR #{remote_pr_number} opened: {remote_html_url}")
+            else:
+                logger.warning(f"Gitea verified heal PR create failed (HTTP {code}): {data}")
+                return None
+
+        pr_id = f"pr-heal-{cycle_id}"
+        record = PullRequestRecord(
+            pr_id=pr_id,
+            title=title,
+            branch_name=heal_branch,
+            base_revision=commit_sha or self.git_manager.get_current_head() or "",
+            base_branch=base_branch,
+            status="pending_review",
+            diagnosis_summary=summary,
+            files_changed=files,
+            unified_diff="(see Gitea PR diff for verified heal branch)",
+            markdown_body=body,
+            created_at=time.time(),
+            remote_pr_number=remote_pr_number,
+            remote_html_url=remote_html_url,
+            remote_api_url=remote_api_url,
+        )
+        self.prs[pr_id] = record
+        self._save_store()
+        return record
+
+    def _find_open_pr(self, head: str, base: str) -> Optional[Dict[str, Any]]:
+        owner, repo = self._owner(), self._repo()
+        code, data = self._http_request(
+            "GET",
+            f"/api/v1/repos/{owner}/{repo}/pulls?state=open&limit=50",
+        )
+        if code != 200 or not isinstance(data, list):
+            return None
+        for pr in data:
+            if not isinstance(pr, dict):
+                continue
+            head_ref = (pr.get("head") or {}).get("ref") if isinstance(pr.get("head"), dict) else None
+            base_ref = (pr.get("base") or {}).get("ref") if isinstance(pr.get("base"), dict) else None
+            if head_ref == head and base_ref == base:
+                return pr
+        return None
+
     def list_prs(self, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
         results = list(self.prs.values())
         if status_filter:
