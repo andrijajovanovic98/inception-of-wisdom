@@ -226,7 +226,7 @@ Before any AI-generated patch is applied to the filesystem, it must satisfy four
 
 ---
 
-## 🚀 Operational Guide
+## Operational Guide
 
 ### Primary Workflow: Docker Compose Orchestration
 
