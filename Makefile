@@ -52,7 +52,7 @@ export DOCKER_CONFIG     := $(DOCKER_CONFIG_DIR)
 .PHONY: all up down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus gitea \
 	break heal rollback status logs setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
-	ensure-embed ensure-lint-tools ensure-target flake mypy lint
+	ensure-embed ensure-lint-tools ensure-target ensure-gitea flake mypy lint
 
 all: help
 
@@ -62,7 +62,7 @@ help:
 	@echo "================================================================================"
 	@echo " make up               - build and launch containerized IoW via Docker Compose"
 	@echo "                         (demo_app + agent + Gitea at http://localhost:3000)"
-	@echo " make gitea            - start local Gitea forge + bootstrap (http://localhost:3000)"
+	@echo " make gitea            - ensure Gitea forge ready (wait + bootstrap, fail on error)"
 	@echo " make bonus            - bonus dashboard (auto-starts Gitea for remote PRs)"
 	@echo " make down             - stop and tear down Docker containers"
 	@echo " make docker-restart   - rebuild images and recreate IoW containers"
@@ -87,12 +87,66 @@ down:
 	@docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
 	@echo "[+] Containers stopped."
 
-gitea: ensure-dirs
-	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
-	@echo "[*] Starting local Gitea forge + bootstrap..."
-	@docker compose up -d gitea gitea-init 2>/dev/null || docker-compose up -d gitea gitea-init
-	@echo "[+] Gitea UI: http://localhost:3000  (user=iow pass=iowiow123)"
+# Start Gitea, wait until healthy, bootstrap creds; fail loudly on errors (no silent 2>/dev/null).
+ensure-gitea: ensure-dirs
+	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR) $(IOW_DIR)/gitea 2>/dev/null || true
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "[!] Docker required for Gitea HITL PRs"; exit 1; \
+	fi
+	@if ! docker info >/dev/null 2>&1; then \
+		echo "[!] Docker daemon unavailable"; exit 1; \
+	fi
+	@echo "[*] Ensuring Gitea forge is up..."
+	@docker compose up -d gitea || docker-compose up -d gitea
+	@echo "[*] Waiting for Gitea HTTP on :3000..."
+	@i=0; \
+	while [ $$i -lt 60 ]; do \
+		if curl -sf http://127.0.0.1:3000/api/v1/version >/dev/null 2>&1; then \
+			echo "[+] Gitea HTTP ready"; \
+			break; \
+		fi; \
+		i=$$((i + 1)); \
+		sleep 2; \
+		if [ $$i -ge 60 ]; then \
+			echo "[!] Gitea did not become ready in time — logs:"; \
+			docker logs iow_gitea 2>&1 | tail -n 40 || true; \
+			exit 1; \
+		fi; \
+	done
+	@need_init=0; \
+	if [ ! -f "$(IOW_DIR)/gitea/gitea.env" ]; then \
+		need_init=1; \
+	else \
+		tok=$$(sed -n 's/^GITEA_TOKEN=//p' "$(IOW_DIR)/gitea/gitea.env" | head -n1); \
+		if [ -z "$$tok" ]; then \
+			need_init=1; \
+		elif ! curl -sf -H "Authorization: token $$tok" http://127.0.0.1:3000/api/v1/user >/dev/null 2>&1; then \
+			need_init=1; \
+		fi; \
+	fi; \
+	if [ "$$need_init" = "1" ]; then \
+		echo "[*] Bootstrapping Gitea admin/token/repo via gitea-init..."; \
+		docker rm -f iow_gitea_init >/dev/null 2>&1 || true; \
+		if docker compose run --rm --no-deps gitea-init; then \
+			true; \
+		elif docker-compose run --rm --no-deps gitea-init; then \
+			true; \
+		else \
+			echo "[!] gitea-init FAILED"; \
+			docker logs iow_gitea_init 2>&1 | tail -n 50 || true; \
+			exit 1; \
+		fi; \
+	else \
+		echo "[*] Gitea credentials already valid: $(IOW_DIR)/gitea/gitea.env"; \
+	fi
+	@if [ ! -f "$(IOW_DIR)/gitea/gitea.env" ]; then \
+		echo "[!] Missing $(IOW_DIR)/gitea/gitea.env after bootstrap"; \
+		exit 1; \
+	fi
+	@echo "[+] Gitea ready → http://127.0.0.1:3000  (user=iow pass=iowiow123)"
 	@echo "    Creds: $(IOW_DIR)/gitea/gitea.env"
+
+gitea: ensure-gitea
 
 docker-restart: ensure-dirs
 	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
@@ -343,14 +397,7 @@ p3: ensure-ready ensure-ollama-quick ensure-target
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p3)
 
-bonus: ensure-ready ensure-ollama-quick ensure-target
-	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
-	@if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then \
-		if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx iow_gitea; then \
-			echo "[*] Starting Gitea for bonus HITL PRs..."; \
-			docker compose up -d gitea gitea-init 2>/dev/null || docker-compose up -d gitea gitea-init; \
-		else echo "[*] Gitea already up: iow_gitea → http://127.0.0.1:3000"; fi; \
-	fi
+bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea
 	@echo "[*] Bonus Suite (classifier / consensus / Gitea PRs) on :$(PORT)"
 	@echo "    tabs: all visible - all unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
