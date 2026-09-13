@@ -31,6 +31,7 @@ EMBED_MODEL  := all-MiniLM-L6-v2
 PORT         := 8000
 TARGET       := demo_app
 TARGET_URL   ?= http://127.0.0.1:5001
+DOCKER_TARGET := iow_demo_target
 LINT_DIRS    := p1 p2 p3 bonus demo_app dashboard
 DOCKER_IMAGE_AGENT := inception-of-wisdom-agent
 DOCKER_IMAGE_DEMO  := inception-of-wisdom-demo_app
@@ -48,10 +49,19 @@ export PYTHONPATH        := $(CURDIR):$(SITE_PACKAGES)
 export OLLAMA_MODELS     := $(OLLAMA_DIR)
 export OLLAMA_HOST
 export DOCKER_CONFIG     := $(DOCKER_CONFIG_DIR)
+# Rootless Docker (42 campus) serves $XDG_RUNTIME_DIR/docker.sock. docker-compose.yml
+# mounts $(DOCKER_SOCK) into the agent, so the containerized agent can actually reach
+# the daemon that runs its sibling containers.
+DOCKER_SOCK  ?= $(shell if [ -S "$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}/docker.sock" ]; \
+	then echo "$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}/docker.sock"; \
+	else echo /var/run/docker.sock; fi)
+export DOCKER_SOCK
+IOW_LLM_MODEL ?= $(LLM_MODEL)
+export IOW_LLM_MODEL
 
 .PHONY: all up up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
 	pr-bonus argocd-bonus argocd-bonus-down ensure-gitops-tools gitops-doctor gitops-doctor-purge gitea \
-	break heal rollback status logs setup clean fclean re help stop \
+	break break-hard break-import suggest heal rollback status logs setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
 	ensure-embed ensure-lint-tools ensure-target ensure-gitea ensure-dashboard-port \
 	flake mypy lint
@@ -84,6 +94,10 @@ help:
 	@echo " make ensure-gitops-tools - download kubectl/argocd → $(IOW_DIR)/bin (no sudo)"
 	@echo " make gitops-doctor       - list compose vs k3s containers + dump failing logs"
 	@echo " make gitops-doctor-purge - wipe broken k3s/k3d only (keep demo/gitea)"
+	@echo " make break            - soft crash: HTTP 500 + traceback (process survives)"
+	@echo " make break-hard       - hard crash: target exits 1 (exit-code path)"
+	@echo " make break-import     - startup crash: missing import -> restart loop"
+	@echo " make suggest          - 4xx probe: surfaced for a human, never auto-healed"
 	@echo " make flake | mypy | lint"
 	@echo " make stop             - stop IoW ollama (pid file + orphans on $(OLLAMA_BIND))"
 	@echo " make clean            - docker-clean + caches (keep venv)"
@@ -302,17 +316,51 @@ docker-fclean:
 logs:
 	@docker compose logs -f 2>/dev/null || docker-compose logs -f
 
+# Soft crash: unhandled exception inside a request -> HTTP 500 + traceback in the
+# logs. The process survives, so this exercises the log-pattern and 5xx signals.
 break:
-	@code=$$(curl -s -o /tmp/iow-break.body -w '%{http_code}' -X POST http://127.0.0.1:5001/api/crash 2>/dev/null || echo 000); \
+	@code=$$(curl -s -o /tmp/iow-break.body -w '%{http_code}' -X POST $(TARGET_URL)/api/crash 2>/dev/null || echo 000); \
 	 body=$$(head -c 200 /tmp/iow-break.body 2>/dev/null || true); \
 	 if [ "$$code" = "500" ]; then \
-	   echo "[!] Crash triggered (HTTP $$code) - watch dashboard :8000"; \
+	   echo "[!] Soft crash triggered (HTTP $$code) - watch dashboard :$(PORT)"; \
 	 elif [ "$$code" = "200" ]; then \
 	   echo "[*] /api/crash already healed (HTTP $$code): $$body"; \
-	   echo "    Restore bug: git checkout main -- demo_app/app.py && docker restart iow_demo_target"; \
+	   echo "    Restore the bug: git checkout HEAD -- demo_app/app.py && docker restart $(DOCKER_TARGET)"; \
 	 else \
 	   echo "[!] Unexpected HTTP $$code from /api/crash: $$body"; \
 	 fi
+
+# Hard crash: the target process exits non-zero. Docker's restart policy brings it
+# back, so the Observer's exit-code path fires for real.
+break-hard:
+	@curl -s -o /dev/null -w '[!] Hard crash requested (HTTP %{http_code}) - target will exit 1\n' \
+		-X POST $(TARGET_URL)/api/crash-hard 2>/dev/null || echo "[!] Target unreachable"
+	@sleep 3
+	@echo "[*] Container state after the hard crash:"
+	@docker inspect $(DOCKER_TARGET) \
+		--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
+		2>/dev/null || true
+
+# Startup crash: plant a real bug (missing import) so the container restart-loops,
+# exactly the failure mode the subject describes. `make heal` then repairs it.
+break-import:
+	@if ! grep -q '^from flask import Flask, jsonify' demo_app/app.py; then \
+		echo "[*] demo_app/app.py already patched or modified - nothing to break"; exit 0; \
+	fi
+	@sed -i 's/^from flask import Flask, jsonify/# from flask import Flask, jsonify  # removed by make break-import/' demo_app/app.py
+	@echo "[!] Removed the Flask import from demo_app/app.py - restarting target..."
+	@docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true
+	@sleep 4
+	@echo "[*] Container state (expect a non-zero exit / restart loop):"
+	@docker inspect $(DOCKER_TARGET) \
+		--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
+		2>/dev/null || true
+	@echo "    Undo by hand: git checkout HEAD -- demo_app/app.py && docker restart $(DOCKER_TARGET)"
+
+# Suggestion signal: a 4xx probe target is flagged for a human, never auto-patched.
+suggest:
+	@curl -s -o /dev/null -w '[*] /api/missing-route -> HTTP %{http_code} (suggestion, never auto-healed)\n' \
+		$(TARGET_URL)/api/missing-route 2>/dev/null || echo "[!] Target unreachable"
 
 heal:
 	@curl -s -X POST http://localhost:8000/api/loop/trigger -H "Content-Type: application/json" -d '{}' \
@@ -515,7 +563,16 @@ bonus: ensure-ready ensure-ollama-quick ensure-target ensure-dashboard-port
 	@echo "    tabs: all visible - all unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	@echo "    Gitea PRs: make pr-bonus   |   GitOps: make argocd-bonus"
-	$(call IOW_UVICORN,bonus)
+	@bash -c 'set +e; \
+		trap "exit 0" INT TERM; \
+		export GITEA_URL=http://127.0.0.1:3000 GITEA_PUBLIC_URL=http://127.0.0.1:3000 \
+			GITEA_CREDS_FILE="$(IOW_DIR)/gitea/gitea.env" \
+			IOW_PR_STORE="$(IOW_DIR)/gitea/pull_requests.json" \
+			IOW_MODE=bonus TARGET_URL="$(TARGET_URL)"; \
+		$(PYTHON) -m uvicorn dashboard.app:app $(UVICORN_OPTS); \
+		ec=$$?; \
+		if [ $$ec -eq 0 ] || [ $$ec -eq 130 ] || [ $$ec -eq 143 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
+		exit $$ec'
 
 pr-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-dashboard-port
 	@echo "[*] PR Bonus (classifier / consensus / Gitea PRs) on :$(PORT)"
@@ -611,11 +668,14 @@ stop:
 	@echo "[*] stop done (IoW ollama on $(OLLAMA_BIND) / models $(OLLAMA_DIR))"
 
 # Soft clean: stop ollama + docker containers/network + caches (keep venv + images)
+# Keeps the two expensive downloads (embedding weights in $(HF_HOME), the Ollama
+# model in $(OLLAMA_DIR)) so the next start still works without a network.
 clean: stop docker-clean
-	@rm -rf $(CHROMA_DIR) $(PIP_CACHE) $(HF_HOME) $(MYPY_CACHE) \
-		$(IOW_DIR)/logs $(IOW_DIR)/.deps-ok $(IOW_DIR)/cache \
+	@rm -rf $(CHROMA_DIR) $(PIP_CACHE) $(MYPY_CACHE) \
+		$(IOW_DIR)/logs $(IOW_DIR)/cache \
 		.chroma .mypy_cache .lint-venv 2>/dev/null || true
-	@echo "[*] Cleaned caches and chroma under $(IOW_DIR) (venv kept)"
+	@echo "[*] Cleaned chroma + pip/mypy caches under $(IOW_DIR)"
+	@echo "    (venv, embedding model and ollama model kept - use fclean to wipe all)"
 
 # Full clean: stop ollama + remove IoW docker image/network/volumes + wipe all IoW products
 # (same contract as IoC: everything under /tmp/ioc goes away with fclean).

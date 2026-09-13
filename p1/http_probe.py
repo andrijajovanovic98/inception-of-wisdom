@@ -62,6 +62,10 @@ class HttpProbeManager:
         self._latest_results: Dict[str, ProbeResult] = {}
         self._lock = threading.Lock()
 
+        # While a deliberate restart is in flight the target is expected to be
+        # briefly unreachable; probing continues but must not raise crash events.
+        self._suppress_until: float = 0.0
+
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -100,6 +104,9 @@ class HttpProbeManager:
 
             with self._lock:
                 self._latest_results[full_url] = result
+
+            if time.time() < self._suppress_until:
+                continue
 
             # Fire appropriate callbacks based on signal classification
             if result.is_crash and self.on_crash:
@@ -161,7 +168,7 @@ class HttpProbeManager:
                     )
 
                 # 5xx Server Error: Hard Crash (Subject: Triggers Wisdom Loop)
-                else:
+                elif status_code >= 500:
                     return ProbeResult(
                         url=url,
                         status_code=status_code,
@@ -169,7 +176,21 @@ class HttpProbeManager:
                         is_healthy=False,
                         is_crash=True,
                         is_suggestion=False,
-                        error_message=f"HTTP {status_code} Internal Server Error on {url}",
+                        error_message=f"HTTP {status_code} server error on {url}",
+                        timestamp=now
+                    )
+
+                # 1xx / 3xx: not a crash and not a functional gap. A redirect is a
+                # deliberate answer from a live service, so it must never auto-heal.
+                else:
+                    return ProbeResult(
+                        url=url,
+                        status_code=status_code,
+                        response_time_ms=round(duration_ms, 2),
+                        is_healthy=False,
+                        is_crash=False,
+                        is_suggestion=False,
+                        error_message=f"HTTP {status_code} on {url}: unexpected non-2xx response",
                         timestamp=now
                     )
 
@@ -228,9 +249,36 @@ class HttpProbeManager:
         with self._lock:
             return {url: res.to_dict() for url, res in self._latest_results.items()}
 
+    def suppress_events_for(self, seconds: float) -> None:
+        """Stop raising crash/suggestion events for a moment (deliberate restart)."""
+        self._suppress_until = max(self._suppress_until, time.time() + max(0.0, seconds))
+
+    def resume_events(self) -> None:
+        """End any active suppression window immediately."""
+        self._suppress_until = 0.0
+
     def is_target_healthy(self) -> bool:
-        """Returns True if all probed endpoints responded with healthy status."""
+        """True when no probe reports a hard failure.
+
+        A 4xx is a *suggestion* - a functional gap for a human to decide on - so a
+        deliberately missing route on the probe list must not make a perfectly
+        healthy service read as down.
+        """
         with self._lock:
             if not self._latest_results:
                 return False
-            return all(res.is_healthy for res in self._latest_results.values())
+            if not any(res.is_healthy for res in self._latest_results.values()):
+                return False
+            return not any(res.is_crash for res in self._latest_results.values())
+
+    def get_health_detail(self) -> Dict[str, Any]:
+        """Health broken down by signal class, for the dashboard."""
+        with self._lock:
+            results = list(self._latest_results.values())
+        return {
+            "healthy": self.is_target_healthy(),
+            "probes_total": len(results),
+            "probes_ok": sum(1 for r in results if r.is_healthy),
+            "probes_failing": sum(1 for r in results if r.is_crash),
+            "probes_suggesting": sum(1 for r in results if r.is_suggestion),
+        }

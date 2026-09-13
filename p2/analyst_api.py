@@ -42,7 +42,8 @@ def create_analyst_router(
     retriever: Optional[CodeRetriever] = None,
     diagnostician: Optional[CrashDiagnostician] = None,
     chunker: Optional[AstChunker] = None,
-    target_dir: str = "demo_app"
+    target_dir: str = "demo_app",
+    index_watcher: Optional[Any] = None,
 ) -> Any:
     """Factory function that creates and wires the FastAPI APIRouter for the Analyst tab."""
     if APIRouter is object:
@@ -52,7 +53,7 @@ def create_analyst_router(
     router = APIRouter(prefix="/api/analyst", tags=["Analyst"])
 
     @router.get("/status")
-    async def get_analyst_status() -> Dict[str, Any]:
+    def get_analyst_status() -> Dict[str, Any]:
         """Returns the current status of the vector index and local models."""
         count = vector_db.count() if vector_db else 0
         emb_model = vector_db.embedding_model_name if vector_db else "unknown"
@@ -62,17 +63,27 @@ def create_analyst_router(
             "indexed_chunks_count": count,
             "embedding_model": emb_model,
             "llm_model": llm_model,
-            "target_dir": target_dir
+            "target_dir": target_dir,
+            "watch_mode": index_watcher.get_status() if index_watcher else {"active": False},
         }
 
     @router.post("/sync")
-    async def sync_index() -> Dict[str, Any]:
+    def sync_index() -> Dict[str, Any]:
         """Walks the target directory, chunks source files with AST, and updates ChromaDB."""
+        if index_watcher is not None:
+            # Same path the watcher uses: incremental upsert + prune, never a wipe.
+            stats = index_watcher.sync_once(force_full=True)
+            return {
+                "status": "success",
+                "stats": stats,
+                "total_indexed_in_db": vector_db.count() if vector_db else 0,
+            }
+
         if not chunker or not vector_db:
             return {"status": "error", "message": "Chunker or VectorDB not configured"}
 
         chunks = chunker.chunk_directory(target_dir)
-        stats = vector_db.index_chunks(chunks)
+        stats = vector_db.sync_chunks(chunks)
 
         return {
             "status": "success",
@@ -82,7 +93,7 @@ def create_analyst_router(
         }
 
     @router.post("/retrieve")
-    async def retrieve_chunks(req: RetrieveRequest) -> Dict[str, Any]:
+    def retrieve_chunks(req: RetrieveRequest) -> Dict[str, Any]:
         """Subject requirement: Free-text retrieval over the index.
         Returns top-k closest chunks with their similarity score.
         """
@@ -117,7 +128,7 @@ def create_analyst_router(
         }
 
     @router.post("/diagnose")
-    async def diagnose_crash(req: DiagnoseRequest) -> Dict[str, Any]:
+    def diagnose_crash(req: DiagnoseRequest) -> Dict[str, Any]:
         """Subject requirement: Structured diagnosis of a crash event.
         Returns JSON with summary and suspect files for Part 3.
         """

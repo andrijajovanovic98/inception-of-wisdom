@@ -38,7 +38,7 @@
 * **100% Air-Gapped & Local:** All machine learning inference (embeddings via `all-MiniLM-L6-v2` and code diagnosis via `Qwen 2.5 Coder 1.5B`) runs entirely on local host hardware. No proprietary cloud LLM APIs are called, guaranteeing total data sovereignty and zero telemetry egress.
 * **Deterministic AST Code Intelligence:** Application source code is parsed into Abstract Syntax Trees, preserving discrete function and class boundaries rather than using arbitrary character chunking.
 * **Non-Destructive Atomic Patching:** Corrective changes are structured as full-file replacements and validated through strict pre-disk sanity boundaries, preventing partial corruptions and syntax regressions.
-* **Scoped Rollback Guarantee:** If verification fails after maximum retry turns (default: 3), IoW rewinds only heal-scoped paths (`demo_app/`) to the pre-loop snapshot - never a repo-wide wipe of uncommitted agent/dashboard work.
+* **Scoped Rollback Guarantee:** The loop never checks a branch out. Heal commits are written onto `iow/auto-heal` with git plumbing (`hash-object` / `commit-tree` / `update-ref`), so HEAD, your branch and every file outside `demo_app/` stay exactly where you left them. If verification fails after the maximum retry turns (default: 3), only the heal-scoped paths are restored to the pre-loop snapshot.
 
 ---
 
@@ -247,7 +247,12 @@ Before any AI-generated patch is applied to the filesystem, it must satisfy four
 3. **Anti-Placeholder Filter:** Rejects stubs (`# TODO`, `# implement here`, …).
 4. **AST Syntax Parse:** Modified Python must compile before disk write.
 
-Heal writes and rollback are **scoped to `demo_app/`** (`p3/git_manager.py`) so agent/dashboard WIP is never wiped. If the LLM patch fails sanity, a **surgical disarm** of the intentional crash marker may still recover the target (`p3/patcher.py`).
+Heal writes and rollback are **scoped to `demo_app/`** (`p3/git_manager.py`), and the
+loop never checks out a branch, so agent/dashboard WIP is never touched. There is no
+canned answer for any particular bug: if the model truncates a file the Patcher asks
+it again with an explicit length requirement, and if it still fails the attempt fails
+honestly (`p3/patcher.py`). Stopping Ollama makes the Analyst report an explicit
+failure rather than inventing a culprit.
 
 ---
 
@@ -267,19 +272,48 @@ Heal writes and rollback are **scoped to `demo_app/`** (`p3/git_manager.py`) so 
 
 ### Primary Workflow
 
+**Everything in one command (subject entry point).** Brings up the agent, the local
+LLM runtime and the demo target together:
+
+```sh
+export DOCKER_SOCK="$XDG_RUNTIME_DIR/docker.sock"   # rootless Docker only (42 campus)
+docker compose up --build                            # agent + ollama + demo_app + gitea
+# dashboard → http://127.0.0.1:8000
+```
+
+**Host workflow (faster on campus: reuses one Ollama and one venv under `/tmp/iow`):**
+
 ```sh
 make setup                 # once (or after fclean) - venv, deps, embeddings, ollama
 make up                    # demo_app + gitea; leaves :8000 free for host dashboard
-make bonus                 # dashboard :8000 (classifier + consensus)
+make p3                    # dashboard :8000 with the Wisdom Loop unlocked
+# or: make bonus           # + classifier / consensus
 # or: make pr-bonus        # + Gitea HITL / verified PRs
 # or: make argocd-bonus    # + iow-k3s + Argo CD GitOps
 
-make break                 # POST /api/crash on demo → expect HTTP 500
+make break                 # soft crash: HTTP 500 + traceback, process survives
+make break-hard            # hard crash: target exits 1 (exit-code detection)
+make break-import          # startup crash: missing import → restart loop
+make suggest               # 4xx probe → suggestion, flagged but never auto-healed
 make heal                  # optional manual heal trigger
 make status
 make logs
 make down                  # stop compose stack
 ```
+
+### Which stage does what
+
+Observation is always live; patching waits for the stage that owns Part 3.
+
+| Command | Observer | Analyst | Wisdom Loop | Bonus |
+|:--|:--:|:--:|:--:|:--:|
+| `make p1` | yes | locked | locked | locked |
+| `make p2` | yes | yes | locked | locked |
+| `make p3` | yes | yes | **yes** | locked |
+| `make bonus` / `pr-bonus` / `argocd-bonus` / `run` | yes | yes | yes | **yes** |
+
+In `p1` and `p2` the loop endpoints answer `409` instead of patching, so a peer can
+step through the parts without the agent quietly committing behind the locked tab.
 
 ### Bonus / GitOps targets
 

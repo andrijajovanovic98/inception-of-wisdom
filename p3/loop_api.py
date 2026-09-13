@@ -41,6 +41,8 @@ def create_loop_router(
     safety_manager: Optional[SafetyManager] = None,
     event_manager: Optional[EventManager] = None,
     heal_executor: Optional[Callable[[ObserverEvent, float], None]] = None,
+    loop_enabled: bool = True,
+    mode: str = "full",
 ) -> Any:
     """Factory function that creates and wires the FastAPI APIRouter for the Wisdom Loop."""
     if not FASTAPI_AVAILABLE:
@@ -49,8 +51,20 @@ def create_loop_router(
 
     router = APIRouter(prefix="/api/loop", tags=["Wisdom Loop"])
 
+    def _require_loop_stage() -> None:
+        """Part 3 is not unlocked before `make p3` - refuse instead of patching."""
+        if not loop_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Wisdom Loop is locked in mode '{mode}'. "
+                    "Start the agent with `make p3`, `make bonus` or `make run` to "
+                    "enable patching, committing and restarting."
+                ),
+            )
+
     @router.get("/status")
-    async def get_loop_status() -> Dict[str, Any]:
+    def get_loop_status() -> Dict[str, Any]:
         """Returns the real-time operational status of the Wisdom Loop and safety bounds."""
         is_active = wisdom_loop.is_active() if wisdom_loop else False
         history_len = len(wisdom_loop.history) if wisdom_loop else 0
@@ -77,7 +91,7 @@ def create_loop_router(
         }
 
     @router.get("/history")
-    async def get_heal_history(limit: int = 20) -> List[Dict[str, Any]]:
+    def get_heal_history(limit: int = 20) -> List[Dict[str, Any]]:
         """Returns the recorded history of heal cycles, newest first."""
         if not wisdom_loop:
             return []
@@ -85,7 +99,7 @@ def create_loop_router(
         return [r.to_dict() for r in reversed(records)]
 
     @router.get("/history/{cycle_id}")
-    async def get_heal_cycle(cycle_id: str) -> Dict[str, Any]:
+    def get_heal_cycle(cycle_id: str) -> Dict[str, Any]:
         """Returns detailed attempt logs and patches for a specific heal cycle."""
         if not wisdom_loop:
             raise HTTPException(status_code=404, detail="Wisdom Loop not initialized")
@@ -97,7 +111,7 @@ def create_loop_router(
         raise HTTPException(status_code=404, detail=f"Heal cycle '{cycle_id}' not found")
 
     @router.get("/safety")
-    async def get_safety_status() -> Dict[str, Any]:
+    def get_safety_status() -> Dict[str, Any]:
         """Returns detailed safety guardrail configuration and dynamic counters."""
         if not safety_manager:
             return {"status": "safety_manager_not_configured"}
@@ -126,11 +140,12 @@ def create_loop_router(
                 logger.info(f"Released safety slot for signature [{sig}]")
 
     @router.post("/trigger")
-    async def trigger_heal(
+    def trigger_heal(
         background_tasks: BackgroundTasks,
         payload: Optional[TriggerHealRequest] = None,
     ) -> Dict[str, Any]:
         """Triggers a self-healing cycle for a crash event, subject to the 5 safety bounds."""
+        _require_loop_stage()
         if not wisdom_loop:
             raise HTTPException(status_code=500, detail="Wisdom Loop controller is not configured.")
 
@@ -145,7 +160,15 @@ def create_loop_router(
             if latest_crash:
                 sig = latest_crash.signature
                 summary = latest_crash.summary
-                log_excerpt = latest_crash.details.get("log_excerpt", "")
+                # Observer events carry the traceback under context_excerpt /
+                # matched_line; reading a non-existent "log_excerpt" key used to
+                # hand the Analyst an empty log.
+                log_excerpt = (
+                    latest_crash.details.get("context_excerpt")
+                    or latest_crash.details.get("matched_line")
+                    or latest_crash.summary
+                    or ""
+                )
 
         if not sig:
             sig = f"manual_trigger_{int(time.time())}"
@@ -170,6 +193,7 @@ def create_loop_router(
             summary=summary or f"Crash event {sig[:8]}",
             details={
                 "log_excerpt": log_excerpt or "",
+                "context_excerpt": log_excerpt or "",
                 "status": "crashed",
                 "triggered_by": "api"
             },
@@ -199,26 +223,17 @@ def create_loop_router(
                 safety_manager.release_heal_slot(sig)
 
     @router.post("/rollback")
-    async def emergency_rollback(payload: Optional[RollbackRequest] = None) -> Dict[str, Any]:
+    def emergency_rollback(payload: Optional[RollbackRequest] = None) -> Dict[str, Any]:
         """Manually forces a git rollback to pre-loop revision and restarts target container.
         Only operates on the iow/auto-heal branch when a pre-loop snapshot exists -
         refuses to wipe local WIP on main.
         """
+        _require_loop_stage()
         if not wisdom_loop or not wisdom_loop.git_manager:
             raise HTTPException(status_code=500, detail="Git manager not configured on Wisdom Loop.")
 
         gm = wisdom_loop.git_manager
         target_revision = payload.target_revision if payload else None
-        branch = gm.get_current_branch()
-        if branch != gm.heal_branch:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Emergency rollback refused on branch '{branch}'. "
-                    f"Switch to '{gm.heal_branch}' after a heal attempt; "
-                    "this protects uncommitted work on main."
-                ),
-            )
 
         try:
             if target_revision:

@@ -1,4 +1,20 @@
 # IoW demo target - deployed into iow-k3s and synced by Argo CD (argocd-bonus).
+#
+# The pod does NOT bake the application source into the image: an init container
+# clones the revision Argo CD is tracking into a shared volume, and the app runs from
+# there. That is what makes a heal commit actually change what the cluster serves -
+# otherwise the pod keeps running whatever source was baked in at build time and a
+# "successful" GitOps redeploy would change nothing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iow-demo-source
+  namespace: iow-demo
+data:
+  # Patched by scripts/argocd_bonus_up.sh to the in-cluster Gitea URL + branch.
+  repo_url: "http://iow_gitea:3000/iow/inception-of-wisdom.git"
+  revision: "iow/auto-heal"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,10 +32,41 @@ spec:
       labels:
         app: iow-demo
     spec:
+      volumes:
+        - name: source
+          emptyDir: {}
+      initContainers:
+        - name: fetch-source
+          image: alpine/git:2.45.2
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "[init] cloning $REPO_URL @ $REVISION"
+              git clone --depth 1 --branch "$REVISION" "$REPO_URL" /src \
+                || git clone --depth 1 "$REPO_URL" /src
+              git -C /src rev-parse --short HEAD
+          env:
+            - name: REPO_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: iow-demo-source
+                  key: repo_url
+            - name: REVISION
+              valueFrom:
+                configMapKeyRef:
+                  name: iow-demo-source
+                  key: revision
+          volumeMounts:
+            - name: source
+              mountPath: /src
       containers:
         - name: demo
           image: inception-of-wisdom-demo_app:latest
           imagePullPolicy: IfNotPresent
+          workingDir: /src/demo_app
+          command: ["python", "/src/demo_app/app.py"]
           ports:
             - containerPort: 5000
           env:
@@ -27,6 +74,9 @@ spec:
               value: "5000"
             - name: PYTHONUNBUFFERED
               value: "1"
+          volumeMounts:
+            - name: source
+              mountPath: /src
           readinessProbe:
             httpGet:
               path: /healthz
@@ -37,7 +87,7 @@ spec:
             httpGet:
               path: /healthz
               port: 5000
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 5
 ---
 apiVersion: v1

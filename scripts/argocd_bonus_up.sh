@@ -14,6 +14,8 @@ API_PORT="${IOW_K3D_API_PORT:-6550}"
 NODE_PORT="${IOW_K3D_NODE_PORT:-30051}"
 K3S_NAME="${IOW_K3S_CONTAINER:-iow-k3s}"
 K3S_IMAGE="${IOW_K3S_IMAGE:-rancher/k3s:v1.27.12-k3s1}"
+GIT_IMAGE="${IOW_GIT_IMAGE:-alpine/git:2.45.2}"
+HEAL_BRANCH="${IOW_GITOPS_BRANCH:-iow/auto-heal}"
 
 mkdir -p "${IOW_DIR}/gitops" "${BIN_DIR}" "$(dirname "${IOW_DIR}/kube/config")"
 chmod +x "${ROOT}/scripts/ensure_gitops_tools.sh" 2>/dev/null || true
@@ -157,7 +159,9 @@ publish_manifests_to_gitea() {
     git add k8s/demo-app demo_app
     git diff --cached --quiet || git commit -m "IoW: sync demo_app + k8s manifests for Argo CD" >/dev/null
     git push origin HEAD:main >/dev/null
-    git push origin HEAD:iow/auto-heal >/dev/null 2>&1 || git push -u origin HEAD:iow/auto-heal >/dev/null
+    # Force: the heal branch is the revision Argo CD tracks and the agent rewrites
+    # it every cycle, so a stale non-fast-forward must not block the bootstrap.
+    git push --force origin "HEAD:${HEAL_BRANCH}" >/dev/null
   )
   echo "[+] Gitea demo_app/ matches ${ROOT}/demo_app" >&2
   printf '%s\n' "${ip}"
@@ -217,27 +221,46 @@ import_demo_image() {
     echo "[!] ctr import failed — trying k3s ctr"
     docker save "${img}" | docker exec -i "${K3S_NAME}" k3s ctr images import -
   }
+
+  # The init container clones the heal branch, so its image must be present too.
+  echo "[*] Importing ${GIT_IMAGE} (init container) into k3s containerd..."
+  docker pull "${GIT_IMAGE}" >/dev/null 2>&1 || true
+  docker save "${GIT_IMAGE}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import - \
+    || docker save "${GIT_IMAGE}" | docker exec -i "${K3S_NAME}" k3s ctr images import - \
+    || echo "[!] Could not import ${GIT_IMAGE} - the cluster will try to pull it"
 }
 
 apply_argocd_application() {
   local repo_url="$1"
-  python3 - "${ROOT}/k8s/argocd/application.yaml" "${repo_url}" <<'PY' | kubectl apply -f -
+  # Only the repo URL is rewritten. targetRevision stays on the heal branch so a
+  # Wisdom Loop commit is what Argo CD picks up; pointing it at main would leave
+  # the agent pushing to a branch nobody watches.
+  python3 - "${ROOT}/k8s/argocd/application.yaml" "${repo_url}" "${HEAL_BRANCH}" <<'PY' | kubectl apply -f -
 import sys
 from pathlib import Path
-src, repo = Path(sys.argv[1]), sys.argv[2]
+src, repo, revision = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 text = src.read_text(encoding="utf-8")
 out = []
 for line in text.splitlines():
-    if line.strip().startswith("repoURL:"):
-        indent = line[: len(line) - len(line.lstrip())]
+    stripped = line.strip()
+    indent = line[: len(line) - len(line.lstrip())]
+    if stripped.startswith("repoURL:"):
         out.append(f"{indent}repoURL: {repo}")
-    elif line.strip().startswith("targetRevision:"):
-        indent = line[: len(line) - len(line.lstrip())]
-        out.append(f"{indent}targetRevision: main")
+    elif stripped.startswith("targetRevision:"):
+        out.append(f"{indent}targetRevision: {revision}")
     else:
         out.append(line)
 print("\n".join(out) + "\n")
 PY
+}
+
+# Point the demo pods at the same repo/branch Argo CD tracks.
+apply_source_configmap() {
+  local repo_url="$1"
+  kubectl -n "${NS_DEMO}" create configmap iow-demo-source \
+    --from-literal=repo_url="${repo_url}" \
+    --from-literal=revision="${HEAL_BRANCH}" \
+    --dry-run=client -o yaml | kubectl apply -f -
 }
 
 ensure_port_forward() {
@@ -325,7 +348,10 @@ REPO_URL="$(printf '%s' "${REPO_URL}" | tr -d '\r\n' | head -c 500)"
 echo "[*] Applying Argo CD Application (repo=${REPO_URL})..."
 apply_argocd_application "${REPO_URL}"
 
+apply_source_configmap "${REPO_URL}"
 kubectl apply -f "${ROOT}/k8s/demo-app/deployment.yaml" || true
+# Re-apply after the manifest, so the loop's branch wins over the bundled default.
+apply_source_configmap "${REPO_URL}"
 # Ensure pods use the image we just imported (tag:latest may have been cached).
 kubectl -n "${NS_DEMO}" rollout restart deployment/iow-demo >/dev/null 2>&1 || true
 kubectl -n "${NS_DEMO}" rollout status deployment/iow-demo --timeout=90s || true
@@ -333,7 +359,8 @@ kubectl -n "${NS_DEMO}" rollout status deployment/iow-demo --timeout=90s || true
 echo "[*] Verifying demo namespace..."
 kubectl -n "${NS_DEMO}" get pods,svc || true
 
-ensure_port_forward demo "${NS_DEMO}" iow-demo "${NODE_PORT}" 5000 || true
+# No demo port-forward: the k3s container already publishes 127.0.0.1:${NODE_PORT},
+# so a port-forward there can only ever fail with "address already in use".
 ensure_port_forward argocd "${NS_ARGO}" argocd-server 8080 80 || true
 
 ARGO_PASS="$(kubectl -n "${NS_ARGO}" get secret argocd-initial-admin-secret \
