@@ -8,10 +8,10 @@ from __future__ import annotations
 import os
 import subprocess
 import logging
-from typing import List, Optional, Dict, Any, Tuple
-from dataclasses import dataclass
+from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
 
-from p3.patcher import StructuredPatch, FilePatch
+from p3.patcher import StructuredPatch
 
 logger = logging.getLogger("p3.git_manager")
 
@@ -25,7 +25,7 @@ class CommitResult:
     success: bool
     commit_hash: Optional[str] = None
     branch: str = DEFAULT_HEAL_BRANCH
-    files_modified: List[str] = None
+    files_modified: List[str] = field(default_factory=list)
     commit_message: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -84,17 +84,33 @@ class GitManager:
 
         self._pre_loop_hash = current_hash
         self._initial_branch = self.get_current_branch()
-        logger.info(f"Recorded pre-loop revision snapshot: {self._pre_loop_hash[:8]} on branch '{self._initial_branch}'")
+        logger.info(
+            f"Recorded pre-loop revision snapshot: {self._pre_loop_hash[:8]} "
+            f"on branch '{self._initial_branch}'"
+        )
         return self._pre_loop_hash
+
+    def _write_file_atomically(self, rel_path: str, content: str) -> None:
+        """Write content to rel_path via temp file + atomic rename."""
+        full_path = os.path.join(self.repo_dir, rel_path)
+        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+        temp_path = full_path + ".iow_tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(temp_path, full_path)
 
     def prepare_heal_branch(self) -> bool:
         """Checks out the dedicated auto-heal branch starting from the pre-loop revision."""
         if not self._pre_loop_hash:
             self.snapshot_pre_loop()
 
+        pre_hash = self._pre_loop_hash
+        if not pre_hash:
+            return False
+
         # Switch to dedicated auto-heal branch
         logger.info(f"Checking out dedicated branch '{self.heal_branch}'...")
-        code, out, err = self._run_git(["checkout", "-B", self.heal_branch, self._pre_loop_hash], check=False)
+        code, out, err = self._run_git(["checkout", "-B", self.heal_branch, pre_hash], check=False)
         if code != 0:
             logger.error(f"Failed to switch to branch '{self.heal_branch}': {err}")
             return False
@@ -161,7 +177,8 @@ class GitManager:
                 raise RuntimeError(f"git commit failed: {err}")
 
             new_hash = self.get_current_head()
-            logger.info(f"Successfully committed auto-heal patch: {new_hash[:8]} ('{commit_msg}')")
+            hash_label = (new_hash or "?")[:8]
+            logger.info(f"Successfully committed auto-heal patch: {hash_label} ('{commit_msg}')")
 
             return CommitResult(
                 success=True,
@@ -192,6 +209,15 @@ class GitManager:
             logger.error("Cannot rollback: no pre-loop snapshot hash recorded.")
             return False
 
+        current_branch = self.get_current_branch()
+        # Never hard-reset main/master — that wipes local WIP outside heal attempts
+        if current_branch not in (self.heal_branch,):
+            logger.error(
+                f"Refusing rollback on branch '{current_branch}': "
+                f"only '{self.heal_branch}' may be hard-reset (protects local WIP)."
+            )
+            return False
+
         logger.warning(
             f"INITIATING ROLLBACK: Rewinding working tree and branch '{self.heal_branch}' "
             f"to pre-loop revision {self._pre_loop_hash[:8]}..."
@@ -203,7 +229,7 @@ class GitManager:
             logger.error(f"Rollback git reset --hard failed: {err1}")
             return False
 
-        # 2. Clean any newly created untracked files
+        # 2. Clean any newly created untracked files (heal branch only)
         code2, _, err2 = self._run_git(["clean", "-fd"], check=False)
         if code2 != 0:
             logger.warning(f"Rollback git clean -fd warning: {err2}")
@@ -211,14 +237,35 @@ class GitManager:
         current_head = self.get_current_head()
         if current_head == self._pre_loop_hash:
             logger.info(
-                f"ROLLBACK COMPLETE: Working tree byte-for-byte restored to pre-loop revision {current_head[:8]}."
+                f"ROLLBACK COMPLETE: Working tree byte-for-byte restored "
+                f"to pre-loop revision {current_head[:8]}."
             )
             return True
         else:
-            logger.error(f"Rollback verification mismatch: HEAD is {current_head}, expected {self._pre_loop_hash}")
+            logger.error(
+                f"Rollback verification mismatch: HEAD is {current_head}, "
+                f"expected {self._pre_loop_hash}"
+            )
             return False
+
+    def rollback_to(self, revision: str) -> Optional[str]:
+        """Hard-reset heal branch to an explicit revision (manual emergency only)."""
+        if not revision:
+            return None
+        current_branch = self.get_current_branch()
+        if current_branch not in (self.heal_branch,):
+            logger.error(
+                f"Refusing rollback_to on branch '{current_branch}': "
+                f"only '{self.heal_branch}' may be hard-reset."
+            )
+            return None
+        code, _, err = self._run_git(["reset", "--hard", revision], check=False)
+        if code != 0:
+            logger.error(f"rollback_to failed: {err}")
+            return None
+        self._run_git(["clean", "-fd"], check=False)
+        return self.get_current_head()
 
     def get_pre_loop_hash(self) -> Optional[str]:
         """Returns the active pre-loop snapshot hash."""
         return self._pre_loop_hash
-

@@ -12,7 +12,6 @@ import time
 import json
 import difflib
 import logging
-import subprocess
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, asdict, field
 
@@ -20,7 +19,7 @@ from p3.git_manager import GitManager
 
 logger = logging.getLogger("bonus.pr_manager")
 
-DEFAULT_PR_STORE = os.environ.get("IOW_PR_STORE", "/tmp/iow_cache/pull_requests.json")
+DEFAULT_PR_STORE = os.environ.get("IOW_PR_STORE", "/tmp/iow/pull_requests.json")
 
 
 @dataclass
@@ -100,7 +99,10 @@ class PullRequestManager:
             except Exception as e:
                 logger.warning(f"Could not read old file {full_path} for diff: {e}")
 
-        new_lines = [line if line.endswith("\n") else line + "\n" for line in new_content.splitlines(keepends=True)]
+        new_lines = [
+            line if line.endswith("\n") else line + "\n"
+            for line in new_content.splitlines(keepends=True)
+        ]
 
         diff = difflib.unified_diff(
             old_lines,
@@ -161,7 +163,8 @@ class PullRequestManager:
             self.git_manager._run_git(["checkout", "-B", branch_name], check=False)
             # Apply files to review branch
             for pf in patch_files:
-                self.git_manager._write_file_atomically(pf.get("path"), pf.get("content", ""))
+                rel_path = str(pf.get("path") or "unknown")
+                self.git_manager._write_file_atomically(rel_path, pf.get("content", ""))
             self.git_manager._run_git(["add", "-A"], check=False)
             self.git_manager._run_git(["commit", "-m", f"review: {title}"], check=False)
             # Switch back to base
@@ -211,7 +214,8 @@ class PullRequestManager:
         try:
             # Checkout heal branch and merge review branch
             self.git_manager._run_git(["checkout", self.git_manager.heal_branch])
-            self.git_manager._run_git(["merge", "--no-ff", pr.branch_name, "-m", f"Merge PR #{pr_id}: {pr.title}"])
+            merge_msg = f"Merge PR #{pr_id}: {pr.title}"
+            self.git_manager._run_git(["merge", "--no-ff", pr.branch_name, "-m", merge_msg])
 
             pr.status = "merged"
             pr.resolved_at = time.time()
@@ -243,4 +247,3 @@ class PullRequestManager:
         except Exception as e:
             logger.error(f"Failed to reject PR [{pr_id}]: {e}")
             return False, f"Error rejecting PR: {str(e)}"
-

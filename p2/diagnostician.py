@@ -15,13 +15,22 @@ from dataclasses import dataclass, field, asdict
 try:
     import httpx
 except ImportError:
-    httpx = None
+    httpx = None  # type: ignore[assignment,misc]
 
 from p2.retriever import CodeRetriever
 
 logger = logging.getLogger("p2.diagnostician")
 
-DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11436")
+
+
+def _normalize_ollama_host(host: str) -> str:
+    host = (host or "").strip().rstrip("/")
+    if host and not host.startswith(("http://", "https://")):
+        host = f"http://{host}"
+    return host or "http://127.0.0.1:11436"
+
+
 DEFAULT_MODEL = "qwen2.5-coder:1.5b"
 
 
@@ -54,7 +63,7 @@ class CrashDiagnostician:
         request_timeout: float = 45.0
     ):
         self.retriever = retriever
-        self.ollama_host = (ollama_host or DEFAULT_OLLAMA_HOST).rstrip("/")
+        self.ollama_host = _normalize_ollama_host(ollama_host or DEFAULT_OLLAMA_HOST)
         self.model_name = model_name
         self.request_timeout = request_timeout
 
@@ -223,7 +232,7 @@ RESPONSE FORMAT (JSON):
         if not isinstance(files, list):
             files = [files] if files else []
 
-        # Sanitize suspect files: enforce that files exist in index (Subject constraint: must not invent paths)
+        # Sanitize suspect files: must exist in index (Subject: must not invent paths)
         verified_files = []
         for f in files:
             norm = str(f).strip()
@@ -233,15 +242,19 @@ RESPONSE FORMAT (JSON):
                     if v not in verified_files:
                         verified_files.append(v)
 
-        # Subject requirement: If model returns no usable file or empty summary, surface explicit failure mode
+        # Subject: surface explicit failure if model returns no usable file or empty summary
         if not summary or not verified_files:
+            err_msg = (
+                "Diagnosis failed: model produced empty summary or unverified files. "
+                "The pipeline does not guess."
+            )
             return DiagnosticReport(
                 success=False,
                 summary=summary,
                 files=verified_files,
                 candidate_chunks=candidate_chunks,
                 raw_response=raw_output,
-                error_message="Diagnosis failed: model produced empty summary or unverified files. The pipeline does not guess.",
+                error_message=err_msg,
                 timestamp=timestamp
             )
 
@@ -290,4 +303,3 @@ RESPONSE FORMAT (JSON):
             error_message=f"LLM diagnosis unavailable ({reason}) and no deterministic traceback found.",
             timestamp=timestamp
         )
-

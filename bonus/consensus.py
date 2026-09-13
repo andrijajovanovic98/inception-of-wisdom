@@ -9,19 +9,20 @@ from __future__ import annotations
 
 import os
 import json
+import time
 import logging
 import urllib.request
 import urllib.error
 from typing import Optional, List, Dict, Any, Set
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 
-from p2.diagnostician import CrashDiagnostician, DiagnosticReport
+from p2.diagnostician import CrashDiagnostician, DiagnosticReport, _normalize_ollama_host
 from p2.retriever import CodeRetriever
 
 logger = logging.getLogger("bonus.consensus")
 
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:1.5b")
-DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11436")
 
 
 @dataclass
@@ -55,14 +56,14 @@ class SecondOpinionEngine:
     ):
         self.retriever = retriever
         self.model_name = model_name
-        self.ollama_host = ollama_host.rstrip("/")
+        self.ollama_host = _normalize_ollama_host(ollama_host)
         self.request_timeout = request_timeout
 
         # Base diagnostician for standard calls
         self.base_diagnostician = CrashDiagnostician(
             retriever=retriever,
             model_name=model_name,
-            ollama_host=ollama_host,
+            ollama_host=self.ollama_host,
             request_timeout=request_timeout
         )
 
@@ -95,6 +96,7 @@ class SecondOpinionEngine:
                     raw_data = resp.read().decode("utf-8")
                     data = json.loads(raw_data)
                     return data.get("response", "")
+                return None
         except Exception as e:
             logger.warning(f"Ollama generation failed in consensus engine: {e}")
             return None
@@ -112,10 +114,16 @@ class SecondOpinionEngine:
             for c in context_chunks
         ])
 
-        prompt = f"CRASH LOG:\n{log_excerpt}\n\nAVAILABLE CODE CONTEXT:\n{chunks_text}\n\nIdentify suspect file:"
+        prompt = (
+            f"CRASH LOG:\n{log_excerpt}\n\nAVAILABLE CODE CONTEXT:\n{chunks_text}\n\n"
+            "Identify suspect file:"
+        )
         raw_resp = self._query_llm_prompt(prompt, system_prompt, temperature=0.0)
 
-        return self.base_diagnostician._parse_llm_response(raw_resp, context_chunks)
+        valid_files = {c.get("file_path", "") for c in context_chunks}
+        return self.base_diagnostician._parse_and_validate_response(
+            raw_resp, valid_files, context_chunks, time.time()
+        )
 
     def get_opinion_b(self, log_excerpt: str, context_chunks: List[Dict[str, Any]]) -> DiagnosticReport:
         """Opinion B: Architectural and caller-contract analyzer (Temperature 0.3)."""
@@ -130,10 +138,16 @@ class SecondOpinionEngine:
             for c in context_chunks
         ])
 
-        prompt = f"INCIDENT TRACE:\n{log_excerpt}\n\nCODE REPOSITORY SLICES:\n{chunks_text}\n\nIdentify offending file:"
+        prompt = (
+            f"INCIDENT TRACE:\n{log_excerpt}\n\nCODE REPOSITORY SLICES:\n{chunks_text}\n\n"
+            "Identify offending file:"
+        )
         raw_resp = self._query_llm_prompt(prompt, system_prompt, temperature=0.3)
 
-        return self.base_diagnostician._parse_llm_response(raw_resp, context_chunks)
+        valid_files = {c.get("file_path", "") for c in context_chunks}
+        return self.base_diagnostician._parse_and_validate_response(
+            raw_resp, valid_files, context_chunks, time.time()
+        )
 
     def evaluate_consensus(
         self,
@@ -144,7 +158,7 @@ class SecondOpinionEngine:
         logger.info("⚖️ Running Second Opinion dual-prompt consensus evaluation...")
 
         # 1. Retrieve candidate context
-        context_chunks = self.retriever.retrieve_context_for_error(log_excerpt, top_k=top_k)
+        context_chunks, _ = self.retriever.retrieve_for_crash(log_excerpt, top_k=top_k)
 
         # 2. Get Opinion A and Opinion B
         opinion_a = self.get_opinion_a(log_excerpt, context_chunks)
@@ -191,4 +205,3 @@ class SecondOpinionEngine:
                 confidence=0.30,
                 error_message="Models diverged on suspect file identification."
             )
-

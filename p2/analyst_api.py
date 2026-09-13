@@ -6,15 +6,15 @@ Analyst API: Free-Text Retrieval & Structured Crash Diagnosis Endpoints
 from __future__ import annotations
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 
 try:
     from fastapi import APIRouter, HTTPException
     from pydantic import BaseModel
 except ImportError:
-    APIRouter = object
-    HTTPException = Exception
-    BaseModel = object
+    APIRouter = object  # type: ignore[assignment,misc]
+    HTTPException = Exception  # type: ignore[assignment,misc]
+    BaseModel = object  # type: ignore[assignment,misc]
 
 from p2.db import ChromaVectorDB
 from p2.retriever import CodeRetriever
@@ -95,10 +95,25 @@ def create_analyst_router(
             file_path=req.file_path
         )
 
+        # Normalize score fields for dashboard / IoC clients
+        normalized = []
+        for c in chunks:
+            item = dict(c)
+            sim = item.get("similarity_score", item.get("similarity", item.get("score")))
+            try:
+                sim_f = float(sim) if sim is not None else None
+            except (TypeError, ValueError):
+                sim_f = None
+            if sim_f is not None:
+                item["similarity"] = sim_f
+                item["similarity_score"] = sim_f
+                item["score"] = sim_f
+            normalized.append(item)
+
         return {
             "query": req.query,
-            "count": len(chunks),
-            "chunks": chunks
+            "count": len(normalized),
+            "chunks": normalized
         }
 
     @router.post("/diagnose")
@@ -124,4 +139,3 @@ def create_analyst_router(
         return report.to_dict()
 
     return router
-

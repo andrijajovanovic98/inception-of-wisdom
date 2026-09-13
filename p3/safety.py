@@ -9,12 +9,12 @@ import os
 import time
 import logging
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 try:
     import yaml
 except ImportError:
-    yaml = None
+    yaml = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("p3.safety")
 
@@ -26,7 +26,7 @@ class SafetyCheckResult:
     """Outcome of safety check before allowing a heal cycle to start."""
     allowed: bool
     refusal_reason: Optional[str] = None
-    config_snapshot: Dict[str, Any] = None
+    config_snapshot: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -131,7 +131,10 @@ class SafetyManager:
         # 3. Hard cap check
         hard_cap = cfg.get("hard_cap", 20)
         if self._lifetime_heal_count >= hard_cap:
-            reason = f"Refused: lifetime hard cap reached ({self._lifetime_heal_count}/{hard_cap} heals started)."
+            reason = (
+                f"Refused: lifetime hard cap reached "
+                f"({self._lifetime_heal_count}/{hard_cap} heals started)."
+            )
             logger.warning(f"Safety constraint triggered: {reason}")
             return SafetyCheckResult(allowed=False, refusal_reason=reason, config_snapshot=cfg)
 
@@ -150,10 +153,15 @@ class SafetyManager:
         rate_limit = cfg.get("rate_limit_per_hour", 5)
         one_hour_ago = now - 3600.0
         # Prune older timestamps
-        self._heal_timestamps_history = [t for t in self._heal_timestamps_history if t > one_hour_ago]
+        self._heal_timestamps_history = [
+            t for t in self._heal_timestamps_history if t > one_hour_ago
+        ]
 
         if len(self._heal_timestamps_history) >= rate_limit:
-            reason = f"Refused: hourly rate limit reached ({len(self._heal_timestamps_history)}/{rate_limit} in past hour)."
+            hourly = len(self._heal_timestamps_history)
+            reason = (
+                f"Refused: hourly rate limit reached ({hourly}/{rate_limit} in past hour)."
+            )
             logger.warning(f"Safety constraint triggered: {reason}")
             return SafetyCheckResult(allowed=False, refusal_reason=reason, config_snapshot=cfg)
 
@@ -204,4 +212,3 @@ class SafetyManager:
     def get_grace_period(self) -> float:
         """Returns the active grace period from config."""
         return float(self.reload_config().get("grace_period", 20.0))
-

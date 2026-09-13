@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 import logging
 from typing import Optional, Dict, Any, Callable
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 from p1.docker_monitor import DockerMonitor
 from p1.http_probe import HttpProbeManager
@@ -27,7 +27,7 @@ class VerificationResult:
     elapsed_seconds: float
     error_log: Optional[str] = None
     container_status: str = "unknown"
-    details: Dict[str, Any] = None
+    details: Dict[str, Any] = field(default_factory=dict)
     timestamp: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -101,7 +101,6 @@ class TargetVerifier:
         try:
             while True:
                 elapsed = time.time() - start_time
-                remaining = max(0.0, grace_period - elapsed)
 
                 if progress_callback:
                     try:
@@ -134,8 +133,11 @@ class TargetVerifier:
                 # Check 2: Inspect Docker container state
                 c_state = self.docker_monitor.inspect()
                 if c_state.is_crash:
-                    logger.warning(f"Verification FAILED at {elapsed:.1f}s: Docker container crashed: {c_state.error_reason}")
-                    error_log = c_state.error_reason
+                    logger.warning(
+                        f"Verification FAILED at {elapsed:.1f}s: "
+                        f"Docker container crashed: {c_state.error_reason}"
+                    )
+                    error_log = c_state.error_reason or ""
                     if self.log_streamer:
                         error_log += f"\n{self.log_streamer.get_recent_logs_as_text(tail=15)}"
                     return VerificationResult(
@@ -155,7 +157,8 @@ class TargetVerifier:
                     for pr in probe_results:
                         if pr.is_crash:
                             logger.warning(
-                                f"Verification FAILED at {elapsed:.1f}s: HTTP probe failed on {pr.url} ({pr.error_message})"
+                                f"Verification FAILED at {elapsed:.1f}s: "
+                                f"HTTP probe failed on {pr.url} ({pr.error_message})"
                             )
                             return VerificationResult(
                                 is_healed=False,
@@ -171,7 +174,8 @@ class TargetVerifier:
                 # Grace period expired with no crash events!
                 if elapsed >= grace_period:
                     logger.info(
-                        f"Verification SUCCESS: Target container stayed healthy for full {grace_period}s grace period!"
+                        f"Verification SUCCESS: Target container stayed healthy "
+                        f"for full {grace_period}s grace period!"
                     )
                     if progress_callback:
                         progress_callback(grace_period, grace_period, "healed")
@@ -189,4 +193,3 @@ class TargetVerifier:
         finally:
             if self.event_manager:
                 self.event_manager.remove_listener(_verification_crash_listener)
-

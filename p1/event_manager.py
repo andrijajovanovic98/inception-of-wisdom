@@ -64,6 +64,9 @@ class EventManager:
         self._lock = threading.Lock()
         self._listeners: List[Callable[[ObserverEvent], None]] = []
 
+        self._docker_poll_stop: Optional[threading.Event] = None
+        self._docker_poll_thread: Optional[threading.Thread] = None
+
         # Wire up callbacks if components are supplied
         self._wire_components()
 
@@ -203,6 +206,53 @@ class EventManager:
             details=probe.to_dict()
         )
 
+    def start(self) -> None:
+        """Starts wired observer background services."""
+        if self.log_streamer:
+            self.log_streamer.start()
+        if self.http_probe:
+            self.http_probe.start()
+        # Poll Docker state so container crashes also become table events
+        if self._docker_poll_thread is None or not self._docker_poll_thread.is_alive():
+            self._docker_poll_stop = threading.Event()
+            self._docker_poll_thread = threading.Thread(
+                target=self._docker_poll_loop,
+                name="DockerStatePoll",
+                daemon=True,
+            )
+            self._docker_poll_thread.start()
+
+    def _docker_poll_loop(self) -> None:
+        """Periodically inspect target container and emit crash events."""
+        stop_ev = self._docker_poll_stop
+        if stop_ev is None:
+            return
+        while not stop_ev.is_set():
+            try:
+                if self.docker_monitor:
+                    state = self.docker_monitor.inspect()
+                    self.handle_docker_state(state)
+            except Exception as e:
+                logger.debug(f"Docker state poll error: {e}")
+            stop_ev.wait(3.0)
+
+    def stop(self) -> None:
+        """Stops wired observer background services."""
+        if self._docker_poll_stop is not None:
+            self._docker_poll_stop.set()
+        if self._docker_poll_thread is not None and self._docker_poll_thread.is_alive():
+            self._docker_poll_thread.join(timeout=2.0)
+        self._docker_poll_thread = None
+        if self.http_probe:
+            self.http_probe.stop()
+        if self.log_streamer:
+            self.log_streamer.stop()
+
+    def get_recent_events(self, limit: int = 50) -> List[ObserverEvent]:
+        """Returns the most recent raw ObserverEvent objects."""
+        with self._lock:
+            return list(self._events[-limit:])
+
     def get_events(self, event_type: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         """Returns the most recent events, optionally filtered by type."""
         with self._lock:
@@ -225,4 +275,3 @@ class EventManager:
         with self._lock:
             self._events.clear()
             self._active_signatures.clear()
-

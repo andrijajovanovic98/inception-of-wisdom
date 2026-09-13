@@ -7,7 +7,7 @@ diagnoses, and automatically repairs when failures occur.
 import os
 import sys
 import logging
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 # Configure standard logging to stderr/stdout for the Observer to stream
 logging.basicConfig(
@@ -81,4 +81,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting {SERVICE_NAME} v{SERVICE_VERSION} on port {port}")
     app.run(host="0.0.0.0", port=port)
-

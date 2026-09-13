@@ -8,7 +8,7 @@ import time
 import logging
 import threading
 from collections import deque
-from typing import Optional, List, Callable, Dict, Any
+from typing import Optional, List, Callable, Any
 
 from p1.docker_monitor import DockerMonitor
 
@@ -37,11 +37,13 @@ class LogStreamer:
         docker_monitor: DockerMonitor,
         error_patterns: Optional[List[str]] = None,
         max_buffer_lines: int = 500,
-        on_error_detected: Optional[Callable[[str, str], None]] = None
+        on_error_detected: Optional[Callable[[str, str], Any]] = None
     ):
         self.docker_monitor = docker_monitor
         self.max_buffer_lines = max_buffer_lines
         self.on_error_detected = on_error_detected
+        self.on_line: Optional[Callable[[str, bool], None]] = None
+        self._line_listeners: List[Callable[[str, bool], None]] = []
 
         # Compile error patterns into regular expressions
         patterns = error_patterns if error_patterns is not None else DEFAULT_ERROR_PATTERNS
@@ -53,6 +55,11 @@ class LogStreamer:
 
         self._stop_event = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
+
+    def add_line_listener(self, callback: Callable[[str, bool], None]) -> None:
+        """Subscribe to every stdout/stderr line (SSE dashboard terminal)."""
+        if callback not in self._line_listeners:
+            self._line_listeners.append(callback)
 
     def start(self) -> None:
         """Starts the background log streaming worker thread."""
@@ -74,7 +81,13 @@ class LogStreamer:
         self._stop_event.set()
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=timeout)
+        self._worker_thread = None
         logger.info("LogStreamer worker stopped.")
+
+    def restart(self) -> None:
+        """Reattach Docker log follow (after container recreate / stuck stream)."""
+        self.stop(timeout=2.0)
+        self.start()
 
     def _stream_loop(self) -> None:
         """Continuous loop that connects to Docker log stream and handles container restarts."""
@@ -86,6 +99,7 @@ class LogStreamer:
 
             try:
                 container = client.containers.get(self.docker_monitor.container_name)
+                container.reload()
                 # Only stream if container is running or restarting
                 if container.status not in ["running", "restarting"]:
                     time.sleep(1.0)
@@ -98,7 +112,7 @@ class LogStreamer:
                     follow=True,
                     stdout=True,
                     stderr=True,
-                    tail=50
+                    tail=100
                 )
 
                 for chunk in log_stream:
@@ -109,7 +123,7 @@ class LogStreamer:
 
             except Exception as e:
                 # Container stopped, restarted, or daemon temporarily dropped
-                logger.debug(f"Log streaming interrupted ({e}). Retrying in 1.5s...")
+                logger.warning(f"Log streaming interrupted ({e}). Retrying in 1.5s...")
                 time.sleep(1.5)
 
     def _process_chunk(self, chunk: str) -> None:
@@ -123,21 +137,31 @@ class LogStreamer:
             with self._lock:
                 self.log_buffer.append(cleaned)
 
-            self._check_for_errors(cleaned)
+            is_error = any(p.search(cleaned) for p in self.compiled_patterns)
+            self._emit_line(cleaned, is_error)
+            if is_error:
+                self._check_for_errors(cleaned)
+
+    def _emit_line(self, line: str, is_error: bool) -> None:
+        """Push a live line to on_line + SSE listeners."""
+        listeners = list(self._line_listeners)
+        if self.on_line:
+            listeners.append(self.on_line)
+        for cb in listeners:
+            try:
+                cb(line, is_error)
+            except Exception as err:
+                logger.error(f"Error in log line listener: {err}")
 
     def _check_for_errors(self, line: str) -> None:
-        """Matches line against configured error patterns. Triggers callback on match."""
-        for pattern in self.compiled_patterns:
-            if pattern.search(line):
-                logger.warning(f"Error pattern matched in log: '{line}'")
-                if self.on_error_detected:
-                    # Provide an excerpt with recent context lines for diagnosis
-                    context_excerpt = self.get_recent_logs_as_text(tail=15)
-                    try:
-                        self.on_error_detected(line, context_excerpt)
-                    except Exception as err:
-                        logger.error(f"Error in on_error_detected callback: {err}")
-                break
+        """Triggers crash-context callback when an error pattern matched."""
+        logger.warning(f"Error pattern matched in log: '{line}'")
+        if self.on_error_detected:
+            context_excerpt = self.get_recent_logs_as_text(tail=15)
+            try:
+                self.on_error_detected(line, context_excerpt)
+            except Exception as err:
+                logger.error(f"Error in on_error_detected callback: {err}")
 
     def get_recent_logs(self, count: int = 100) -> List[str]:
         """Returns the most recent log lines as a list."""
@@ -154,4 +178,3 @@ class LogStreamer:
         """Clears the internal log ring buffer."""
         with self._lock:
             self.log_buffer.clear()
-
