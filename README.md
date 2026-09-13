@@ -29,7 +29,7 @@
 
 ---
 
-## 📌 Executive Overview
+## Executive Overview
 
 **Inception-of-Wisdom (IoW)** is a production-grade autonomous site-reliability and self-healing agent engineered for containerized application stacks. By continuously intercepting infrastructure telemetry, real-time log streams, and HTTP synthetic health probes, IoW detects operational failures, identifies root causes through semantic code analysis, synthesizes corrective patches, and validates service recovery.
 
@@ -42,7 +42,7 @@
 
 ---
 
-## 🔄 Autonomous Resilience Workflow
+## Autonomous Resilience Workflow
 
 <div align="center">
 
@@ -85,7 +85,7 @@ sequenceDiagram
 
 ---
 
-## 🖥️ Unified Observability Center
+## Unified Observability Center
 
 The centralized administrative interface provides a modern SRE console powered by **FastAPI** and **Server-Sent Events (SSE)**:
 
@@ -106,7 +106,7 @@ The centralized administrative interface provides a modern SRE console powered b
 
 ---
 
-## ⚙️ System Architecture & Subsystems
+## System Architecture & Subsystems
 
 ```
 .
@@ -168,18 +168,18 @@ The centralized administrative interface provides a modern SRE console powered b
 
 ---
 
-## 🌟 Enterprise Reliability Extensions
+## Enterprise Reliability Extensions
 
 To meet rigorous production reliability and compliance standards, the platform includes three high-speed governance extensions:
 
 ```mermaid
 graph LR
     A[Incoming Failure Trace] --> B{Symptom Classifier}
-    B -->|Confidence > 0.85| C[⚡ Fast-Path Bypass: 0.01s Fix]
+    B -->|Confidence > 0.85| C[Fast-Path Bypass: 0.01s Fix]
     B -->|Ambiguous| D[Full Semantic RAG + LLM Pipeline]
     D --> E[Second Opinion Engine]
     E -->|Consensus = 1.0| F[Autonomous Auto-Heal]
-    E -->|Consensus Diverged| G[👤 Human-in-the-Loop PR]
+    E -->|Consensus Diverged| G[Human-in-the-Loop PR]
     G --> H[Interactive Diff Review]
     H -->|Approve| F
     H -->|Reject| I[Clean Abort & Branch Reset]
@@ -204,7 +204,7 @@ graph LR
 
 ---
 
-## 🛡️ Production Guardrails & Configuration
+## Production Guardrails & Configuration
 
 All system limits, timing parameters, and safety thresholds are configured dynamically in [`demo_app/iow.config.yml`](demo_app/iow.config.yml) - **no values are hard-coded in source files**:
 
@@ -271,7 +271,7 @@ make fclean
 
 ---
 
-## 📖 Technical Deep-Dives & FAQs
+## Technical Deep-Dives & FAQs
 
 <details>
 <summary><b>Why full-file replacement instead of unified diffs (git apply)?</b></summary>
@@ -298,7 +298,7 @@ ChromaDB operates in <code>PersistentClient</code> mode in <code>.chroma/</code>
 
 ---
 
-## 📑 Interactive Documentation
+## Interactive Documentation
 
 Ten self-contained, offline-compatible HTML5 technical presentations are available in the [`presentation/`](presentation/) directory. They require no internet connection, feature full keyboard navigation, and include architectural walkthroughs:
 
