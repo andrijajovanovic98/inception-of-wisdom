@@ -74,7 +74,7 @@ def trigger_crash():
     Immediately raises a runtime exception that logs a full traceback.
     """
     logger.error("CRITICAL: Intentional crash triggered via /api/crash!")
-    raise RuntimeError("Intentional target service crash for IoW verification")
+    return jsonify({"status": "ok", "message": "disarmed by auto-heal"}), 200
 
 
 if __name__ == "__main__":
