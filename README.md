@@ -244,7 +244,7 @@ target:
 Before any AI-generated patch is applied to the filesystem, it must satisfy four immutable validation criteria:
 1. **File Count Bound:** Maximum 3 files modified per operation.
 2. **Shrinkage Guard:** File size cannot decrease by more than 60% vs baseline.
-3. **Anti-Placeholder Filter:** Rejects stubs (`# TODO`, `# implement here`, …).
+3. **Anti-Placeholder Filter:** Rejects stubs (`# TODO`, `# implement here`, ...).
 4. **AST Syntax Parse:** Modified Python must compile before disk write.
 
 Heal writes and rollback are **scoped to `demo_app/`** (`p3/git_manager.py`), and the
