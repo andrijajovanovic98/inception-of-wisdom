@@ -123,11 +123,15 @@ class WisdomLoop:
         cycle_id = str(uuid.uuid4())[:8]
         start_now = time.time()
 
-        # Step 1: Snapshot pre-loop revision
+        # Step 1: Snapshot pre-loop revision and switch to iow/auto-heal
         try:
             pre_loop_hash = self.git_manager.snapshot_pre_loop()
+            if not self.git_manager.prepare_heal_branch():
+                raise RuntimeError(
+                    f"Could not checkout heal branch '{self.git_manager.heal_branch}'"
+                )
         except Exception as e:
-            logger.error(f"Failed to snapshot pre-loop revision: {e}")
+            logger.error(f"Failed to prepare heal branch / pre-loop snapshot: {e}")
             self._is_running_cycle = False
             raise
 
@@ -140,7 +144,10 @@ class WisdomLoop:
         )
         self.history.append(cycle_record)
 
-        logger.info(f"=== STARTING WISDOM LOOP CYCLE [{cycle_id}] (pre-loop hash: {pre_loop_hash[:8]}) ===")
+        logger.info(
+            f"=== STARTING WISDOM LOOP CYCLE [{cycle_id}] "
+            f"(pre-loop hash: {pre_loop_hash[:8]}, branch: {self.git_manager.heal_branch}) ==="
+        )
 
         # Extract initial error log from event details
         current_error_log = (

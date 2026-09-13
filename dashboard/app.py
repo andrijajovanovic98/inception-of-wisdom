@@ -10,7 +10,7 @@ import time
 import logging
 import asyncio
 import threading
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 
 # Configure logging
@@ -327,6 +327,39 @@ class InceptionOrchestrator:
                 self.classifier.record_successful_heal(
                     log_excerpt, last_att.patch, raw_signature=sig
                 )
+            # Bonus: surface a real Gitea PR after verified auto-heal (HITL not required).
+            try:
+                patch_obj = last_att.patch
+                summary = "Verified auto-heal"
+                changed_paths: List[str] = []
+                if isinstance(patch_obj, dict):
+                    summary = str(patch_obj.get("summary") or summary)
+                    changed_paths = [
+                        str(f.get("path"))
+                        for f in (patch_obj.get("files") or [])
+                        if isinstance(f, dict) and f.get("path")
+                    ]
+                elif patch_obj is not None:
+                    summary = getattr(patch_obj, "summary", None) or summary
+                    changed_paths = [
+                        str(getattr(f, "path", ""))
+                        for f in (getattr(patch_obj, "files", None) or [])
+                        if getattr(f, "path", None)
+                    ]
+                pr = self.pr_manager.open_verified_heal_pr(
+                    cycle_id=result.cycle_id,
+                    diagnosis_summary=summary,
+                    files_changed=changed_paths,
+                    commit_sha=result.final_commit_hash or last_att.commit_hash,
+                )
+                if pr and pr.remote_html_url:
+                    logger.info(f"Verified heal PR ready for review: {pr.remote_html_url}")
+                elif pr:
+                    logger.info(
+                        f"Verified heal PR recorded locally [{pr.pr_id}] (remote open pending)."
+                    )
+            except Exception as e:
+                logger.warning(f"Post-heal Gitea PR open failed: {e}")
 
     def _run_autonomous_heal_thread(self, event: ObserverEvent) -> None:
         """Worker thread for autonomous heal cycle."""
