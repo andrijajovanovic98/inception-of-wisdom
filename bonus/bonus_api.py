@@ -13,11 +13,11 @@ try:
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel
 except ImportError:
-    APIRouter = object
-    HTTPException = Exception
-    Query = None
-    JSONResponse = None
-    BaseModel = object
+    APIRouter = object  # type: ignore[assignment,misc]
+    HTTPException = Exception  # type: ignore[assignment,misc]
+    Query = None  # type: ignore[assignment,misc]
+    JSONResponse = None  # type: ignore[assignment,misc]
+    BaseModel = object  # type: ignore[assignment,misc]
 
 from bonus.classifier import TinySymptomClassifier
 from bonus.consensus import SecondOpinionEngine
@@ -26,12 +26,12 @@ from bonus.pr_manager import PullRequestManager
 logger = logging.getLogger("bonus.bonus_api")
 
 
-class ConsensusRequest(BaseModel if BaseModel is not object else object):
+class ConsensusRequest(BaseModel if BaseModel is not object else object):  # type: ignore[misc,valid-type]
     log_excerpt: str
     top_k: Optional[int] = 3
 
 
-class PRActionRequest(BaseModel if BaseModel is not object else object):
+class PRActionRequest(BaseModel if BaseModel is not object else object):  # type: ignore[misc,valid-type]
     comment: Optional[str] = None
 
 
@@ -76,9 +76,13 @@ def create_bonus_router(
 
     @router.post("/flags/toggle")
     async def toggle_bonus_flag(flag_name: str) -> Dict[str, Any]:
-        """Toggles operational bonus flags (human_in_the_loop, second_opinion_mandatory, fast_path_classifier)."""
+        """Toggle bonus flags (human_in_the_loop, second_opinion_mandatory, fast_path_classifier)."""
         if flag_name not in flags:
-            raise HTTPException(status_code=400, detail=f"Invalid flag '{flag_name}'. Available: {list(flags.keys())}")
+            available = list(flags.keys())
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid flag '{flag_name}'. Available: {available}",
+            )
 
         flags[flag_name] = not flags[flag_name]
         logger.info(f"Bonus flag [{flag_name}] set to {flags[flag_name]}")
@@ -143,7 +147,12 @@ def create_bonus_router(
         if not success:
             raise HTTPException(status_code=400, detail=message)
 
-        return {"status": "merged", "message": message, "pr": pr_manager.get_pr(pr_id).to_dict()}
+        merged = pr_manager.get_pr(pr_id)
+        return {
+            "status": "merged",
+            "message": message,
+            "pr": merged.to_dict() if merged else {},
+        }
 
     @router.post("/prs/{pr_id}/reject")
     async def reject_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -156,7 +165,11 @@ def create_bonus_router(
         if not success:
             raise HTTPException(status_code=400, detail=message)
 
-        return {"status": "rejected", "message": message, "pr": pr_manager.get_pr(pr_id).to_dict()}
+        rejected = pr_manager.get_pr(pr_id)
+        return {
+            "status": "rejected",
+            "message": message,
+            "pr": rejected.to_dict() if rejected else {},
+        }
 
     return router
-

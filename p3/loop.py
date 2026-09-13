@@ -30,7 +30,7 @@ class AttemptRecord:
     patch: Optional[Dict[str, Any]] = None       # Structured patch JSON
     commit_hash: Optional[str] = None            # Git commit sha on iow/auto-heal
     sanity: Optional[Dict[str, Any]] = None      # Sanity check results
-    verification: Optional[Dict[str, Any]] = None# Post-restart health status
+    verification: Optional[Dict[str, Any]] = None  # Post-restart health status
     error_message: Optional[str] = None
     timestamp: float = 0.0
 
@@ -105,7 +105,10 @@ class WisdomLoop:
         restart target on original code, and surface clean failure to dashboard.
         """
         if self._is_running_cycle:
-            logger.warning("A heal cycle is already running (single-flight enforced). Rejecting concurrent run.")
+            logger.warning(
+                "A heal cycle is already running (single-flight enforced). "
+                "Rejecting concurrent run."
+            )
             refused_cycle = HealCycleRecord(
                 cycle_id=str(uuid.uuid4())[:8],
                 pre_loop_hash=self.git_manager.get_current_head() or "unknown",
@@ -215,9 +218,10 @@ class WisdomLoop:
 
                 if verify_res.is_healed:
                     # SUCCESS: Target container stayed healthy!
+                    commit_label = (commit_res.commit_hash or "?")[:8]
                     logger.info(
                         f"🎉 HEAL SUCCESS on attempt {attempt_num}! "
-                        f"Target healthy for full {grace_period}s on commit {commit_res.commit_hash[:8]}."
+                        f"Target healthy for full {grace_period}s on commit {commit_label}."
                     )
                     cycle_record.status = "healed"
                     cycle_record.final_commit_hash = commit_res.commit_hash
@@ -230,13 +234,18 @@ class WisdomLoop:
                         f"Attempt {attempt_num} FAILED: Target crashed during verification. "
                         f"Status: {verify_res.status}"
                     )
-                    current_error_log = verify_res.error_log or "Target failed to stay up during verification."
-                    attempt_record.error_message = f"Verification failed ({verify_res.status}): {current_error_log[:150]}"
+                    fallback_log = "Target failed to stay up during verification."
+                    current_error_log = verify_res.error_log or fallback_log
+                    err_snip = current_error_log[:150]
+                    attempt_record.error_message = (
+                        f"Verification failed ({verify_res.status}): {err_snip}"
+                    )
 
             # If all 3 attempts failed: Execute Rollback
             if not is_healed:
                 logger.error(
-                    f"All {self.max_attempts} attempts failed. Executing ROLLBACK to pre-loop revision {pre_loop_hash[:8]}..."
+                    f"All {self.max_attempts} attempts failed. Executing ROLLBACK "
+                    f"to pre-loop revision {pre_loop_hash[:8]}..."
                 )
                 rollback_success = self.git_manager.rollback_to_pre_loop()
 
@@ -248,10 +257,14 @@ class WisdomLoop:
                 cycle_record.end_time = time.time()
 
                 if not rollback_success:
-                    logger.critical("ROLLBACK ENCOUNTERED AN ERROR! Repository may require manual inspection.")
+                    logger.critical(
+                        "ROLLBACK ENCOUNTERED AN ERROR! Repository may require manual inspection."
+                    )
 
         except Exception as err:
-            logger.exception(f"Unexpected exception during heal cycle: {err}. Executing emergency rollback...")
+            logger.exception(
+                f"Unexpected exception during heal cycle: {err}. Executing emergency rollback..."
+            )
             self.git_manager.rollback_to_pre_loop()
             self.docker_monitor.restart_target(timeout=10)
             cycle_record.status = "rolled_back"
@@ -259,7 +272,8 @@ class WisdomLoop:
 
         finally:
             self._is_running_cycle = False
-            logger.info(f"=== WISDOM LOOP CYCLE [{cycle_id}] FINISHED (Status: {cycle_record.status.upper()}) ===\n")
+            status = cycle_record.status.upper()
+            logger.info(f"=== WISDOM LOOP CYCLE [{cycle_id}] FINISHED (Status: {status}) ===\n")
 
         return cycle_record
 
@@ -270,4 +284,3 @@ class WisdomLoop:
     def get_latest_cycle(self) -> Optional[HealCycleRecord]:
         """Returns the most recent heal cycle record."""
         return self.history[-1] if self.history else None
-

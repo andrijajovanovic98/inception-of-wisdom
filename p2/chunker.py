@@ -77,11 +77,14 @@ class AstChunker:
         try:
             tree = ast.parse(source_code, filename=rel_path)
         except SyntaxError as e:
-            logger.warning(f"SyntaxError while parsing AST for {rel_path}: {e}. Falling back to single chunk.")
+            logger.warning(
+                f"SyntaxError while parsing AST for {rel_path}: {e}. "
+                "Falling back to single chunk."
+            )
             return self._chunk_generic_file(rel_path, source_code)
 
         # Track covered line ranges to extract module-level top preamble
-        covered_lines = set()
+        covered_lines: set[int] = set()
 
         for node in tree.body:
             # Functions
@@ -158,7 +161,7 @@ class AstChunker:
             dec_line = getattr(first_decorator, "lineno", start_line)
             start_line = min(start_line, dec_line)
 
-        chunk_lines = lines[start_line - 1 : end_line]
+        chunk_lines = lines[start_line - 1:end_line]
         chunk_content = "".join(chunk_lines).strip()
         if not chunk_content:
             return None
@@ -223,4 +226,3 @@ class AstChunker:
                 all_chunks.extend(chunks)
 
         return all_chunks
-

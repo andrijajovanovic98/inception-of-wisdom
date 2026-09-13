@@ -11,12 +11,12 @@ import json
 import time
 import hashlib
 import logging
-from typing import Optional, List, Dict, Any, Tuple
-from dataclasses import dataclass, asdict, field
+from typing import Optional, Dict, Any
+from dataclasses import dataclass, asdict
 
 logger = logging.getLogger("bonus.classifier")
 
-DEFAULT_STORE_PATH = os.environ.get("IOW_CLASSIFIER_STORE", "/tmp/iow_cache/classifier_store.json")
+DEFAULT_STORE_PATH = os.environ.get("IOW_CLASSIFIER_STORE", "/tmp/iow/classifier_store.json")
 
 # Traceback parsing regexes
 TRACEBACK_FRAME_REGEX = re.compile(r'File\s+"([^"]+)",\s+line\s+(\d+)(?:,\s+in\s+([a-zA-Z0-9_]+))?')
@@ -174,15 +174,20 @@ class TinySymptomClassifier:
                 self._save_store()
 
                 logger.info(
-                    f"🎯 Classifier MATCH (Exact)! Key=[{symptom_key}], Error=[{features.error_type} in {features.offending_file}], "
+                    f"🎯 Classifier MATCH (Exact)! Key=[{symptom_key}], "
+                    f"Error=[{features.error_type} in {features.offending_file}], "
                     f"Confidence={confidence:.2f} -> Bypassing LLM generation"
+                )
+                expl = (
+                    f"Exact match on verified symptom: {features.error_type} "
+                    f"in {features.offending_file}:{features.offending_func}"
                 )
                 return ClassifierMatch(
                     matched=True,
                     confidence=confidence,
                     symptom_id=symptom_key,
                     cached_patch=entry.get("patch"),
-                    explanation=f"Exact match on verified symptom: {features.error_type} in {features.offending_file}:{features.offending_func}"
+                    explanation=expl,
                 )
 
         # Fuzzy / Nearest-Neighbor match check across learned entries
@@ -195,19 +200,23 @@ class TinySymptomClassifier:
             score = 0.0
 
             # Matching exception type: +40%
-            if stored_feat.get("error_type") == features.error_type and features.error_type != "UnknownException":
+            err_type = stored_feat.get("error_type")
+            if err_type == features.error_type and features.error_type != "UnknownException":
                 score += 0.40
 
             # Matching target file: +30%
-            if stored_feat.get("offending_file") and stored_feat.get("offending_file") == features.offending_file:
+            stored_file = stored_feat.get("offending_file")
+            if stored_file and stored_file == features.offending_file:
                 score += 0.30
 
             # Matching function/scope: +20%
-            if stored_feat.get("offending_func") and stored_feat.get("offending_func") == features.offending_func:
+            stored_func = stored_feat.get("offending_func")
+            if stored_func and stored_func == features.offending_func:
                 score += 0.20
 
             # Matching normalized message: +10%
-            if stored_feat.get("normalized_message") and stored_feat.get("normalized_message") == features.normalized_message:
+            stored_msg = stored_feat.get("normalized_message")
+            if stored_msg and stored_msg == features.normalized_message:
                 score += 0.10
 
             if score > best_score:
@@ -225,12 +234,16 @@ class TinySymptomClassifier:
                 f"🎯 Classifier MATCH (Fuzzy {best_score:.2f})! Key=[{best_match_key}], "
                 f"Error=[{features.error_type}] -> Bypassing LLM generation"
             )
+            fuzzy_expl = (
+                f"Fuzzy match (score {best_score:.2f}) on verified symptom: "
+                f"{features.error_type} in {features.offending_file}"
+            )
             return ClassifierMatch(
                 matched=True,
                 confidence=best_score,
                 symptom_id=best_match_key,
                 cached_patch=best_entry.get("patch"),
-                explanation=f"Fuzzy match (score {best_score:.2f}) on verified symptom: {features.error_type} in {features.offending_file}"
+                explanation=fuzzy_expl,
             )
 
         # No confident match
@@ -271,7 +284,10 @@ class TinySymptomClassifier:
             }
 
         self._save_store()
-        logger.info(f"✨ Learned verified crash symptom [{symptom_key}]: {features.error_type} in {features.offending_file}")
+        logger.info(
+            f"✨ Learned verified crash symptom [{symptom_key}]: "
+            f"{features.error_type} in {features.offending_file}"
+        )
         return symptom_key
 
     def record_failure(self, symptom_id: str) -> None:
@@ -280,8 +296,9 @@ class TinySymptomClassifier:
             entry = self.entries[symptom_id]
             entry["failure_count"] = entry.get("failure_count", 0) + 1
             entry["confidence"] = max(0.0, entry.get("confidence", 1.0) - 0.25)
+            conf = entry["confidence"]
             logger.warning(
-                f"Penalized classifier symptom [{symptom_id}]: confidence reduced to {entry['confidence']:.2f}"
+                f"Penalized classifier symptom [{symptom_id}]: confidence reduced to {conf:.2f}"
             )
             # Remove if completely untrusted
             if entry["confidence"] < 0.40:
@@ -309,4 +326,3 @@ class TinySymptomClassifier:
                 for k, v in self.entries.items()
             ]
         }
-

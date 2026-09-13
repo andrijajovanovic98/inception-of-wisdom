@@ -12,7 +12,7 @@ import logging
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field, asdict
 
-from p3.patcher import StructuredPatch, FilePatch
+from p3.patcher import StructuredPatch
 
 logger = logging.getLogger("p3.sanity")
 
@@ -108,7 +108,8 @@ class SanityChecker:
                         shrinkage_pct = ((orig_len - new_len) / orig_len) * 100.0
                         if shrinkage_pct > self.max_shrinkage_pct:
                             f_reasons.append(
-                                f"File shrinkage ({shrinkage_pct:.1f}%) exceeds the allowed {self.max_shrinkage_pct}% "
+                                f"File shrinkage ({shrinkage_pct:.1f}%) exceeds "
+                                f"the allowed {self.max_shrinkage_pct}% "
                                 f"(original: {orig_len} bytes, proposed: {new_len} bytes)."
                             )
                 except Exception as e:
@@ -151,4 +152,3 @@ class SanityChecker:
             reasons=reasons,
             file_checks=file_checks
         )
-

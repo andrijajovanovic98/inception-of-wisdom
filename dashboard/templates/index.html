@@ -18,12 +18,42 @@
       --accent-yellow: #f59e0b;
       --accent-purple: #a855f7;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --scroll-track: #0b1220;
+      --scroll-thumb: #3b4a63;
+      --scroll-thumb-hover: #38bdf8;
     }
 
     * {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
+      scrollbar-width: thin;
+      scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+    }
+
+    /* Global themed scrollbars (page, all tabs, panels, modals, search) */
+    *::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    *::-webkit-scrollbar-track {
+      background: var(--scroll-track);
+      border-radius: 8px;
+    }
+    *::-webkit-scrollbar-thumb {
+      background: linear-gradient(180deg, #3b4a63 0%, #2a3649 100%);
+      border-radius: 8px;
+      border: 2px solid var(--scroll-track);
+    }
+    *::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(180deg, var(--scroll-thumb-hover) 0%, #0284c7 100%);
+    }
+    *::-webkit-scrollbar-corner {
+      background: var(--scroll-track);
+    }
+
+    html, body {
+      scrollbar-gutter: stable;
     }
 
     body {
@@ -138,6 +168,17 @@
       box-shadow: 0 1px 3px rgba(0,0,0,0.3);
     }
 
+    /* Visible but locked until the matching make pN / bonus stage */
+    .tab-btn.locked {
+      opacity: 0.4;
+      cursor: not-allowed;
+      color: var(--text-muted);
+    }
+
+    .tab-btn.locked:hover {
+      color: var(--text-muted);
+    }
+
     /* Main Container */
     main {
       flex: 1;
@@ -173,6 +214,24 @@
       gap: 20px;
     }
 
+    .grid-2.stack-below {
+      /* Two equal panels under a full-width block (Observer events + probes) */
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    /* Analyst: free-text RAG wider, structured diagnosis narrower */
+    .grid-2.analyst-split {
+      grid-template-columns: minmax(0, 1.65fr) minmax(280px, 1fr);
+      align-items: start;
+    }
+
+    @media (max-width: 960px) {
+      .grid-2.stack-below,
+      .grid-2.analyst-split {
+        grid-template-columns: 1fr;
+      }
+    }
+
     .grid-3 {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -185,6 +244,13 @@
       gap: 16px;
     }
 
+    .stack-col {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      width: 100%;
+    }
+
     /* Cards */
     .card {
       background: var(--bg-card);
@@ -195,12 +261,15 @@
       flex-direction: column;
       gap: 14px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      min-width: 0;
     }
 
     .card-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
       border-bottom: 1px solid rgba(255,255,255,0.06);
       padding-bottom: 12px;
     }
@@ -214,31 +283,83 @@
       gap: 8px;
     }
 
-    /* Terminal & Log Viewer */
+    .card-hint {
+      width: 100%;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      font-weight: 400;
+      margin-top: -4px;
+      line-height: 1.35;
+    }
+
+    .log-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Terminal & Log Viewer — full-width monospace; long lines scroll horizontally */
     .terminal-box {
       background: #060911;
       border: 1px solid #1a2338;
       border-radius: 8px;
-      padding: 14px;
+      padding: 12px 14px;
       font-family: var(--font-mono);
       font-size: 0.8rem;
-      line-height: 1.5;
-      height: 460px;
-      overflow-y: auto;
+      line-height: 1.45;
+      height: min(32vh, 320px);
+      min-height: 200px;
+      overflow: auto;
       color: #cbd5e1;
-      white-space: pre-wrap;
-      word-break: break-all;
+      white-space: pre;
+      tab-size: 4;
     }
 
     .terminal-line {
-      display: flex;
-      gap: 12px;
+      display: block;
+      margin: 0;
+      padding: 0 2px;
+      white-space: pre;
+      width: max-content;
+      min-width: 100%;
+      font-variant-ligatures: none;
     }
 
     .terminal-line.error { color: #f87171; background: rgba(239, 68, 68, 0.08); }
     .terminal-line.warn { color: #fbbf24; }
     .terminal-line.success { color: #34d399; }
-    .terminal-ts { color: #475569; user-select: none; }
+    .terminal-placeholder { white-space: normal; font-style: italic; color: #64748b; width: auto; min-width: 0; }
+
+    /* RAG similarity score pill (Analyst) */
+    .score-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent-blue);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      white-space: nowrap;
+    }
+    .score-pill.high {
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--accent-green);
+      border-color: rgba(16, 185, 129, 0.35);
+    }
+    .score-pill.mid {
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--accent-yellow);
+      border-color: rgba(245, 158, 11, 0.35);
+    }
+    .score-pill.low {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text-muted);
+      border-color: rgba(148, 163, 184, 0.35);
+    }
 
     /* Tables */
     table {
@@ -400,10 +521,114 @@
       border-radius: 6px;
       font-family: var(--font-mono);
       font-size: 0.75rem;
-      overflow-x: auto;
+      overflow: auto;
       border: 1px solid #162035;
       color: #94a3b8;
       max-height: 250px;
+    }
+
+    /* Themed dialog (IoC-style; replaces native alert/confirm) */
+    .iow-modal-overlay {
+      display: none; position: fixed; inset: 0; z-index: 9999;
+      background: rgba(2, 6, 23, 0.72); backdrop-filter: blur(4px);
+      align-items: center; justify-content: center; padding: 24px;
+    }
+    .iow-modal-overlay.open { display: flex; }
+    .iow-modal {
+      background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px;
+      max-width: 440px; width: 100%; box-shadow: 0 20px 50px rgba(0,0,0,0.45);
+      overflow: hidden; animation: iowModalIn 0.18s ease-out;
+    }
+    @keyframes iowModalIn {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+    .iow-modal-header {
+      display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+      border-bottom: 1px solid var(--border-color); background: rgba(255,255,255,0.02);
+    }
+    .iow-modal-header .iow-modal-icon {
+      width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center;
+      justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0;
+    }
+    .iow-modal.info .iow-modal-icon {
+      background: rgba(56, 189, 248, 0.15); color: var(--accent-blue);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+    }
+    .iow-modal.success .iow-modal-icon {
+      background: rgba(16, 185, 129, 0.15); color: var(--accent-green);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .iow-modal.warn .iow-modal-icon {
+      background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+    .iow-modal.error .iow-modal-icon {
+      background: rgba(239, 68, 68, 0.15); color: var(--accent-red);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+    .iow-modal-title { font-size: 15px; font-weight: 700; color: #fff; }
+    .iow-modal-body {
+      padding: 16px 18px; font-size: 14px; color: var(--text-muted);
+      white-space: pre-wrap; line-height: 1.55;
+      max-height: min(50vh, 360px);
+      overflow: auto;
+    }
+    .iow-modal-body .iow-modal-input {
+      width: 100%; margin-top: 12px; padding: 10px 12px; border-radius: 6px;
+      border: 1px solid var(--border-color); background: #0f172a; color: var(--text-main);
+      font-size: 14px; font-family: inherit;
+    }
+    .iow-modal-body .iow-modal-input:focus {
+      outline: none; border-color: var(--accent-blue);
+    }
+    .iow-modal-footer {
+      display: flex; justify-content: flex-end; gap: 10px; padding: 12px 18px 16px;
+      border-top: 1px solid var(--border-color);
+    }
+    .iow-modal-footer .btn {
+      padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 600;
+      cursor: pointer; border: none; display: inline-flex; align-items: center;
+      gap: 8px; font-family: inherit;
+    }
+    .iow-modal-footer .btn-primary { background: var(--accent-blue); color: #0f172a; }
+    .iow-modal-footer .btn-primary:hover { filter: brightness(1.08); }
+    .iow-modal-footer .btn-secondary { background: #334155; color: var(--text-main); }
+    .iow-modal-footer .btn-secondary:hover { background: #475569; }
+    .iow-modal-footer .btn-danger {
+      background: rgba(239, 68, 68, 0.2); color: var(--accent-red);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+    .iow-modal-footer .btn-danger:hover { background: rgba(239, 68, 68, 0.35); }
+
+    /* RAG similarity score (IoC-style) */
+    .score-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent-blue);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      white-space: nowrap;
+    }
+    .score-pill.high {
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--accent-green);
+      border-color: rgba(16, 185, 129, 0.35);
+    }
+    .score-pill.mid {
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--accent-yellow);
+      border-color: rgba(245, 158, 11, 0.35);
+    }
+    .score-pill.low {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text-muted);
+      border-color: rgba(148, 163, 184, 0.35);
     }
   </style>
 </head>
@@ -417,10 +642,10 @@
         <span>Inception of Wisdom</span>
       </div>
       <div class="tabs-nav">
-        <button class="tab-btn active" onclick="switchTab('observer')">1. Observer</button>
-        <button class="tab-btn" onclick="switchTab('analyst')">2. Analyst</button>
-        <button class="tab-btn" onclick="switchTab('loop')">3. Wisdom Loop</button>
-        <button class="tab-btn" onclick="switchTab('bonus')">4. Bonus Suite</button>
+        <button class="tab-btn" data-tab="observer" onclick="switchTab('observer')">1. Observer</button>
+        <button class="tab-btn" data-tab="analyst" onclick="switchTab('analyst')">2. Analyst</button>
+        <button class="tab-btn" data-tab="loop" onclick="switchTab('loop')">3. Wisdom Loop</button>
+        <button class="tab-btn" data-tab="bonus" onclick="switchTab('bonus')">4. Bonus Suite</button>
       </div>
     </div>
 
@@ -466,32 +691,34 @@
         </div>
       </div>
 
-      <div class="grid-2">
-        <!-- Live Log Stream -->
+      <div class="stack-col">
+        <!-- Full-width live log so long lines fit / scroll horizontally -->
         <div class="card">
           <div class="card-header">
             <div class="card-title">
               <span>Live Stdout/Stderr Log Stream</span>
               <span id="streamStatusBadge" class="badge badge-blue">SSE Active</span>
             </div>
-            <div style="display: flex; gap: 8px;">
-              <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="clearLogs()">Clear</button>
-              <button id="toggleScrollBtn" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="toggleAutoScroll()">Pause Scroll</button>
+            <div class="log-toolbar">
+              <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" id="clearLogsBtn" title="Clear ring buffer + UI (live stream continues)">Clear</button>
+              <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" id="restartLogsBtn" title="Reattach Docker log follow (Shift+R)">Restart Stream</button>
+              <button type="button" id="toggleScrollBtn" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" aria-pressed="true">Following</button>
             </div>
+            <p class="card-hint" id="followHint">Following: view sticks to newest lines as they arrive. Click to unfollow — lines still arrive, view stays put.</p>
           </div>
           <div id="terminalBox" class="terminal-box">
-            <div style="color: #64748b; font-style: italic;">Connecting to /api/observer/stream SSE channel...</div>
+            <div class="terminal-placeholder">Connecting to /events SSE channel...</div>
           </div>
         </div>
 
-        <!-- Observer Events & HTTP Probes -->
-        <div style="display: flex; flex-direction: column; gap: 20px;">
+        <!-- Events + probes under the log -->
+        <div class="grid-2 stack-below">
           <div class="card">
             <div class="card-header">
               <div class="card-title">Detected Incident Events (Deduplicated)</div>
               <span id="eventsCountBadge" class="badge badge-purple">0 Events</span>
             </div>
-            <div style="max-height: 200px; overflow-y: auto;">
+            <div style="max-height: 220px; overflow: auto;">
               <table id="eventsTable">
                 <thead>
                   <tr>
@@ -513,19 +740,21 @@
             <div class="card-header">
               <div class="card-title">HTTP Probe Endpoints Status</div>
             </div>
-            <table id="probesTable">
-              <thead>
-                <tr>
-                  <th>URL</th>
-                  <th>Status</th>
-                  <th>Latency</th>
-                  <th>Classification</th>
-                </tr>
-              </thead>
-              <tbody id="probesTableBody">
-                <tr><td colspan="4" style="text-align: center; color: #64748b;">Loading probe status...</td></tr>
-              </tbody>
-            </table>
+            <div style="max-height: 220px; overflow: auto;">
+              <table id="probesTable">
+                <thead>
+                  <tr>
+                    <th>URL</th>
+                    <th>Status</th>
+                    <th>Latency</th>
+                    <th>Classification</th>
+                  </tr>
+                </thead>
+                <tbody id="probesTableBody">
+                  <tr><td colspan="4" style="text-align: center; color: #64748b;">Loading probe status...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -550,25 +779,26 @@
         </div>
       </div>
 
-      <div class="grid-2">
-        <!-- Top-k Semantic Search -->
+      <div class="grid-2 analyst-split">
+        <!-- Top-k Semantic Search (wider column) -->
         <div class="card">
           <div class="card-header">
             <div class="card-title">Free-Text Semantic Code Retrieval (RAG)</div>
             <span class="badge badge-blue">Top-K</span>
           </div>
           <div style="display: flex; gap: 10px;">
-            <input id="retrievalQuery" type="text" class="form-input" placeholder="e.g. crash division by zero in route..." />
+            <input id="retrievalQuery" type="text" class="form-input" placeholder="e.g. crash division by zero in route..."
+                   onkeydown="if (event.key === 'Enter') { event.preventDefault(); performSearch(); }" />
             <button class="btn btn-primary" onclick="performSearch()">Search</button>
           </div>
-          <div id="searchResults" style="display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow-y: auto;">
+          <div id="searchResults" class="iow-scroll" style="display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow: auto;">
             <div style="color: #64748b; font-size: 0.85rem; text-align: center; padding: 30px;">
               Enter a search query to inspect AST code chunks retrieved by ChromaDB.
             </div>
           </div>
         </div>
 
-        <!-- Structured Diagnosis Tester -->
+        <!-- Structured Diagnosis Tester (narrower column) -->
         <div class="card">
           <div class="card-header">
             <div class="card-title">Structured Crash Diagnosis (Ollama JSON)</div>
@@ -626,7 +856,9 @@
           <div class="card-title">Autonomous Heal History & Attempt Log</div>
           <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshLoopHistory()">Refresh</button>
         </div>
-        <div id="cycleHistoryList" style="display: flex; flex-direction: column; gap: 10px;">
+        <div id="cycleHistoryList" class="iow-scroll" style="display: flex; flex-direction: column; gap: 10px; max-height: 640px; overflow-y: auto;">
+        </div>
+      </div>
     </div>
 
     <!-- ===================================================================== -->
@@ -659,7 +891,7 @@
             <div class="card-title">Tiny Symptom Classifier Knowledge Base</div>
             <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="refreshBonus()">Refresh</button>
           </div>
-          <div style="max-height: 380px; overflow-y: auto;">
+          <div class="iow-scroll" style="max-height: 380px; overflow-y: auto;">
             <table>
               <thead>
                 <tr>
@@ -699,7 +931,7 @@
           <div class="card-title">Human-in-the-Loop Pull Requests & Review Artifacts</div>
           <span id="prStatusBadge" class="badge badge-blue">PR Mode Available</span>
         </div>
-        <div id="prListContainer" style="display: flex; flex-direction: column; gap: 12px;">
+        <div id="prListContainer" class="iow-scroll" style="display: flex; flex-direction: column; gap: 12px; max-height: 480px; overflow-y: auto;">
           <div style="color: #64748b; text-align: center; padding: 30px;">No pending review Pull Requests at this time.</div>
         </div>
       </div>
@@ -707,41 +939,304 @@
 
   </main>
 
+  <div id="iow-modal-overlay" class="iow-modal-overlay" role="dialog" aria-modal="true"
+       aria-labelledby="iow-modal-title">
+    <div id="iow-modal" class="iow-modal info">
+      <div class="iow-modal-header">
+        <div id="iow-modal-icon" class="iow-modal-icon">i</div>
+        <div id="iow-modal-title" class="iow-modal-title">Notice</div>
+      </div>
+      <div id="iow-modal-body" class="iow-modal-body"></div>
+      <div class="iow-modal-footer" id="iow-modal-footer"></div>
+    </div>
+  </div>
+
   <script>
-    // Tab switching
-    function switchTab(tabName) {
-      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-      document.querySelector(`button[onclick="switchTab('${tabName}')"]`).classList.add('active');
-      document.getElementById(`tab-${tabName}`).classList.add('active');
+    // IoC-style themed modals with kind: info | success | warn | error
+    const IOW_MODAL = {
+      overlay: null, resolve: null,
+      icons: { info: 'i', success: '\u2713', warn: '!', error: '\u2715' },
+      titles: { info: 'Notice', success: 'Success', warn: 'Confirm', error: 'Error' }
+    };
+
+    function _iowEnsureModal() {
+      if (!IOW_MODAL.overlay) IOW_MODAL.overlay = document.getElementById('iow-modal-overlay');
+      return IOW_MODAL.overlay;
     }
 
-    // State
+    function _iowCloseModal(result) {
+      const overlay = _iowEnsureModal();
+      if (overlay) overlay.classList.remove('open');
+      const r = IOW_MODAL.resolve;
+      IOW_MODAL.resolve = null;
+      if (r) r(result);
+    }
+
+    function showDialog(message, options) {
+      options = options || {};
+      const kind = options.kind || 'info';
+      const title = options.title || IOW_MODAL.titles[kind] || 'Notice';
+      const confirmLabel = options.confirmLabel || 'OK';
+      const cancelLabel = options.cancelLabel || 'Cancel';
+      const showCancel = !!options.showCancel;
+      const showInput = !!options.showInput;
+      const inputPlaceholder = options.inputPlaceholder || '';
+
+      return new Promise(function(resolve) {
+        IOW_MODAL.resolve = resolve;
+        const overlay = _iowEnsureModal();
+        const modal = document.getElementById('iow-modal');
+        const icon = document.getElementById('iow-modal-icon');
+        const titleEl = document.getElementById('iow-modal-title');
+        const body = document.getElementById('iow-modal-body');
+        const footer = document.getElementById('iow-modal-footer');
+
+        modal.className = 'iow-modal ' + kind;
+        icon.textContent = IOW_MODAL.icons[kind] || 'i';
+        titleEl.textContent = title;
+        body.textContent = message;
+
+        let inputEl = null;
+        if (showInput) {
+          inputEl = document.createElement('input');
+          inputEl.type = 'text';
+          inputEl.className = 'iow-modal-input';
+          inputEl.placeholder = inputPlaceholder;
+          body.appendChild(inputEl);
+        }
+
+        footer.innerHTML = '';
+        if (showCancel) {
+          const cancelBtn = document.createElement('button');
+          cancelBtn.className = 'btn btn-secondary';
+          cancelBtn.textContent = cancelLabel;
+          cancelBtn.onclick = function() { _iowCloseModal(showInput ? null : false); };
+          footer.appendChild(cancelBtn);
+        }
+        const okBtn = document.createElement('button');
+        okBtn.className = kind === 'error' ? 'btn btn-danger' : 'btn btn-primary';
+        okBtn.textContent = confirmLabel;
+        okBtn.onclick = function() {
+          if (showInput) _iowCloseModal((inputEl && inputEl.value.trim()) || null);
+          else _iowCloseModal(true);
+        };
+        footer.appendChild(okBtn);
+
+        overlay.classList.add('open');
+        if (inputEl) {
+          inputEl.focus();
+          inputEl.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') okBtn.click();
+          });
+        } else {
+          okBtn.focus();
+        }
+      });
+    }
+
+    function showAlert(message, kind, title) {
+      return showDialog(message, { kind: kind || 'info', title: title, showCancel: false });
+    }
+
+    function showConfirm(message, title) {
+      return showDialog(message, {
+        kind: 'warn', title: title || 'Confirm', showCancel: true,
+        confirmLabel: 'Confirm', cancelLabel: 'Cancel'
+      });
+    }
+
+    function showPrompt(message, title, placeholder) {
+      return showDialog(message, {
+        kind: 'warn', title: title || 'Input', showCancel: true, showInput: true,
+        confirmLabel: 'OK', cancelLabel: 'Cancel', inputPlaceholder: placeholder || ''
+      });
+    }
+
+    (function() {
+      var overlay = document.getElementById('iow-modal-overlay');
+      if (overlay) {
+        overlay.addEventListener('click', function(e) {
+          if (e.target === e.currentTarget) _iowCloseModal(false);
+        });
+      }
+      document.addEventListener('keydown', function(e) {
+        var o = _iowEnsureModal();
+        if (e.key === 'Escape' && o && o.classList.contains('open')) {
+          _iowCloseModal(false);
+        }
+      });
+    })();
+
+    // Progressive part modes (injected by server from IOW_MODE):
+    // All tabs stay visible; only unlocked tabs are clickable/active.
+    //   p1    → Observer unlocked
+    //   p2    → Observer + Analyst
+    //   p3    → through Wisdom Loop
+    //   bonus / full → all tabs unlocked
+    window.IOW_MODE = window.IOW_MODE || "full";
+    const IOW_TAB_SETS = {
+      p1: ["observer"],
+      p2: ["observer", "analyst"],
+      p3: ["observer", "analyst", "loop"],
+      bonus: ["observer", "analyst", "loop", "bonus"],
+      full: ["observer", "analyst", "loop", "bonus"],
+    };
+    const IOW_TAB_UNLOCK_HINT = {
+      observer: "Unlocked in Part 1 (make p1)",
+      analyst: "Unlocks in Part 2 (make p2)",
+      loop: "Unlocks in Part 3 (make p3)",
+      bonus: "Unlocks in Bonus (make bonus)",
+    };
+
+    function unlockedTabs(mode) {
+      return IOW_TAB_SETS[mode] || IOW_TAB_SETS.full;
+    }
+
+    function applyPartMode(mode) {
+      const tabs = unlockedTabs(mode);
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        const name = btn.getAttribute("data-tab");
+        const unlocked = tabs.includes(name);
+        btn.style.display = "";
+        btn.classList.toggle("locked", !unlocked);
+        btn.disabled = !unlocked;
+        btn.title = unlocked
+          ? (IOW_TAB_UNLOCK_HINT[name] || "")
+          : (IOW_TAB_UNLOCK_HINT[name] || "Locked for this stage");
+        btn.classList.remove("active");
+      });
+      document.querySelectorAll(".tab-content").forEach((el) => {
+        el.classList.remove("active");
+      });
+      const first = tabs[0];
+      const firstBtn = document.querySelector(`.tab-btn[data-tab="${first}"]`);
+      const firstPane = document.getElementById(`tab-${first}`);
+      if (firstBtn) firstBtn.classList.add("active");
+      if (firstPane) firstPane.classList.add("active");
+      document.body.setAttribute("data-iow-mode", mode);
+    }
+
+    // Tab switching — locked tabs stay visible but do nothing
+    function switchTab(tabName) {
+      const mode = window.IOW_MODE || "full";
+      const allowed = unlockedTabs(mode);
+      if (!allowed.includes(tabName)) return;
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      const btn = document.querySelector(`.tab-btn[data-tab="${tabName}"]`);
+      if (btn) btn.classList.add('active');
+      const pane = document.getElementById(`tab-${tabName}`);
+      if (pane) pane.classList.add('active');
+      // Observer tab: ensure live logs keep filling in every mode (p1/p2/p3/bonus)
+      if (tabName === 'observer') {
+        const term = document.getElementById('terminalBox');
+        if (term && term.dataset.seeded !== "1") seedRecentLogs(term, 0);
+        pollObserverLogs();
+      }
+    }
+
+    // State — autoScroll is shared for Observer logs in every mode (p1/p2/p3/bonus)
     let autoScroll = true;
     let sseSource = null;
     let latestErrorExcerpt = "";
 
-    function toggleAutoScroll() {
-      autoScroll = !autoScroll;
-      document.getElementById('toggleScrollBtn').textContent = autoScroll ? "Pause Scroll" : "Resume Scroll";
+    function syncScrollButton() {
+      const btn = document.getElementById('toggleScrollBtn');
+      const hint = document.getElementById('followHint');
+      if (!btn) return;
+      // Label = current mode (not the click action)
+      btn.textContent = autoScroll ? "Following" : "Follow";
+      btn.setAttribute("aria-pressed", autoScroll ? "true" : "false");
+      btn.classList.toggle("btn-primary", autoScroll);
+      btn.classList.toggle("btn-secondary", !autoScroll);
+      if (hint) {
+        hint.textContent = autoScroll
+          ? "Following: view sticks to newest lines as they arrive. Click to unfollow — lines still arrive, view stays put."
+          : "Not following: lines still arrive; view stays where you scrolled. Click Following to jump to latest and stick again.";
+      }
     }
+
+    function toggleAutoScroll(e) {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      autoScroll = !autoScroll;
+      syncScrollButton();
+      const term = document.getElementById('terminalBox');
+      if (autoScroll && term) {
+        term.scrollTop = term.scrollHeight;
+      }
+      return false;
+    }
+
+    // Ensure inline/handlers and event listeners always see these (all 4 modes)
+    window.toggleAutoScroll = toggleAutoScroll;
+    window.clearLogs = clearLogs;
 
     function clearLogs() {
-      document.getElementById('terminalBox').innerHTML = "";
+      const term = document.getElementById('terminalBox');
+      term.innerHTML = "";
+      term.dataset.seeded = "0";
     }
 
-    // SSE Log & Event Stream
+    function appendTerminalLine(term, lineText, isError, timestamp) {
+      // Drop the "Connecting..." placeholder on first real line
+      const placeholder = term.querySelector('.terminal-placeholder');
+      if (placeholder) placeholder.remove();
+
+      const line = document.createElement('div');
+      const text = String(lineText || "");
+      const warn = !isError && /\b(WARNING|WARN)\b/i.test(text);
+      line.className = `terminal-line${isError ? ' error' : (warn ? ' warn' : '')}`;
+      if (isError) {
+        latestErrorExcerpt += text + "\n";
+      }
+      // Raw docker line only (already has timestamp/level columns) — keep monospace alignment
+      line.textContent = text;
+      term.appendChild(line);
+      if (autoScroll) {
+        term.scrollTop = term.scrollHeight;
+      }
+    }
+
+    async function seedRecentLogs(term) {
+      if (term.dataset.seeded === "1") return;
+      try {
+        const res = await fetch('/api/observer/logs?tail=80');
+        if (!res.ok) return;
+        const data = await res.json();
+        const logs = data.logs || [];
+        term.dataset.seeded = "1";
+        const placeholder = term.querySelector('.terminal-placeholder');
+        if (placeholder) placeholder.remove();
+        if (logs.length === 0) {
+          term.insertAdjacentHTML(
+            'beforeend',
+            '<div class="terminal-placeholder" style="color:#64748b;font-style:italic;">SSE connected — waiting for container stdout/stderr…</div>'
+          );
+          return;
+        }
+        const now = Date.now() / 1000;
+        logs.forEach((ln) => appendTerminalLine(term, ln, false, now));
+      } catch (_) {
+        /* ignore seed errors; live SSE may still work */
+      }
+    }
+
+    // SSE Log & Event Stream — eventually shows live docker logs from iow_demo_target
     function initSSE() {
       if (sseSource) {
         sseSource.close();
       }
-      sseSource = new EventSource('/api/observer/stream');
+      sseSource = new EventSource('/events');
       const term = document.getElementById('terminalBox');
       const streamBadge = document.getElementById('streamStatusBadge');
 
       sseSource.onopen = () => {
         streamBadge.className = "badge badge-green";
         streamBadge.textContent = "SSE Connected";
+        seedRecentLogs(term);
       };
 
       sseSource.onerror = () => {
@@ -749,23 +1244,16 @@
         streamBadge.textContent = "Reconnecting...";
       };
 
+      sseSource.addEventListener('connected', () => {
+        streamBadge.className = "badge badge-green";
+        streamBadge.textContent = "SSE Connected";
+        seedRecentLogs(term);
+      });
+
       sseSource.addEventListener('log', (e) => {
         try {
           const data = JSON.parse(e.data);
-          const line = document.createElement('div');
-          line.className = `terminal-line ${data.is_error ? 'error' : ''}`;
-
-          if (data.is_error) {
-            latestErrorExcerpt += data.line + "\n";
-          }
-
-          const ts = new Date(data.timestamp * 1000).toLocaleTimeString();
-          line.innerHTML = `<span class="terminal-ts">[${ts}]</span><span>${escapeHtml(data.line)}</span>`;
-          term.appendChild(line);
-
-          if (autoScroll) {
-            term.scrollTop = term.scrollHeight;
-          }
+          appendTerminalLine(term, data.line || "", !!data.is_error, data.timestamp);
         } catch (err) {
           console.error(err);
         }
@@ -864,28 +1352,52 @@
       try {
         const res = await fetch('/api/observer/events');
         if (!res.ok) return;
-        const events = await res.json();
+        const data = await res.json();
+        const events = Array.isArray(data) ? data : (data.events || []);
         document.getElementById('eventsCountBadge').textContent = `${events.length} Events`;
         const tbody = document.getElementById('eventsTableBody');
         if (events.length === 0) {
           tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #64748b;">No events recorded yet.</td></tr>`;
           return;
         }
-        tbody.innerHTML = events.slice(0, 8).map(ev => `
+        tbody.innerHTML = events.slice(0, 8).map(ev => {
+          const evType = ev.type || ev.event_type || 'info';
+          const when = ev.last_seen || ev.first_seen || ev.timestamp || 0;
+          const sig = (ev.signature || '').toString();
+          return `
           <tr>
-            <td><span class="badge ${ev.event_type === 'crash' ? 'badge-red' : 'badge-yellow'}">${ev.event_type}</span></td>
-            <td><code style="font-size: 0.75rem; color: #38bdf8;">${ev.signature.slice(0, 8)}</code></td>
-            <td>${escapeHtml(ev.summary)}</td>
-            <td><strong>x${ev.count}</strong></td>
-            <td style="color: #64748b;">${new Date(ev.timestamp * 1000).toLocaleTimeString()}</td>
+            <td><span class="badge ${evType === 'crash' ? 'badge-red' : 'badge-yellow'}">${escapeHtml(evType)}</span></td>
+            <td><code style="font-size: 0.75rem; color: #38bdf8;">${escapeHtml(sig.slice(0, 8) || '--------')}</code></td>
+            <td>${escapeHtml(ev.summary || '')}</td>
+            <td><strong>x${ev.count || 1}</strong></td>
+            <td style="color: #64748b;">${when ? new Date(when * 1000).toLocaleTimeString() : '-'}</td>
           </tr>
-        `).join('');
+        `;
+        }).join('');
       } catch (err) {
         console.error("Failed to fetch events:", err);
       }
     }
 
     // Free-text semantic search
+    function chunkSimilarity(c) {
+      const raw = (typeof c.similarity_score === 'number') ? c.similarity_score
+        : (typeof c.similarity === 'number') ? c.similarity
+        : (typeof c.score === 'number') ? c.score
+        : null;
+      return raw;
+    }
+
+    function formatScorePill(c) {
+      const sim = chunkSimilarity(c);
+      if (sim === null || Number.isNaN(sim)) {
+        return `<span class="score-pill low">Score: N/A</span>`;
+      }
+      const pct = (sim * 100).toFixed(1);
+      const tier = sim >= 0.75 ? 'high' : (sim >= 0.45 ? 'mid' : 'low');
+      return `<span class="score-pill ${tier}">${pct}% match</span>`;
+    }
+
     async function performSearch() {
       const query = document.getElementById('retrievalQuery').value.trim();
       if (!query) return;
@@ -906,12 +1418,12 @@
 
         resBox.innerHTML = data.chunks.map((c, i) => `
           <div style="background: #090f1e; border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
               <div>
-                <strong style="color: #38bdf8;">${escapeHtml(c.file_path)}</strong>
-                <span style="color: #94a3b8; font-size: 0.75rem;">(Symbol: ${escapeHtml(c.symbol_name || 'module')})</span>
+                <strong style="color: #38bdf8;">#${i + 1} ${escapeHtml(c.file_path)}</strong>
+                <span style="color: #94a3b8; font-size: 0.75rem;">(${escapeHtml(c.symbol_type || 'code')}: ${escapeHtml(c.symbol_name || 'module')})</span>
               </div>
-              <span class="badge badge-blue">Score: ${typeof c.score === 'number' ? c.score.toFixed(3) : 'N/A'}</span>
+              ${formatScorePill(c)}
             </div>
             <pre class="code-preview">Lines ${c.start_line}-${c.end_line}\n${escapeHtml(c.content)}</pre>
           </div>
@@ -967,7 +1479,7 @@
 
     // Wisdom Loop actions
     async function triggerManualHeal() {
-      if (!confirm("Start an autonomous Wisdom Loop heal cycle now?")) return;
+      if (!await showConfirm("Start an autonomous Wisdom Loop heal cycle now?", "Wisdom Loop")) return;
       try {
         const res = await fetch('/api/loop/trigger', {
           method: 'POST',
@@ -976,30 +1488,45 @@
         });
         const data = await res.json();
         if (data.status === "refused") {
-          alert("Heal cycle refused by safety bounds:\n" + data.reason);
+          await showAlert("Heal cycle refused by safety bounds:\n" + data.reason, 'warn', 'Safety Bounds');
         } else {
-          alert("Heal cycle accepted and running in background!");
+          await showAlert("Heal cycle accepted and running in background!", 'success', 'Wisdom Loop');
         }
         refreshLoopHistory();
       } catch (err) {
-        alert("Failed to trigger heal: " + err);
+        await showAlert("Failed to trigger heal: " + err, 'error', 'Wisdom Loop');
       }
     }
 
     async function triggerManualRollback() {
-      if (!confirm("EMERGENCY ROLLBACK: Revert git working tree to pre-loop revision and restart target?")) return;
+      if (!await showConfirm(
+        "EMERGENCY ROLLBACK only rewinds the iow/auto-heal branch after a heal attempt. It will NOT run on main (protects your local WIP). Continue?",
+        "Emergency Rollback"
+      )) return;
       try {
         const res = await fetch('/api/loop/rollback', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
         });
-        const data = await res.json();
-        alert(`Rollback completed!\nRestored revision: ${data.target_revision}\nContainer restarted: ${data.container_restarted}`);
+        const data = await res.json().catch(function() { return {}; });
+        if (!res.ok) {
+          await showAlert(
+            (data && (data.detail || data.message)) || ("Rollback refused (HTTP " + res.status + ")"),
+            'warn',
+            'Rollback'
+          );
+          return;
+        }
+        await showAlert(
+          `Rollback completed!\nRestored revision: ${data.target_revision}\nContainer restarted: ${data.container_restarted}`,
+          'success',
+          'Rollback'
+        );
         refreshOverview();
         refreshLoopHistory();
       } catch (err) {
-        alert("Rollback failed: " + err);
+        await showAlert("Rollback failed: " + err, 'error', 'Rollback');
       }
     }
 
@@ -1185,20 +1712,20 @@ ZeroDivisionError: division by zero`;
     }
 
     async function mergePR(prId) {
-      if (!confirm(`Merge Pull Request ${prId} into active target code?`)) return;
+      if (!await showConfirm(`Merge Pull Request ${prId} into active target code?`, "Merge PR")) return;
       try {
         const res = await fetch(`/api/bonus/prs/${prId}/merge`, { method: 'POST' });
         const data = await res.json();
-        alert(data.message || "PR merged!");
+        await showAlert(data.message || "PR merged!", 'success', 'Merge PR');
         refreshBonus();
         refreshOverview();
       } catch (err) {
-        alert("Failed to merge PR: " + err);
+        await showAlert("Failed to merge PR: " + err, 'error', 'Merge PR');
       }
     }
 
     async function rejectPR(prId) {
-      const reason = prompt("Enter rejection reason:");
+      const reason = await showPrompt("Enter rejection reason:", "Reject PR", "Reason…");
       if (!reason) return;
       try {
         const res = await fetch(`/api/bonus/prs/${prId}/reject`, {
@@ -1207,26 +1734,77 @@ ZeroDivisionError: division by zero`;
           body: JSON.stringify({ comment: reason })
         });
         const data = await res.json();
-        alert(data.message || "PR rejected.");
+        await showAlert(data.message || "PR rejected.", 'info', 'Reject PR');
         refreshBonus();
       } catch (err) {
-        alert("Failed to reject PR: " + err);
+        await showAlert("Failed to reject PR: " + err, 'error', 'Reject PR');
       }
     }
 
     // Startup timers
     window.addEventListener('DOMContentLoaded', () => {
+      applyPartMode(window.IOW_MODE || "full");
+      syncScrollButton();
+      const scrollBtn = document.getElementById('toggleScrollBtn');
+      if (scrollBtn) {
+        scrollBtn.addEventListener('click', function(e) {
+          e.preventDefault();
+          toggleAutoScroll();
+        });
+      }
+      const clearBtn = document.getElementById('clearLogsBtn');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', function(e) {
+          e.preventDefault();
+          clearLogs();
+        });
+      }
+      const restartBtn = document.getElementById('restartLogsBtn');
+      if (restartBtn) {
+        restartBtn.addEventListener('click', function(e) {
+          e.preventDefault();
+          restartLogStream();
+        });
+      }
+      // Shift+R = reattach Docker log follow (ignored while typing in inputs)
+      document.addEventListener('keydown', function(e) {
+        if (!(e.shiftKey && (e.key === 'R' || e.key === 'r'))) return;
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault();
+        restartLogStream();
+      });
       initSSE();
       refreshOverview();
       refreshEvents();
-      refreshLoopHistory();
-      refreshBonus();
+      const mode = window.IOW_MODE || "full";
+      const tabs = IOW_TAB_SETS[mode] || IOW_TAB_SETS.full;
+      if (tabs.includes("loop")) refreshLoopHistory();
+      if (tabs.includes("bonus")) refreshBonus();
 
-      // Poll overview every 3 seconds
+      // Poll overview every 3 seconds (bonus/loop only when that tab is in scope)
+      // Observer logs: poll every 2s in ALL modes so tab 1 stays live on p1/p2/p3/bonus
+      setInterval(pollObserverLogs, 2000);
       setInterval(() => {
         refreshOverview();
-        refreshBonus();
+        refreshEvents();
+        if (tabs.includes("bonus")) refreshBonus();
+        if (tabs.includes("loop")) refreshLoopHistory();
       }, 3000);
+    });
+
+    // Close SSE when leaving the page (helps local Ctrl+C finish cleanly)
+    window.addEventListener('pagehide', () => {
+      if (sseSource) {
+        try { sseSource.close(); } catch (_) {}
+        sseSource = null;
+      }
+    });
+    window.addEventListener('beforeunload', () => {
+      if (sseSource) {
+        try { sseSource.close(); } catch (_) {}
+        sseSource = null;
+      }
     });
   </script>
 </body>

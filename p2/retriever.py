@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import os
 import logging
-from typing import List, Dict, Optional, Any, Set, Tuple
+from typing import List, Dict, Optional, Any, Tuple
 
 from p2.db import ChromaVectorDB
 
@@ -118,7 +118,9 @@ class CodeRetriever:
         # Fallback query if no structured traceback was detected
         if not query_parts:
             # Use the last few lines of the log excerpt
-            tail_lines = [l.strip() for l in log_excerpt.splitlines() if l.strip()][-5:]
+            tail_lines = [
+                line.strip() for line in log_excerpt.splitlines() if line.strip()
+            ][-5:]
             search_query = " ".join(tail_lines)
         else:
             search_query = " ".join(query_parts)
@@ -153,4 +155,3 @@ class CodeRetriever:
         )
 
         return curated_chunks, extracted
-

@@ -6,13 +6,10 @@ Integrates Part 1 (Observer), Part 2 (Analyst), and Part 3 (Wisdom Loop) into a 
 from __future__ import annotations
 
 import os
-import sys
-import time
-import json
 import logging
 import asyncio
 import threading
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
 
 # Configure logging
@@ -24,53 +21,78 @@ logging.basicConfig(
 logger = logging.getLogger("iow.dashboard")
 
 # Enforce local cache directories in /tmp/ to protect user quota
-os.environ.setdefault("HF_HOME", "/tmp/iow_cache/huggingface")
-os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "/tmp/iow_cache/sentence_transformers")
-os.environ.setdefault("CHROMA_CACHE_DIR", "/tmp/iow_cache/chroma")
-os.environ.setdefault("TORCH_HOME", "/tmp/iow_cache/torch")
+os.environ.setdefault("HF_HOME", "/tmp/iow/hf-cache")
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "/tmp/iow/hf-cache/sentence_transformers")
+os.environ.setdefault("CHROMA_CACHE_DIR", "/tmp/iow/chroma_db")
+os.environ.setdefault("TORCH_HOME", "/tmp/iow/hf-cache/torch")
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+
+
+class _QuietCancelledFilter(logging.Filter):
+    """Drop Ctrl+C / graceful-shutdown CancelledError noise from ASGI/SSE."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "CancelledError" in msg or "timeout graceful shutdown" in msg:
+            return False
+        if record.exc_info and record.exc_info[0] is not None:
+            try:
+                if issubclass(record.exc_info[0], asyncio.CancelledError):
+                    return False
+            except Exception:
+                pass
+        return True
+
+
+for _name in ("uvicorn.error", "uvicorn.access", "sse_starlette.sse", "asyncio"):
+    logging.getLogger(_name).addFilter(_QuietCancelledFilter())
 
 # FastAPI imports
 try:
-    from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+    from fastapi import FastAPI, Request, HTTPException
     from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
     from fastapi.staticfiles import StaticFiles
 except ImportError:
-    FastAPI = None
-    Request = None
-    HTTPException = Exception
-    HTMLResponse = None
-    JSONResponse = None
-    FileResponse = None
-    StaticFiles = None
+    FastAPI = None  # type: ignore[assignment,misc]
+    Request = None  # type: ignore[assignment,misc]
+    HTTPException = Exception  # type: ignore[assignment,misc]
+    HTMLResponse = None  # type: ignore[assignment,misc]
+    JSONResponse = None  # type: ignore[assignment,misc]
+    FileResponse = None  # type: ignore[assignment,misc]
+    StaticFiles = None  # type: ignore[assignment,misc]
 
 # Part 1: Observer imports
-from p1.docker_monitor import DockerMonitor
-from p1.log_streamer import LogStreamer
-from p1.http_probe import HttpProbeManager
-from p1.event_manager import EventManager, ObserverEvent
-from p1.observer_api import create_observer_router
+from p1.docker_monitor import DockerMonitor  # noqa: E402
+from p1.log_streamer import LogStreamer  # noqa: E402
+from p1.http_probe import HttpProbeManager  # noqa: E402
+from p1.event_manager import EventManager, ObserverEvent  # noqa: E402
+from p1.observer_api import create_observer_router  # noqa: E402
 
 # Part 2: Analyst imports
-from p2.chunker import AstChunker
-from p2.db import ChromaVectorDB
-from p2.retriever import CodeRetriever
-from p2.diagnostician import CrashDiagnostician
-from p2.analyst_api import create_analyst_router
+from p2.chunker import AstChunker  # noqa: E402
+from p2.db import ChromaVectorDB  # noqa: E402
+from p2.retriever import CodeRetriever  # noqa: E402
+from p2.diagnostician import CrashDiagnostician  # noqa: E402
+from p2.analyst_api import create_analyst_router  # noqa: E402
 
 # Part 3: Wisdom Loop imports
-from p3.patcher import CodePatcher
-from p3.sanity import SanityChecker
-from p3.git_manager import GitManager
-from p3.verifier import TargetVerifier
-from p3.loop import WisdomLoop
-from p3.safety import SafetyManager
-from p3.loop_api import create_loop_router
+from p3.patcher import CodePatcher  # noqa: E402
+from p3.sanity import SanityChecker  # noqa: E402
+from p3.git_manager import GitManager  # noqa: E402
+from p3.verifier import TargetVerifier  # noqa: E402
+from p3.loop import WisdomLoop  # noqa: E402
+from p3.safety import SafetyManager  # noqa: E402
+from p3.loop_api import create_loop_router  # noqa: E402
 
 # Chapter VI: Bonus imports
-from bonus.classifier import TinySymptomClassifier
-from bonus.consensus import SecondOpinionEngine
-from bonus.pr_manager import PullRequestManager
-from bonus.bonus_api import create_bonus_router
+from bonus.classifier import TinySymptomClassifier  # noqa: E402
+from bonus.consensus import SecondOpinionEngine  # noqa: E402
+from bonus.pr_manager import PullRequestManager  # noqa: E402
+from bonus.bonus_api import create_bonus_router  # noqa: E402
 
 CONFIG_FILE = os.environ.get("IOW_CONFIG_PATH", "demo_app/iow.config.yml")
 TARGET_DIR = os.environ.get("IOW_TARGET_DIR", "demo_app")
@@ -94,14 +116,19 @@ class InceptionOrchestrator:
         target_cfg = cfg.get("target", {})
         analyst_cfg = cfg.get("analyst", {})
 
-        container_name = os.environ.get("TARGET_CONTAINER", target_cfg.get("container_name", "iow_demo_target"))
+        container_name = os.environ.get(
+            "TARGET_CONTAINER", target_cfg.get("container_name", "iow_demo_target")
+        )
         target_url = os.environ.get("TARGET_URL", target_cfg.get("service_url", "http://demo_app:5000"))
         probe_interval = float(target_cfg.get("probe_interval_seconds", 3.0))
         error_patterns = target_cfg.get("error_patterns", ["Traceback", "CRITICAL", "Error", "Exception"])
 
         model_name = os.environ.get("OLLAMA_MODEL", analyst_cfg.get("model", "qwen2.5-coder:1.5b"))
         embedding_model = analyst_cfg.get("embedding_model", "all-MiniLM-L6-v2")
-        ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11436")
+        # Makefile / ollama CLI use host:port; HTTP clients need a full URL.
+        if ollama_host and "://" not in ollama_host:
+            ollama_host = f"http://{ollama_host}"
 
         # 2. Observer (Part 1)
         self.docker_monitor = DockerMonitor(container_name=container_name)
@@ -122,7 +149,10 @@ class InceptionOrchestrator:
 
         # 3. Analyst (Part 2)
         self.chunker = AstChunker(base_dir=REPO_PATH)
-        self.vector_db = ChromaVectorDB(persist_dir=".chroma", embedding_model_name=embedding_model)
+        self.vector_db = ChromaVectorDB(
+            persist_dir=os.environ.get("CHROMA_CACHE_DIR", "/tmp/iow/chroma_db"),
+            embedding_model_name=embedding_model,
+        )
         self.retriever = CodeRetriever(
             vector_db=self.vector_db,
             default_top_k=int(analyst_cfg.get("top_k", 3))
@@ -175,8 +205,8 @@ class InceptionOrchestrator:
             logger.info(f"Observer event received [{event.signature[:8]}], but auto_heal is disabled.")
             return
 
-        if event.event_type != "crash":
-            logger.debug(f"Observer event [{event.event_type}] received; only 'crash' triggers auto-healing.")
+        if event.type != "crash":
+            logger.debug(f"Observer event [{event.type}] received; only 'crash' triggers auto-healing.")
             return
 
         # Check safety guardrails before starting background heal
@@ -202,7 +232,10 @@ class InceptionOrchestrator:
         # Bonus: Check classifier for Fast Path bypass
         match = self.classifier.classify(log_excerpt, raw_signature=sig)
         if match.matched and match.cached_patch:
-            logger.info(f"🎯 BONUS FAST PATH: Symptom [{match.symptom_id}] matched by Tiny Classifier! Applying cached patch.")
+            logger.info(
+                f"🎯 BONUS FAST PATH: Symptom [{match.symptom_id}] matched "
+                "by Tiny Classifier! Applying cached patch."
+            )
 
         logger.info(f"⚡ Starting autonomous Wisdom Loop for crash signature [{sig[:8]}]...")
         try:
@@ -263,6 +296,7 @@ class InceptionOrchestrator:
         safety_status = self.safety_manager.get_status()
 
         return {
+            "mode": IOW_MODE,
             "orchestrator": {
                 "running": self.running,
                 "auto_heal_enabled": self.auto_heal_enabled
@@ -299,13 +333,28 @@ class InceptionOrchestrator:
 # Global orchestrator instance
 orchestrator = InceptionOrchestrator()
 
+# Progressive dashboard mode from Makefile (p1/p2/p3/bonus/full)
+IOW_MODE = os.environ.get("IOW_MODE", "full").strip().lower() or "full"
+if IOW_MODE == "p1":
+    orchestrator.auto_heal_enabled = False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     orchestrator.startup()
     yield
-    # Shutdown
+    # Shutdown: close SSE subscribers first so Ctrl+C does not cancel open streams loudly
+    shutdown_sse = getattr(getattr(app.state, "observer_router", None), "shutdown_sse", None)
+    if callable(shutdown_sse):
+        try:
+            shutdown_sse()
+        except Exception:
+            pass
+    try:
+        await asyncio.sleep(0.05)
+    except Exception:
+        pass
     orchestrator.shutdown()
 
 
@@ -329,7 +378,12 @@ def create_app() -> FastAPI:
         event_manager=orchestrator.event_manager
     )
     if observer_router:
+        app.state.observer_router = observer_router
         app.include_router(observer_router)
+        # Subject / IoC-compatible SSE path: GET /events
+        stream_handler = getattr(observer_router, "stream_events", None)
+        if stream_handler is not None:
+            app.add_api_route("/events", stream_handler, methods=["GET"], tags=["Observer"])
 
     analyst_router = create_analyst_router(
         vector_db=orchestrator.vector_db,
@@ -376,24 +430,30 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def serve_dashboard():
         template_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+        mode = os.environ.get("IOW_MODE", "full").strip().lower() or "full"
+        if mode not in ("p1", "p2", "p3", "bonus", "full"):
+            mode = "full"
         if os.path.isfile(template_path):
             with open(template_path, "r", encoding="utf-8") as f:
                 content = f.read()
+            # Progressive dashboard: inject make p1/p2/p3/bonus mode for tab unlock
+            inject = f'<script>window.IOW_MODE = "{mode}";</script>\n</head>'
+            if "</head>" in content and "window.IOW_MODE" not in content:
+                content = content.replace("</head>", inject, 1)
+            elif "window.IOW_MODE" in content:
+                content = content.replace(
+                    'window.IOW_MODE = window.IOW_MODE || "full";',
+                    f'window.IOW_MODE = "{mode}";',
+                    1,
+                )
             return HTMLResponse(content=content)
         return HTMLResponse(
-            content="""<!DOCTYPE html>
+            content=f"""<!DOCTYPE html>
 <html>
 <head><title>Inception of Wisdom</title></head>
 <body style="font-family: sans-serif; background: #0f172a; color: #f8fafc; padding: 40px;">
   <h1>Inception of Wisdom (IoW)</h1>
-  <p>Dashboard template is being initialized. API endpoints are fully active:</p>
-  <ul>
-    <li><a style="color: #38bdf8;" href="/api/overview">/api/overview</a></li>
-    <li><a style="color: #38bdf8;" href="/api/observer/status">/api/observer/status</a></li>
-    <li><a style="color: #38bdf8;" href="/api/analyst/status">/api/analyst/status</a></li>
-    <li><a style="color: #38bdf8;" href="/api/loop/status">/api/loop/status</a></li>
-    <li><a style="color: #38bdf8;" href="/docs">/docs (Interactive Swagger UI)</a></li>
-  </ul>
+  <p>Mode: {mode}. Dashboard template missing; API endpoints are active.</p>
 </body>
 </html>"""
         )

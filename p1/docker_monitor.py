@@ -63,12 +63,23 @@ class DockerMonitor:
                 self._client = None
 
         try:
-            self._client = docker.DockerClient(base_url=self.base_url)
-            self._client.ping()
+            # Prefer env (DOCKER_HOST) then unix socket — campus users often lack
+            # docker-group access to /var/run/docker.sock from the Python client.
+            try:
+                self._client = docker.from_env()
+                self._client.ping()
+            except Exception:
+                self._client = docker.DockerClient(base_url=self.base_url)
+                self._client.ping()
             logger.info(f"Connected to Docker daemon at {self.base_url}")
             return self._client
         except Exception as e:
-            logger.debug(f"Unable to connect to Docker daemon: {e}")
+            logger.warning(
+                "Unable to connect to Docker daemon (%s). "
+                "Is the process allowed to access the socket "
+                "(user in 'docker' group), or is the daemon running?",
+                e,
+            )
             self._client = None
             return None
 
@@ -174,4 +185,3 @@ class DockerMonitor:
     def get_last_state(self) -> Optional[ContainerState]:
         """Returns the most recently observed container state."""
         return self._last_state
-

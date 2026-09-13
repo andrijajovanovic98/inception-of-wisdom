@@ -8,14 +8,16 @@ import logging
 import threading
 from typing import List, Dict, Optional, Callable, Any
 from dataclasses import dataclass, asdict
-from urllib.parse import urljoin
 
 try:
     import httpx
 except ImportError:
-    httpx = None
+    httpx = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("p1.http_probe")
+# Probe GETs every few seconds — keep them out of the dashboard terminal
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 @dataclass
@@ -45,8 +47,8 @@ class HttpProbeManager:
         probe_paths: Optional[List[str]] = None,
         interval_seconds: float = 3.0,
         timeout_seconds: float = 2.0,
-        on_crash: Optional[Callable[[ProbeResult], None]] = None,
-        on_suggestion: Optional[Callable[[ProbeResult], None]] = None
+        on_crash: Optional[Callable[[ProbeResult], Any]] = None,
+        on_suggestion: Optional[Callable[[ProbeResult], Any]] = None
     ):
         self.service_url = service_url.rstrip("/")
         self.probe_paths = probe_paths if probe_paths is not None else ["/", "/healthz"]
@@ -232,4 +234,3 @@ class HttpProbeManager:
             if not self._latest_results:
                 return False
             return all(res.is_healthy for res in self._latest_results.values())
-

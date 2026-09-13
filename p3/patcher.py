@@ -15,13 +15,13 @@ from dataclasses import dataclass, field, asdict
 try:
     import httpx
 except ImportError:
-    httpx = None
+    httpx = None  # type: ignore[assignment,misc]
 
-from p2.diagnostician import DiagnosticReport
+from p2.diagnostician import DiagnosticReport, _normalize_ollama_host
 
 logger = logging.getLogger("p3.patcher")
 
-DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11436")
 DEFAULT_MODEL = "qwen2.5-coder:1.5b"
 
 
@@ -71,7 +71,7 @@ class CodePatcher:
         request_timeout: float = 60.0
     ):
         self.base_dir = os.path.abspath(base_dir) if base_dir else os.getcwd()
-        self.ollama_host = (ollama_host or DEFAULT_OLLAMA_HOST).rstrip("/")
+        self.ollama_host = _normalize_ollama_host(ollama_host or DEFAULT_OLLAMA_HOST)
         self.model_name = model_name
         self.request_timeout = request_timeout
 
@@ -297,4 +297,3 @@ RESPONSE JSON SCHEMA:
             return True
 
         return False
-

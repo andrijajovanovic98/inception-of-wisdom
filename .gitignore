@@ -29,10 +29,14 @@ MANIFEST
 # Virtual Environments
 venv/
 .venv/
+.lint-venv/
 env/
 ENV/
 env.bak/
 venv.bak/
+
+# Type checker cache
+.mypy_cache/
 
 # Vector database & Persistent ChromaDB storage
 .chroma/
@@ -68,4 +72,12 @@ Thumbs.db
 
 # Logs and Runtime artifacts
 *.log
+
+# Lint / type-check caches
+.lint-venv/
+.mypy_cache/
+
+# Lint / type-check caches (campus: prefer /tmp/iow/mypy_cache via mypy.ini)
+.lint-venv/
+.mypy_cache/
 

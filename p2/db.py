@@ -18,18 +18,20 @@ CACHE_BASE_DIR = os.environ.get("IOW_CACHE_DIR", "/tmp/iow_cache")
 os.environ.setdefault("HF_HOME", os.path.join(CACHE_BASE_DIR, "hf"))
 os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", os.path.join(CACHE_BASE_DIR, "embeddings"))
 os.environ.setdefault("TORCH_HOME", os.path.join(CACHE_BASE_DIR, "torch"))
+# Must be set before chromadb import / client init (IoC-style)
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
 try:
     import chromadb
     from chromadb.config import Settings
 except ImportError:
-    chromadb = None
-    Settings = None
+    chromadb = None  # type: ignore[assignment,misc]
+    Settings = None  # type: ignore[assignment,misc]
 
 try:
     from sentence_transformers import SentenceTransformer
 except ImportError:
-    SentenceTransformer = None
+    SentenceTransformer = None  # type: ignore[assignment,misc]
 
 
 class ChromaVectorDB:
@@ -64,7 +66,11 @@ class ChromaVectorDB:
         try:
             os.makedirs(self.persist_dir, exist_ok=True)
             # Subject requirement: PersistentClient mode so database persists across restarts
-            self._client = chromadb.PersistentClient(path=self.persist_dir)
+            # Disable anonymized PostHog telemetry (avoids noisy capture() ERROR spam)
+            client_kwargs: Dict[str, Any] = {"path": self.persist_dir}
+            if Settings is not None:
+                client_kwargs["settings"] = Settings(anonymized_telemetry=False)
+            self._client = chromadb.PersistentClient(**client_kwargs)
             self._collection = self._client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
@@ -126,7 +132,7 @@ class ChromaVectorDB:
         """Incrementally indexes code chunks into ChromaDB.
         Skips chunks whose SHA-256 hash has not changed (zero re-embedding cost).
         """
-        if not self._ensure_initialized():
+        if not self._ensure_initialized() or self._collection is None:
             return {"added": 0, "skipped": 0, "failed": len(chunks)}
 
         if not chunks:
@@ -156,10 +162,16 @@ class ChromaVectorDB:
                 to_embed_chunks.append(chunk)
 
         if not to_embed_chunks:
-            logger.info(f"Incremental index: all {skipped_count} chunks are up to date. No embeddings needed.")
+            logger.info(
+                f"Incremental index: all {skipped_count} chunks are up to date. "
+                "No embeddings needed."
+            )
             return {"added": 0, "skipped": skipped_count, "failed": 0}
 
-        logger.info(f"Indexing {len(to_embed_chunks)} new/modified chunks (skipped {skipped_count} unchanged)...")
+        logger.info(
+            f"Indexing {len(to_embed_chunks)} new/modified chunks "
+            f"(skipped {skipped_count} unchanged)..."
+        )
 
         # Prepare texts for embedding: symbol name + content
         texts_to_embed = [
@@ -206,6 +218,10 @@ class ChromaVectorDB:
             logger.error(f"Failed to upsert chunks into ChromaDB: {e}")
             return {"added": 0, "skipped": skipped_count, "failed": len(to_embed_chunks)}
 
+    def sync_chunks(self, chunks: List[CodeChunk]) -> Dict[str, int]:
+        """Alias for index_chunks (dashboard/orchestrator compatibility)."""
+        return self.index_chunks(chunks)
+
     def query_similar(
         self,
         query_text: str,
@@ -213,7 +229,7 @@ class ChromaVectorDB:
         file_path_filter: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Queries the vector index for the top-k chunks closest to query_text."""
-        if not self._ensure_initialized():
+        if not self._ensure_initialized() or self._collection is None:
             return []
 
         where_clause = None
@@ -256,6 +272,8 @@ class ChromaVectorDB:
                         "end_line": meta.get("end_line", 0),
                         "content": doc,
                         "similarity": similarity,
+                        "similarity_score": similarity,  # IoC-compatible field name
+                        "score": similarity,             # dashboard badge field
                         "distance": round(dist, 4)
                     })
 
@@ -285,4 +303,3 @@ class ChromaVectorDB:
         except Exception as e:
             logger.error(f"Failed to delete chunks for {rel_path}: {e}")
             return 0
-

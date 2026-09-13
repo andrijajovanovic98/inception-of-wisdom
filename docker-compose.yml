@@ -9,9 +9,6 @@ services:
     build:
       context: ./demo_app
       dockerfile: Dockerfile
-      args:
-        UID: 101888
-        GID: 4224
     container_name: iow_demo_target
     restart: unless-stopped
     ports:
@@ -38,9 +35,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        UID: 101888
-        GID: 4224
     container_name: iow_agent
     restart: unless-stopped
     ports:
@@ -58,7 +52,7 @@ services:
       - IOW_CONFIG_PATH=/workspace/demo_app/iow.config.yml
       - IOW_TARGET_DIR=/workspace/demo_app
       - IOW_REPO_PATH=/workspace
-      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_HOST=http://host.docker.internal:11436
       - HF_HOME=/tmp/iow_cache/huggingface
       - SENTENCE_TRANSFORMERS_HOME=/tmp/iow_cache/sentence_transformers
       - CHROMA_CACHE_DIR=/tmp/iow_cache/chroma
@@ -78,4 +72,3 @@ networks:
   iow-net:
     name: iow-network
     driver: bridge
-

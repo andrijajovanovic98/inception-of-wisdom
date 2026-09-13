@@ -6,24 +6,18 @@ Observer API & SSE Streaming: GET /status, GET /logs, GET /events (SSE)
 from __future__ import annotations
 
 import json
+import time
 import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 
 try:
-    from fastapi import APIRouter, Query, Request
+    from fastapi import APIRouter, Request
     from fastapi.responses import JSONResponse, StreamingResponse
-except ImportError:
-    APIRouter = object
-    Query = None
-    Request = None
-    JSONResponse = None
-    StreamingResponse = None
 
-try:
-    from sse_starlette.sse import EventSourceResponse
+    FASTAPI_AVAILABLE = True
 except ImportError:
-    EventSourceResponse = None
+    FASTAPI_AVAILABLE = False
 
 from p1.docker_monitor import DockerMonitor
 from p1.log_streamer import LogStreamer
@@ -40,29 +34,56 @@ def create_observer_router(
     event_manager: Optional[EventManager] = None
 ) -> Any:
     """Factory function that creates and wires the FastAPI APIRouter for the Observer."""
-    if APIRouter is object:
+    if not FASTAPI_AVAILABLE:
         logger.warning("FastAPI is not installed in the current environment.")
         return None
 
     router = APIRouter(prefix="/api/observer", tags=["Observer"])
 
-    # Track active SSE subscriber queues
+    # Track active SSE subscriber queues (woken on Ctrl+C so uvicorn can exit)
     sse_queues: List[asyncio.Queue] = []
+    sse_closing = False
 
-    # Listen to newly emitted events from EventManager and push to all active SSE queues
-    def _on_event_broadcast(event: ObserverEvent) -> None:
-        payload = {
-            "type": "event",
-            "data": event.to_dict()
-        }
+    def shutdown_sse() -> None:
+        """Wake / drop live SSE clients so one Ctrl+C can finish without force-cancel noise."""
+        nonlocal sse_closing
+        sse_closing = True
+        for q in list(sse_queues):
+            try:
+                q.put_nowait({"type": "shutdown", "data": {}})
+            except Exception:
+                pass
+
+    router.shutdown_sse = shutdown_sse  # type: ignore[attr-defined]
+
+    def _enqueue_sse(payload: Dict[str, Any]) -> None:
         for q in list(sse_queues):
             try:
                 q.put_nowait(payload)
             except Exception:
                 pass
 
+    def _on_event_broadcast(event: ObserverEvent) -> None:
+        _enqueue_sse({
+            "type": "event",
+            "data": event.to_dict()
+        })
+
     if event_manager:
         event_manager.add_listener(_on_event_broadcast)
+
+    def _on_log_line(line: str, is_error: bool) -> None:
+        _enqueue_sse({
+            "type": "log",
+            "data": {
+                "line": line,
+                "is_error": bool(is_error),
+                "timestamp": time.time(),
+            },
+        })
+
+    if log_streamer:
+        log_streamer.add_line_listener(_on_log_line)
 
     @router.get("/status")
     async def get_status() -> Dict[str, Any]:
@@ -112,6 +133,21 @@ def create_observer_router(
             "logs": logs
         }
 
+    @router.post("/logs/clear")
+    async def clear_logs() -> Dict[str, Any]:
+        """Clear the Observer ring buffer (Dashboard Clear button)."""
+        if log_streamer:
+            log_streamer.clear()
+        return {"status": "cleared", "count": 0}
+
+    @router.post("/logs/restart")
+    async def restart_logs() -> Dict[str, Any]:
+        """Reattach Docker log follow without restarting the whole agent."""
+        if log_streamer:
+            log_streamer.restart()
+            return {"status": "restarted", "container": log_streamer.docker_monitor.container_name}
+        return {"status": "unavailable"}
+
     @router.get("/events")
     async def get_events(
         limit: int = 50,
@@ -131,57 +167,76 @@ def create_observer_router(
     async def stream_events(request: Request) -> Any:
         """Subject requirement: GET /events over Server-Sent Events (SSE).
         Streams live state changes, new logs, and crash events to the Dashboard.
+
+        Uses plain StreamingResponse (not sse-starlette) so Ctrl+C cancel is quiet.
         """
+        if StreamingResponse is None:
+            return JSONResponse(
+                {"error": "SSE streaming not supported in current environment"},
+                status_code=500,
+            )
+
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         sse_queues.append(queue)
 
-        async def event_generator():
+        async def text_stream():
             try:
-                # Send immediate connection handshake
-                yield {
-                    "event": "connected",
-                    "data": json.dumps({"status": "connected", "message": "Observer SSE connected"})
-                }
+                connected = {"status": "connected", "message": "Observer SSE connected"}
+                yield f"event: connected\ndata: {json.dumps(connected)}\n\n"
 
-                while True:
-                    if request and await request.is_disconnected():
+                while not sse_closing:
+                    try:
+                        if await request.is_disconnected():
+                            break
+                    except asyncio.CancelledError:
                         break
 
                     try:
-                        # Wait for a new event or timeout to send a heartbeat ping
-                        payload = await asyncio.wait_for(queue.get(), timeout=2.0)
-                        yield {
-                            "event": payload.get("type", "message"),
-                            "data": json.dumps(payload.get("data", {}))
-                        }
+                        payload = await asyncio.wait_for(queue.get(), timeout=1.0)
                     except asyncio.TimeoutError:
-                        # Heartbeat snapshot to keep connection alive and update dashboard
+                        last_state = (
+                            docker_monitor.get_last_state()
+                            if docker_monitor else None
+                        )
+                        container_status = (
+                            last_state.status if last_state else "unknown"
+                        )
                         snapshot = {
                             "type": "heartbeat",
-                            "container_status": docker_monitor.get_last_state().status if docker_monitor and docker_monitor.get_last_state() else "unknown",
-                            "target_healthy": http_probe.is_target_healthy() if http_probe else False
+                            "container_status": container_status,
+                            "target_healthy": (
+                                http_probe.is_target_healthy() if http_probe else False
+                            ),
                         }
-                        yield {
-                            "event": "heartbeat",
-                            "data": json.dumps(snapshot)
-                        }
+                        yield f"event: heartbeat\ndata: {json.dumps(snapshot)}\n\n"
+                        continue
+                    except asyncio.CancelledError:
+                        break
 
+                    if payload.get("type") == "shutdown" or sse_closing:
+                        break
+
+                    yield (
+                        f"event: {payload.get('type', 'message')}\n"
+                        f"data: {json.dumps(payload.get('data', {}))}\n\n"
+                    )
+            except asyncio.CancelledError:
+                # Normal on Ctrl+C while browser still holds /events open
+                pass
             finally:
                 if queue in sse_queues:
                     sse_queues.remove(queue)
 
-        if EventSourceResponse is not None:
-            return EventSourceResponse(event_generator())
-        elif StreamingResponse is not None:
-            async def text_stream():
-                async for item in event_generator():
-                    yield f"event: {item.get('event')}\ndata: {item.get('data')}\n\n"
-            return StreamingResponse(text_stream(), media_type="text/event-stream")
-        else:
-            return JSONResponse(
-                {"error": "SSE streaming not supported in current environment"},
-                status_code=500
-            )
+        return StreamingResponse(
+            text_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
+    # Expose SSE handler for root /events alias (IoC / subject-compatible path)
+    router.stream_events = stream_events  # type: ignore[attr-defined]
     return router
-
