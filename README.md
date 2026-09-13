@@ -253,6 +253,16 @@ make status
 make down
 ```
 
+### Gitea Human-in-the-Loop PRs (Bonus)
+
+```sh
+make gitea                 # local Gitea forge + bootstrap → http://localhost:3000
+make bonus                 # bonus dashboard; auto-starts Gitea if needed
+make up                    # full stack including Gitea (Compose)
+```
+
+Credentials: `/tmp/iow/gitea/gitea.env` (user `iow`, pass `iowiow123`).
+
 ### Alternative Workflow: Local Host Development (`/tmp/iow`)
 
 ```sh

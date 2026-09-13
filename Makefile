@@ -49,7 +49,7 @@ export OLLAMA_MODELS     := $(OLLAMA_DIR)
 export OLLAMA_HOST
 export DOCKER_CONFIG     := $(DOCKER_CONFIG_DIR)
 
-.PHONY: all up down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
+.PHONY: all up down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus gitea \
 	break heal rollback status logs setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
 	ensure-embed ensure-lint-tools ensure-target flake mypy lint
@@ -61,6 +61,9 @@ help:
 	@echo "                    INCEPTION OF WISDOM (IoW) - COMMANDS                        "
 	@echo "================================================================================"
 	@echo " make up               - build and launch containerized IoW via Docker Compose"
+	@echo "                         (demo_app + agent + Gitea at http://localhost:3000)"
+	@echo " make gitea            - start local Gitea forge + bootstrap (http://localhost:3000)"
+	@echo " make bonus            - bonus dashboard (auto-starts Gitea for remote PRs)"
 	@echo " make down             - stop and tear down Docker containers"
 	@echo " make docker-restart   - rebuild images and recreate IoW containers"
 	@echo " make docker-clean     - remove IoW containers/network (keep images)"
@@ -75,22 +78,30 @@ help:
 	@echo "================================================================================"
 
 up: ensure-dirs
-	@echo "[*] Launching containerized IoW stack..."
-	@mkdir -p $(IOW_DIR) && chmod 777 $(IOW_DIR) 2>/dev/null || true
+	@echo "[*] Launching containerized IoW stack (demo_app + gitea + agent)..."
+	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR) $(IOW_DIR)/gitea 2>/dev/null || true
 	@docker compose up --build -d 2>/dev/null || docker-compose up --build -d
-	@echo "[+] Target: http://localhost:5001  Dashboard: http://localhost:8000"
+	@echo "[+] Target: http://localhost:5001  Dashboard: http://localhost:8000  Gitea: http://localhost:3000"
 
 down:
 	@docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
 	@echo "[+] Containers stopped."
 
+gitea: ensure-dirs
+	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
+	@echo "[*] Starting local Gitea forge + bootstrap..."
+	@docker compose up -d gitea gitea-init 2>/dev/null || docker-compose up -d gitea gitea-init
+	@echo "[+] Gitea UI: http://localhost:3000  (user=iow pass=iowiow123)"
+	@echo "    Creds: $(IOW_DIR)/gitea/gitea.env"
+
 docker-restart: ensure-dirs
-	@mkdir -p $(IOW_DIR) && chmod 777 $(IOW_DIR) 2>/dev/null || true
+	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
 	@docker compose up --build -d --force-recreate 2>/dev/null \
 		|| docker-compose up --build -d --force-recreate
 	@echo "[+] docker-restart done (rebuild + recreate IoW containers)"
 
 # Soft Docker cleanup (IoW only): containers + project network, keep images.
+# Idempotent: missing Docker / Gitea / containers never fails the target.
 docker-clean:
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "[*] Docker not available - skip docker-clean"; \
@@ -99,17 +110,21 @@ docker-clean:
 		docker compose down --remove-orphans >/dev/null 2>&1 \
 			|| docker-compose down --remove-orphans >/dev/null 2>&1 \
 			|| true; \
-		for c in iow_agent iow_demo_target; do \
+		for c in iow_agent iow_demo_target iow_gitea iow_gitea_init; do \
 			if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$$c"; then \
 				docker rm -f "$$c" >/dev/null 2>&1 || true; \
 				echo "[*] Removed container $$c"; \
 			fi; \
 		done; \
+		for c in $$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E 'gitea-init-run|inception-of-wisdom-gitea' || true); do \
+			docker rm -f "$$c" >/dev/null 2>&1 || true; \
+			echo "[*] Removed leftover container $$c"; \
+		done; \
 		echo "[+] docker-clean done"; \
 	fi
 
 # Full Docker cleanup (IoW only): containers, networks, volumes, images.
-# Never fails when Docker/IoW artifacts are absent.
+# Never fails when Docker/IoW/Gitea artifacts are absent.
 docker-fclean:
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "[*] Docker not available - skip docker-fclean"; \
@@ -118,10 +133,20 @@ docker-fclean:
 		docker compose down --rmi local --volumes --remove-orphans >/dev/null 2>&1 \
 			|| docker-compose down --rmi local --volumes --remove-orphans >/dev/null 2>&1 \
 			|| true; \
-		for c in iow_agent iow_demo_target; do \
+		for c in iow_agent iow_demo_target iow_gitea iow_gitea_init; do \
 			if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$$c"; then \
 				docker rm -f "$$c" >/dev/null 2>&1 || true; \
 				echo "[*] Removed container $$c"; \
+			fi; \
+		done; \
+		for c in $$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E 'gitea-init-run|inception-of-wisdom-gitea' || true); do \
+			docker rm -f "$$c" >/dev/null 2>&1 || true; \
+			echo "[*] Removed leftover container $$c"; \
+		done; \
+		for vol in iow-gitea-data; do \
+			if docker volume inspect "$$vol" >/dev/null 2>&1; then \
+				docker volume rm -f "$$vol" >/dev/null 2>&1 || true; \
+				echo "[*] Removed volume $$vol"; \
 			fi; \
 		done; \
 		for img in $(DOCKER_IMAGE_AGENT) $(DOCKER_IMAGE_DEMO); do \
@@ -135,6 +160,15 @@ docker-fclean:
 				echo "[*] Removed remaining $$img image tags"; \
 			fi; \
 		done; \
+		if docker image inspect gitea/gitea:1.22.6 >/dev/null 2>&1; then \
+			docker rmi -f gitea/gitea:1.22.6 >/dev/null 2>&1 || true; \
+			echo "[*] Removed image gitea/gitea:1.22.6"; \
+		fi; \
+		ids=$$(docker images -q gitea/gitea 2>/dev/null || true); \
+		if [ -n "$$ids" ]; then \
+			docker rmi -f $$ids >/dev/null 2>&1 || true; \
+			echo "[*] Removed remaining gitea/gitea image tags"; \
+		fi; \
 		if docker network ls --format '{{.Name}}' 2>/dev/null | grep -qx '$(DOCKER_NETWORK)'; then \
 			docker network rm $(DOCKER_NETWORK) >/dev/null 2>&1 || true; \
 			echo "[*] Removed network $(DOCKER_NETWORK)"; \
@@ -310,10 +344,28 @@ p3: ensure-ready ensure-ollama-quick ensure-target
 	$(call IOW_UVICORN,p3)
 
 bonus: ensure-ready ensure-ollama-quick ensure-target
-	@echo "[*] Bonus Suite (classifier / consensus / PRs) on :$(PORT)"
+	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
+	@if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then \
+		if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx iow_gitea; then \
+			echo "[*] Starting Gitea for bonus HITL PRs..."; \
+			docker compose up -d gitea gitea-init 2>/dev/null || docker-compose up -d gitea gitea-init; \
+		else echo "[*] Gitea already up: iow_gitea → http://127.0.0.1:3000"; fi; \
+	fi
+	@echo "[*] Bonus Suite (classifier / consensus / Gitea PRs) on :$(PORT)"
 	@echo "    tabs: all visible - all unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
-	$(call IOW_UVICORN,bonus)
+	@echo "    Gitea: http://127.0.0.1:3000  (creds $(IOW_DIR)/gitea/gitea.env)"
+	@bash -c 'set +e; \
+		trap "exit 0" INT TERM; \
+		export GITEA_URL=http://127.0.0.1:3000 GITEA_PUBLIC_URL=http://127.0.0.1:3000 \
+			GITEA_CREDS_FILE="$(IOW_DIR)/gitea/gitea.env" \
+			IOW_PR_STORE="$(IOW_DIR)/gitea/pull_requests.json" \
+			IOW_MODE=bonus TARGET_URL="$(TARGET_URL)"; \
+		$(PYTHON) -m uvicorn dashboard.app:app $(UVICORN_OPTS); \
+		ec=$$?; \
+		if [ $$ec -eq 0 ] || [ $$ec -eq 130 ] || [ $$ec -eq 143 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
+		exit $$ec'
+
 
 stop:
 	@# Prefer pid file written by ensure-ollama*

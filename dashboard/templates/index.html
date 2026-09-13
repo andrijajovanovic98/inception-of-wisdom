@@ -1629,8 +1629,26 @@
           `).join('');
         }
 
-        // Fetch PRs
+        // Fetch PRs + Gitea status
         const prRes = await fetch('/api/bonus/prs');
+        const statusRes = await fetch('/api/bonus/status');
+        if (statusRes.ok) {
+          const st = await statusRes.json();
+          const g = st.gitea || {};
+          const badge = document.getElementById('prStatusBadge');
+          if (badge) {
+            if (g.reachable) {
+              badge.className = 'badge badge-green';
+              badge.textContent = `Gitea OK · ${g.owner || 'iow'}/${g.repo || 'repo'}`;
+            } else if (g.configured) {
+              badge.className = 'badge badge-yellow';
+              badge.textContent = 'Gitea configured (unreachable)';
+            } else {
+              badge.className = 'badge badge-red';
+              badge.textContent = 'Gitea not configured';
+            }
+          }
+        }
         if (prRes.ok) {
           const prs = await prRes.json();
           const prCont = document.getElementById('prListContainer');
@@ -1643,10 +1661,12 @@
                   <div>
                     <strong style="color: #38bdf8;">${escapeHtml(pr.title)}</strong>
                     <span class="badge ${pr.status === 'pending_review' ? 'badge-yellow' : (pr.status === 'merged' ? 'badge-green' : 'badge-red')}">${pr.status}</span>
+                    ${pr.remote_pr_number ? `<span class="badge badge-blue">Gitea #${pr.remote_pr_number}</span>` : `<span class="badge badge-red">local-only</span>`}
                   </div>
                   <span style="font-size: 0.75rem; color: #64748b;">${new Date(pr.created_at * 1000).toLocaleTimeString()}</span>
                 </div>
                 <div style="font-size: 0.8rem; color: #cbd5e1;">${escapeHtml(pr.diagnosis_summary)}</div>
+                ${pr.remote_html_url ? `<div style="font-size: 0.8rem;"><a href="${escapeHtml(pr.remote_html_url)}" target="_blank" rel="noopener" style="color: #38bdf8;">Open on Gitea →</a></div>` : ''}
                 <pre class="code-preview">${escapeHtml(pr.unified_diff || 'No diff available')}</pre>
                 ${pr.status === 'pending_review' ? `
                   <div style="display: flex; gap: 10px; justify-content: flex-end;">
