@@ -41,10 +41,41 @@ def _run(cmd: list[str], timeout: float = 60.0) -> Tuple[int, str, str]:
         return -1, "", str(e)
 
 
+def _bin_dirs() -> list[str]:
+    iow = os.environ.get("IOW_DIR", "/tmp/iow")
+    custom = os.environ.get("IOW_GITOPS_BIN", "")
+    dirs = []
+    if custom:
+        dirs.append(custom)
+    dirs.append(os.path.join(iow, "bin"))
+    return dirs
+
+
+def _which(name: str) -> Optional[str]:
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in _bin_dirs():
+        cand = os.path.join(d, name)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
 def tools_available() -> Tuple[bool, str]:
-    missing = [t for t in ("kubectl",) if shutil.which(t) is None]
+    missing = [t for t in ("kubectl",) if _which(t) is None]
     if missing:
-        return False, f"missing tools: {', '.join(missing)}"
+        return False, (
+            f"missing tools: {', '.join(missing)} "
+            f"(run make argocd-bonus - installs into /tmp/iow/bin, no sudo)"
+        )
+    # Ensure subprocesses see /tmp/iow/bin
+    extra = os.pathsep.join(_bin_dirs())
+    os.environ["PATH"] = extra + os.pathsep + os.environ.get("PATH", "")
+    kube = os.environ.get("KUBECONFIG") or os.path.join(
+        os.environ.get("IOW_DIR", "/tmp/iow"), "kube", "config"
+    )
+    os.environ.setdefault("KUBECONFIG", kube)
     return True, "ok"
 
 
@@ -59,11 +90,13 @@ def wait_for_gitops_redeploy(
         return False, msg
 
     timeout_s = int(max(30.0, grace_period))
+    kubectl = _which("kubectl") or "kubectl"
+    argocd = _which("argocd")
 
-    if shutil.which("argocd"):
+    if argocd:
         logger.info("GitOps: argocd app sync '%s'...", app)
         code, out, err = _run(
-            ["argocd", "app", "sync", app, "--force", "--prune"],
+            [argocd, "app", "sync", app, "--force", "--prune"],
             timeout=float(timeout_s),
         )
         if code != 0:
@@ -79,7 +112,7 @@ def wait_for_gitops_redeploy(
     )
     code, out, err = _run(
         [
-            "kubectl",
+            kubectl,
             "-n",
             DEFAULT_NAMESPACE,
             "rollout",

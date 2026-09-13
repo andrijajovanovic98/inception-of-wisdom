@@ -1,4 +1,4 @@
-# IoW demo target — deployed into k3d and synced by Argo CD (argocd-bonus).
+# IoW demo target - deployed into k3d and synced by Argo CD (argocd-bonus).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
