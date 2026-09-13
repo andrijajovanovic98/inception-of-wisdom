@@ -78,7 +78,7 @@ class TargetVerifier:
         if self.log_streamer:
             self.log_streamer.clear()
 
-        # Step 2: Redeploy — Docker restart (default) or GitOps wait (Argo CD / k3d)
+        # Step 2: Redeploy - Docker restart (default) or GitOps wait (Argo CD / k3d)
         if mode == "gitops" and wait_for_gitops_redeploy is not None:
             ok, detail = wait_for_gitops_redeploy(grace_period=grace_period)
             if not ok:

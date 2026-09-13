@@ -1,77 +1,345 @@
 #!/usr/bin/env bash
-# IoW argocd-bonus bootstrap: k3d cluster + Argo CD + demo Application.
-# Safe to re-run. Requires: docker, k3d, kubectl, (optional) argocd CLI.
+# IoW argocd-bonus: single-node k3s in Docker + Argo CD (no sudo).
+# Campus rootless Docker cannot run nested k3d (missing cpu cgroup). Workaround:
+#   docker run --privileged --cgroupns=host + KubeletInUserNamespace + cgroups-per-qos=false
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLUSTER="${IOW_K3D_CLUSTER:-iow}"
 IOW_DIR="${IOW_DIR:-/tmp/iow}"
+BIN_DIR="${IOW_GITOPS_BIN:-${IOW_DIR}/bin}"
 NS_DEMO="iow-demo"
 NS_ARGO="argocd"
+API_PORT="${IOW_K3D_API_PORT:-6550}"
+NODE_PORT="${IOW_K3D_NODE_PORT:-30051}"
+K3S_NAME="${IOW_K3S_CONTAINER:-iow-k3s}"
+K3S_IMAGE="${IOW_K3S_IMAGE:-rancher/k3s:v1.27.12-k3s1}"
+
+mkdir -p "${IOW_DIR}/gitops" "${BIN_DIR}" "$(dirname "${IOW_DIR}/kube/config")"
+chmod +x "${ROOT}/scripts/ensure_gitops_tools.sh" 2>/dev/null || true
+
+# Prefer campus rootless socket.
+if [ -z "${DOCKER_HOST:-}" ] && [ -S "/run/user/$(id -u)/docker.sock" ]; then
+  export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+fi
+
+echo "[*] Ensuring GitOps tools under ${BIN_DIR} (no sudo)..."
+IOW_DIR="${IOW_DIR}" bash "${ROOT}/scripts/ensure_gitops_tools.sh"
+# shellcheck disable=SC1091
+source "${IOW_DIR}/gitops/path.env" || true
+export PATH="${BIN_DIR}:${PATH}"
+export KUBECONFIG="${IOW_DIR}/kube/config"
+mkdir -p "$(dirname "${KUBECONFIG}")"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    echo "[!] Missing required tool: $1"
-    echo "    Install k3d + kubectl (+ argocd CLI) like Inception-of-Things, then retry."
+    echo "[!] Missing required tool after bootstrap: $1"
     exit 1
   fi
 }
 
 need docker
-need k3d
 need kubectl
 
-echo "[*] Ensuring k3d cluster '${CLUSTER}'..."
-if ! k3d cluster list 2>/dev/null | grep -q "^${CLUSTER} "; then
-  k3d cluster create "${CLUSTER}" \
-    --agents 0 \
-    --port "30051:30051@loadbalancer" \
-    --wait
-else
-  echo "    cluster already exists"
+if ! docker info >/dev/null 2>&1; then
+  echo "[!] Docker daemon not reachable (needed by k3s)."
+  exit 1
 fi
 
-kubectl config use-context "k3d-${CLUSTER}" >/dev/null
+purge_k3d_leftovers() {
+  # Old nested-k3d attempts leave stuck nodes; remove so they don't confuse doctor.
+  if command -v k3d >/dev/null 2>&1; then
+    k3d cluster delete "${CLUSTER}" >/dev/null 2>&1 || true
+  fi
+  local ids
+  ids="$(docker ps -aq --filter "name=k3d-${CLUSTER}" 2>/dev/null || true)"
+  if [ -n "${ids}" ]; then
+    # shellcheck disable=SC2086
+    docker rm -f ${ids} >/dev/null 2>&1 || true
+  fi
+  docker network rm "k3d-${CLUSTER}" >/dev/null 2>&1 || true
+  docker volume rm "k3d-${CLUSTER}-images" >/dev/null 2>&1 || true
+}
+
+purge_cluster() {
+  echo "[*] Purging IoW k3s/k3d leftovers..."
+  purge_k3d_leftovers
+  docker rm -f "${K3S_NAME}" >/dev/null 2>&1 || true
+  rm -f "${KUBECONFIG}" "${KUBECONFIG}.raw" 2>/dev/null || true
+}
+
+write_kubeconfig() {
+  docker cp "${K3S_NAME}:/etc/rancher/k3s/k3s.yaml" "${KUBECONFIG}"
+  # Always talk to the published host port.
+  sed -i.bak \
+    -e "s#server: https://127.0.0.1:6443#server: https://127.0.0.1:${API_PORT}#g" \
+    -e "s#server: https://localhost:6443#server: https://127.0.0.1:${API_PORT}#g" \
+    -e "s#0\\.0\\.0\\.0#127.0.0.1#g" \
+    "${KUBECONFIG}" 2>/dev/null || true
+  rm -f "${KUBECONFIG}.bak"
+  # If sed left a non-loopback server, force it.
+  if ! grep -q "server: https://127.0.0.1:${API_PORT}" "${KUBECONFIG}"; then
+    python3 - "${KUBECONFIG}" "${API_PORT}" <<'PY'
+import re, sys
+path, port = sys.argv[1], sys.argv[2]
+text = open(path).read()
+text = re.sub(r"server:\s*https://\S+", f"server: https://127.0.0.1:{port}", text)
+open(path, "w").write(text)
+PY
+  fi
+  export KUBECONFIG
+}
+
+cluster_healthy() {
+  write_kubeconfig 2>/dev/null || return 1
+  kubectl get nodes >/dev/null 2>&1 || return 1
+  kubectl get nodes 2>/dev/null | grep -q Ready || return 1
+  return 0
+}
+
+start_k3s() {
+  echo "[*] Starting k3s container '${K3S_NAME}' (privileged + cgroupns=host - campus rootless fix)"
+  echo "    image=${K3S_IMAGE}  api=127.0.0.1:${API_PORT}  nodePort=${NODE_PORT}"
+  # Prefer compose network so Gitea is reachable by container IP (rootless host-gateway is broken).
+  local net_args=()
+  if docker network inspect iow-network >/dev/null 2>&1; then
+    net_args=(--network iow-network)
+  fi
+  docker run -d --name "${K3S_NAME}" \
+    --privileged \
+    --cgroupns=host \
+    "${net_args[@]}" \
+    --add-host=host.docker.internal:host-gateway \
+    -p "127.0.0.1:${API_PORT}:6443" \
+    -p "127.0.0.1:${NODE_PORT}:${NODE_PORT}" \
+    "${K3S_IMAGE}" \
+    server \
+    --disable=traefik \
+    --snapshotter=native \
+    --tls-san=127.0.0.1 \
+    --kubelet-arg=feature-gates=KubeletInUserNamespace=true \
+    --kubelet-arg=cgroups-per-qos=false \
+    --kubelet-arg=enforce-node-allocatable=
+  # If started on default bridge, still attach to iow-network when present.
+  if docker network inspect iow-network >/dev/null 2>&1; then
+    docker network connect iow-network "${K3S_NAME}" >/dev/null 2>&1 || true
+  fi
+}
+
+gitea_ip() {
+  docker inspect iow_gitea --format '{{with index .NetworkSettings.Networks "iow-network"}}{{.IPAddress}}{{end}}' 2>/dev/null
+}
+
+# Push k8s/demo-app into local Gitea so Argo has a real git source.
+# Prints Gitea bridge IP on stdout (for capture); logs go to stderr.
+publish_manifests_to_gitea() {
+  local creds="${IOW_DIR}/gitea/gitea.env"
+  if [ ! -f "${creds}" ]; then
+    echo "[!] Missing ${creds} - skip git publish" >&2
+    return 1
+  fi
+  # shellcheck disable=SC1090
+  set -a; source "${creds}"; set +a
+  local ip
+  ip="$(gitea_ip)"
+  if [ -z "${ip}" ]; then
+    echo "[!] Could not resolve iow_gitea on iow-network" >&2
+    return 1
+  fi
+  local work
+  work="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${work}'" RETURN
+  echo "[*] Publishing k8s/demo-app → Gitea (main + iow/auto-heal) via ${ip}..." >&2
+  git clone "http://${GITEA_USER}:${GITEA_TOKEN}@127.0.0.1:3000/iow/inception-of-wisdom.git" "${work}/repo" >/dev/null 2>&1
+  mkdir -p "${work}/repo/k8s/demo-app"
+  cp -a "${ROOT}/k8s/demo-app/." "${work}/repo/k8s/demo-app/"
+  (
+    cd "${work}/repo"
+    git config user.email "iow@iow.local"
+    git config user.name "iow"
+    git add k8s/demo-app
+    git diff --cached --quiet || git commit -m "IoW: demo-app manifests for Argo CD" >/dev/null
+    git push origin HEAD:main >/dev/null
+    git push origin HEAD:iow/auto-heal >/dev/null 2>&1 || git push -u origin HEAD:iow/auto-heal >/dev/null
+  )
+  echo "[+] Manifests published to Gitea" >&2
+  printf '%s\n' "${ip}"
+}
+
+register_argocd_repo() {
+  local ip="$1"
+  local creds="${IOW_DIR}/gitea/gitea.env"
+  # shellcheck disable=SC1090
+  set -a; source "${creds}"; set +a
+  local url="http://${ip}:3000/iow/inception-of-wisdom.git"
+  kubectl -n "${NS_ARGO}" create secret generic iow-gitea-repo \
+    --from-literal=type=git \
+    --from-literal=url="${url}" \
+    --from-literal=username="${GITEA_USER}" \
+    --from-literal=password="${GITEA_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "${NS_ARGO}" label secret iow-gitea-repo \
+    argocd.argoproj.io/secret-type=repository --overwrite >/dev/null
+  echo "${url}"
+}
+
+wait_ready() {
+  local max_s="${1:-60}"
+  local i
+  echo "[*] Waiting up to ${max_s}s for kubectl get nodes Ready..."
+  for i in $(seq 1 "${max_s}"); do
+    if [ "$(docker inspect -f '{{.State.Status}}' "${K3S_NAME}" 2>/dev/null || echo missing)" != "running" ]; then
+      echo "[!] ${K3S_NAME} is not running"
+      docker logs --tail 40 "${K3S_NAME}" 2>&1 || true
+      return 1
+    fi
+    if cluster_healthy; then
+      echo "[+] k3s Ready (${i}s)"
+      kubectl get nodes
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[!] Timed out waiting for Ready node"
+  docker logs --tail 50 "${K3S_NAME}" 2>&1 || true
+  return 1
+}
+
+import_demo_image() {
+  local img="inception-of-wisdom-demo_app:latest"
+  if ! docker image inspect "${img}" >/dev/null 2>&1; then
+    echo "[*] Building demo image via compose..."
+    (cd "${ROOT}" && docker compose build demo_app) || true
+  fi
+  if ! docker image inspect "${img}" >/dev/null 2>&1; then
+    echo "[!] ${img} missing - cluster will try to pull (may fail offline)"
+    return 0
+  fi
+  echo "[*] Importing ${img} into k3s containerd..."
+  docker save "${img}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import - || {
+    echo "[!] ctr import failed - trying crictl/ctr alternate"
+    docker save "${img}" | docker exec -i "${K3S_NAME}" k3s ctr images import - || true
+  }
+}
+
+ensure_port_forward() {
+  local kind="$1" ns="$2" svc="$3" local_port="$4" remote_port="$5"
+  local pf_pid_file="${IOW_DIR}/gitops/${kind}-port-forward.pid"
+  if [ -f "${pf_pid_file}" ]; then
+    local old
+    old="$(cat "${pf_pid_file}" 2>/dev/null || true)"
+    if [ -n "${old}" ] && kill -0 "${old}" 2>/dev/null; then
+      kill "${old}" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+    rm -f "${pf_pid_file}"
+  fi
+  local i
+  for i in $(seq 1 30); do
+    if kubectl -n "${ns}" get svc "${svc}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+  echo "[*] port-forward ${kind}: 127.0.0.1:${local_port} → ${ns}/svc/${svc}:${remote_port}"
+  nohup kubectl -n "${ns}" port-forward --address 127.0.0.1 \
+    "svc/${svc}" "${local_port}:${remote_port}" \
+    >"${IOW_DIR}/gitops/${kind}-port-forward.log" 2>&1 &
+  echo $! > "${pf_pid_file}"
+  sleep 2
+  if kill -0 "$(cat "${pf_pid_file}")" 2>/dev/null; then
+    echo "[+] ${kind} → http://127.0.0.1:${local_port}"
+  else
+    echo "[!] ${kind} port-forward failed; see ${IOW_DIR}/gitops/${kind}-port-forward.log"
+  fi
+}
+
+ensure_cluster() {
+  if docker ps --format '{{.Names}}' | grep -qx "${K3S_NAME}"; then
+    if cluster_healthy; then
+      echo "[*] Cluster already healthy (${K3S_NAME})"
+      kubectl get nodes
+      return 0
+    fi
+    echo "[!] Existing ${K3S_NAME} unhealthy - recreating"
+  fi
+  purge_cluster
+  start_k3s
+  wait_ready 60
+}
+
+# --- main ---
+echo "[*] Ensuring IoW k3s cluster (Docker k3s; replaces nested k3d on campus rootless)..."
+ensure_cluster
+IOW_DIR="${IOW_DIR}" bash "${ROOT}/scripts/ensure_gitops_tools.sh" >/dev/null || true
+write_kubeconfig
 
 echo "[*] Installing Argo CD into namespace ${NS_ARGO}..."
 kubectl create namespace "${NS_ARGO}" --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-echo "[*] Waiting for argocd-server..."
+if ! kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.3/manifests/install.yaml; then
+  echo "[!] Could not fetch Argo CD install.yaml from GitHub - retry once..."
+  sleep 2
+  kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.3/manifests/install.yaml
+fi
+echo "[*] Waiting for argocd-server (up to 3 min)..."
 kubectl -n "${NS_ARGO}" rollout status deployment/argocd-server --timeout=180s || true
 
 kubectl create namespace "${NS_DEMO}" --dry-run=client -o yaml | kubectl apply -f -
+import_demo_image
 
-# Import local demo image into k3d so the Deployment can run without a registry.
-if docker image inspect inception-of-wisdom-demo_app:latest >/dev/null 2>&1; then
-  echo "[*] Importing demo image into k3d..."
-  k3d image import inception-of-wisdom-demo_app:latest -c "${CLUSTER}" || true
-else
-  echo "[!] Image inception-of-wisdom-demo_app:latest not found locally."
-  echo "    Run: docker compose build demo_app   (or make up) then re-run this script."
+# Attach to compose network (idempotent) so Argo can reach Gitea by container IP.
+if docker network inspect iow-network >/dev/null 2>&1; then
+  docker network connect iow-network "${K3S_NAME}" >/dev/null 2>&1 || true
 fi
 
-REPO_URL="${IOW_GITOPS_REPO_URL:-http://host.k3d.internal:3000/iow/inception-of-wisdom.git}"
+GITEA_IP="$(publish_manifests_to_gitea)"
+REPO_URL="${IOW_GITOPS_REPO_URL:-}"
+if [ -z "${REPO_URL}" ]; then
+  if [ -n "${GITEA_IP}" ]; then
+    REPO_URL="$(register_argocd_repo "${GITEA_IP}")"
+  else
+    REPO_URL="http://$(gitea_ip):3000/iow/inception-of-wisdom.git"
+  fi
+fi
 echo "[*] Applying Argo CD Application (repo=${REPO_URL})..."
-# Patch repoURL for campus host Gitea reachable from k3d
-sed "s|repoURL:.*|repoURL: ${REPO_URL}|" "${ROOT}/k8s/argocd/application.yaml" \
+# Prefer main (always exists after publish); heal branch also pushed.
+sed -e "s|repoURL:.*|repoURL: ${REPO_URL}|" \
+    -e "s|targetRevision:.*|targetRevision: main|" \
+    "${ROOT}/k8s/argocd/application.yaml" \
   | kubectl apply -f -
 
-# Apply manifests once so the Service/NodePort exists even before first git sync.
 kubectl apply -f "${ROOT}/k8s/demo-app/deployment.yaml" || true
 
-mkdir -p "${IOW_DIR}/gitops"
+echo "[*] Verifying demo namespace..."
+kubectl -n "${NS_DEMO}" get pods,svc || true
+
+# NodePort is published on the k3s container; also keep a port-forward fallback.
+ensure_port_forward demo "${NS_DEMO}" iow-demo "${NODE_PORT}" 5000 || true
+# Argo CD UI on :8080 (what you tried earlier)
+ensure_port_forward argocd "${NS_ARGO}" argocd-server 8080 80 || true
+
+ARGO_PASS="$(kubectl -n "${NS_ARGO}" get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+
 cat > "${IOW_DIR}/gitops/env" <<EOF
 IOW_REDEPLOY_MODE=gitops
 IOW_ARGOCD_APP=iow-demo
 IOW_GITOPS_NAMESPACE=${NS_DEMO}
 IOW_GITOPS_DEPLOYMENT=iow-demo
-TARGET_URL=http://127.0.0.1:30051
+TARGET_URL=http://127.0.0.1:${NODE_PORT}
 IOW_K3D_CLUSTER=${CLUSTER}
+IOW_K3S_CONTAINER=${K3S_NAME}
+IOW_GITOPS_BIN=${BIN_DIR}
+KUBECONFIG=${KUBECONFIG}
+PATH=${BIN_DIR}:\$PATH
 EOF
 
-echo "[+] argocd-bonus ready"
-echo "    Target (NodePort): http://127.0.0.1:30051"
-echo "    Argo CD ns: ${NS_ARGO}  App: iow-demo"
-echo "    Env file: ${IOW_DIR}/gitops/env"
-echo "    Check: kubectl -n ${NS_DEMO} get pods,svc"
-echo "           argocd app get iow-demo   # after argocd login"
+echo ""
+echo "[+] argocd-bonus READY"
+echo "    kubectl:  source ${IOW_DIR}/gitops/path.env && kubectl get nodes"
+echo "    demo:     http://127.0.0.1:${NODE_PORT}"
+echo "    Argo CD:  http://127.0.0.1:8080  (user=admin pass=${ARGO_PASS:-<see secret>})"
+kubectl get nodes
+kubectl -n "${NS_DEMO}" get pods,svc || true
+kubectl -n "${NS_ARGO}" get pods 2>/dev/null | head -20 || true

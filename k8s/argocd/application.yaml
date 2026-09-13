@@ -1,4 +1,4 @@
-# Argo CD Application — watches Gitea (or any git remote) and syncs k8s/demo-app.
+# Argo CD Application - watches Gitea (or any git remote) and syncs k8s/demo-app.
 # Repo URL is patched by scripts/argocd_bonus_up.sh to match local Gitea.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

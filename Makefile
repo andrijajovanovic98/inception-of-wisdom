@@ -50,7 +50,7 @@ export OLLAMA_HOST
 export DOCKER_CONFIG     := $(DOCKER_CONFIG_DIR)
 
 .PHONY: all up up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
-	pr-bonus argocd-bonus argocd-bonus-down gitea \
+	pr-bonus argocd-bonus argocd-bonus-down ensure-gitops-tools gitops-doctor gitops-doctor-purge gitea \
 	break heal rollback status logs setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
 	ensure-embed ensure-lint-tools ensure-target ensure-gitea ensure-dashboard-port \
@@ -68,9 +68,9 @@ help:
 	@echo " make up               - Docker infra: demo_app + gitea (host dashboard via make bonus)"
 	@echo " make up-agent         - also start iow_agent dashboard in Docker on :8000"
 	@echo " make gitea            - ensure Gitea forge ready (wait + bootstrap, fail on error)"
-	@echo " make bonus            - host dashboard :8000 — classifier/consensus (no Gitea)"
+	@echo " make bonus            - host dashboard :8000 - classifier/consensus (no Gitea)"
 	@echo " make pr-bonus         - host dashboard + Gitea PRs (HITL / verified heal PR)"
-	@echo " make argocd-bonus     - GitOps path: k3d + Argo CD; commit triggers redeploy"
+	@echo " make argocd-bonus     - GitOps path: k3s-in-Docker + Argo CD (campus rootless)"
 	@echo " make down             - stop and tear down Docker containers"
 	@echo " make docker-restart   - recreate demo_app + gitea (leaves :8000 free for make bonus)"
 	@echo " make docker-clean     - remove IoW containers/network (keep images)"
@@ -79,8 +79,11 @@ help:
 	@echo " make p1 | p2 | p3 | bonus | run  - progressive dashboard on :$(PORT)"
 	@echo " make bonus            - classifier + consensus (Bonus tab; no Gitea required)"
 	@echo " make pr-bonus         - bonus + Gitea forge + HITL / verified PRs"
-	@echo " make argocd-bonus     - bonus + k3d/Argo CD GitOps redeploy (commit → sync)"
-	@echo " make argocd-bonus-down - delete k3d cluster 'iow'"
+	@echo " make argocd-bonus     - bonus + k3s/Argo CD GitOps (iow-k3s; UI :8080)"
+	@echo " make argocd-bonus-down - delete iow-k3s / legacy k3d"
+	@echo " make ensure-gitops-tools - download kubectl/argocd → $(IOW_DIR)/bin (no sudo)"
+	@echo " make gitops-doctor       - list compose vs k3s containers + dump failing logs"
+	@echo " make gitops-doctor-purge - wipe broken k3s/k3d only (keep demo/gitea)"
 	@echo " make flake | mypy | lint"
 	@echo " make stop             - stop IoW ollama (pid file + orphans on $(OLLAMA_BIND))"
 	@echo " make clean            - docker-clean + caches (keep venv)"
@@ -177,7 +180,7 @@ gitea: ensure-gitea
 docker-restart: ensure-dirs
 	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR)/gitea 2>/dev/null || true
 	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
-	@# Recreate infra only — do not bring back iow_agent (host make bonus owns :8000)
+	@# Recreate infra only - do not bring back iow_agent (host make bonus owns :8000)
 	@docker compose stop agent >/dev/null 2>&1 || docker-compose stop agent >/dev/null 2>&1 || true
 	@docker stop iow_agent >/dev/null 2>&1 || true
 	@docker compose up --build -d --force-recreate $(DOCKER_INFRA) 2>/dev/null \
@@ -210,16 +213,30 @@ docker-clean:
 		echo "[+] docker-clean done"; \
 	fi
 
-# Full Docker cleanup (IoW only): containers, networks, volumes, images.
-# Never fails when Docker/IoW/Gitea artifacts are absent.
+# Full Docker cleanup (IoW only): compose + Gitea + k3d leftovers/images.
+# Never fails when Docker/IoW/Gitea/k3d artifacts are absent.
 docker-fclean:
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "[*] Docker not available - skip docker-fclean"; \
 	else \
-		echo "[*] Docker fclean (container/network/volume/image for IoW only)"; \
+		if [ -z "$$DOCKER_HOST" ] && [ -S "/run/user/$$(id -u)/docker.sock" ]; then \
+			export DOCKER_HOST="unix:///run/user/$$(id -u)/docker.sock"; \
+		fi; \
+		echo "[*] Docker fclean (IoW compose + Gitea + k3d images)"; \
 		docker compose down --rmi local --volumes --remove-orphans >/dev/null 2>&1 \
 			|| docker-compose down --rmi local --volumes --remove-orphans >/dev/null 2>&1 \
 			|| true; \
+		if command -v k3d >/dev/null 2>&1 || [ -x /tmp/iow/bin/k3d ]; then \
+			PATH="/tmp/iow/bin:$$PATH" k3d cluster delete iow >/dev/null 2>&1 || true; \
+		fi; \
+		for c in $$(docker ps -aq --filter "name=k3d-iow" 2>/dev/null || true); do \
+			docker rm -f "$$c" >/dev/null 2>&1 || true; \
+			echo "[*] Removed k3d container $$c"; \
+		done; \
+		if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'iow-k3s'; then \
+			docker rm -f iow-k3s >/dev/null 2>&1 || true; \
+			echo "[*] Removed container iow-k3s"; \
+		fi; \
 		for c in iow_agent iow_demo_target iow_gitea iow_gitea_init; do \
 			if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$$c"; then \
 				docker rm -f "$$c" >/dev/null 2>&1 || true; \
@@ -230,7 +247,7 @@ docker-fclean:
 			docker rm -f "$$c" >/dev/null 2>&1 || true; \
 			echo "[*] Removed leftover container $$c"; \
 		done; \
-		for vol in iow-gitea-data; do \
+		for vol in iow-gitea-data k3d-iow-images; do \
 			if docker volume inspect "$$vol" >/dev/null 2>&1; then \
 				docker volume rm -f "$$vol" >/dev/null 2>&1 || true; \
 				echo "[*] Removed volume $$vol"; \
@@ -256,11 +273,30 @@ docker-fclean:
 			docker rmi -f $$ids >/dev/null 2>&1 || true; \
 			echo "[*] Removed remaining gitea/gitea image tags"; \
 		fi; \
+		for img in ghcr.io/k3d-io/k3d-proxy ghcr.io/k3d-io/k3d-tools rancher/k3s alpine; do \
+			ids=$$(docker images -q "$$img" 2>/dev/null || true); \
+			if [ -n "$$ids" ]; then \
+				docker rmi -f $$ids >/dev/null 2>&1 || true; \
+				echo "[*] Removed image(s) $$img"; \
+			fi; \
+		done; \
 		if docker network ls --format '{{.Name}}' 2>/dev/null | grep -qx '$(DOCKER_NETWORK)'; then \
 			docker network rm $(DOCKER_NETWORK) >/dev/null 2>&1 || true; \
 			echo "[*] Removed network $(DOCKER_NETWORK)"; \
 		fi; \
-		echo "[+] docker-fclean done (other Docker images untouched)"; \
+		if docker network ls --format '{{.Name}}' 2>/dev/null | grep -qx 'k3d-iow'; then \
+			docker network rm k3d-iow >/dev/null 2>&1 || true; \
+			echo "[*] Removed network k3d-iow"; \
+		fi; \
+		left=$$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+			| grep -iE 'inception-of-wisdom|gitea/gitea|ghcr.io/k3d-io|rancher/k3s|^alpine:' || true); \
+		if [ -n "$$left" ]; then \
+			echo "[*] Remaining IoW-related images:"; \
+			echo "$$left" | sed 's/^/    /'; \
+		else \
+			echo "[*] Remaining IoW-related images: (none)"; \
+		fi; \
+		echo "[+] docker-fclean done"; \
 	fi
 
 logs:
@@ -322,7 +358,8 @@ ensure-ready:
 	@if [ ! -x "$(VENV)/bin/pip" ] \
 		|| ! PYTHONPATH="$(CURDIR):$(SITE_PACKAGES)" $(PYTHON) -c \
 			"import chromadb,fastapi,uvicorn,sentence_transformers,httpx,yaml,docker,git" 2>/dev/null; then \
-		echo "[!] IoW runtime not ready. Run: make setup"; exit 1; \
+		echo "[*] IoW runtime missing - running make setup..."; \
+		$(MAKE) setup; \
 	fi
 	@echo "[*] Runtime ready: $(VENV)"
 
@@ -403,7 +440,7 @@ lint: flake mypy
 UVICORN_OPTS := --host 127.0.0.1 --port $(PORT) --timeout-graceful-shutdown 0
 
 # Host make p1/p2/p3/bonus/run = dashboard on the host.
-# `make up` also runs the same dashboard inside iow_agent on :8000 — only one may own the port.
+# `make up` also runs the same dashboard inside iow_agent on :8000 - only one may own the port.
 # Stopping iow_agent is intentional; demo_app + gitea keep running.
 ensure-dashboard-port:
 	@bash -c 'set +e; \
@@ -496,15 +533,33 @@ pr-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-das
 		if [ $$ec -eq 0 ] || [ $$ec -eq 130 ] || [ $$ec -eq 143 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
 		exit $$ec'
 
+ensure-gitops-tools: ensure-dirs
+	@chmod +x scripts/ensure_gitops_tools.sh 2>/dev/null || true
+	@IOW_DIR="$(IOW_DIR)" bash scripts/ensure_gitops_tools.sh
+
+gitops-doctor: ensure-dirs
+	@chmod +x scripts/gitops_doctor.sh scripts/ensure_gitops_tools.sh 2>/dev/null || true
+	@IOW_DIR="$(IOW_DIR)" PATH="$(IOW_DIR)/bin:$$PATH" \
+		DOCKER_HOST="$${DOCKER_HOST:-unix:///run/user/$$(id -u)/docker.sock}" \
+		bash scripts/gitops_doctor.sh
+
+gitops-doctor-purge: ensure-dirs
+	@chmod +x scripts/gitops_doctor.sh 2>/dev/null || true
+	@IOW_DIR="$(IOW_DIR)" PATH="$(IOW_DIR)/bin:$$PATH" \
+		DOCKER_HOST="$${DOCKER_HOST:-unix:///run/user/$$(id -u)/docker.sock}" \
+		bash scripts/gitops_doctor.sh purge
+
 argocd-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-dashboard-port
-	@chmod +x scripts/argocd_bonus_up.sh scripts/argocd_bonus_down.sh 2>/dev/null || true
-	@echo "[*] Bootstrapping k3d + Argo CD (argocd-bonus)..."
-	@IOW_DIR="$(IOW_DIR)" bash scripts/argocd_bonus_up.sh
-	@echo "[*] Argo CD Bonus dashboard on :$(PORT) (GitOps redeploy mode)"
-	@echo "    Target NodePort: http://127.0.0.1:30051  (Docker target still on $(TARGET_URL))"
-	@echo "    Gitea: http://127.0.0.1:3000  |  tear down: make argocd-bonus-down"
+	@chmod +x scripts/ensure_gitops_tools.sh scripts/argocd_bonus_up.sh scripts/argocd_bonus_down.sh 2>/dev/null || true
+	@echo "[*] Bootstrapping k3s + Argo CD (auto-install tools, campus rootless-safe)..."
+	@IOW_DIR="$(IOW_DIR)" PATH="$(IOW_DIR)/bin:$$PATH" KUBECONFIG="$(IOW_DIR)/kube/config" \
+		DOCKER_HOST="$${DOCKER_HOST:-unix:///run/user/$$(id -u)/docker.sock}" \
+		bash scripts/argocd_bonus_up.sh
+	@echo "[*] Starting dashboard with GitOps env (PATH/KUBECONFIG already set by make)..."
 	@bash -c 'set +e; \
 		trap "exit 0" INT TERM; \
+		export PATH="$(IOW_DIR)/bin:$$PATH" KUBECONFIG="$(IOW_DIR)/kube/config"; \
+		if [ -f "$(IOW_DIR)/gitops/path.env" ]; then set -a; . "$(IOW_DIR)/gitops/path.env"; set +a; fi; \
 		if [ -f "$(IOW_DIR)/gitops/env" ]; then set -a; . "$(IOW_DIR)/gitops/env"; set +a; fi; \
 		export GITEA_URL=http://127.0.0.1:3000 GITEA_PUBLIC_URL=http://127.0.0.1:3000 \
 			GITEA_CREDS_FILE="$(IOW_DIR)/gitea/gitea.env" \
@@ -512,14 +567,17 @@ argocd-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure
 			IOW_MODE=bonus \
 			IOW_REDEPLOY_MODE=gitops \
 			TARGET_URL="$${TARGET_URL:-http://127.0.0.1:30051}"; \
+		echo "[+] Dashboard :$(PORT)  kubectl nodes:"; \
+		kubectl get nodes 2>/dev/null || echo "    (cluster check skipped)"; \
 		$(PYTHON) -m uvicorn dashboard.app:app $(UVICORN_OPTS); \
 		ec=$$?; \
 		if [ $$ec -eq 0 ] || [ $$ec -eq 130 ] || [ $$ec -eq 143 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
 		exit $$ec'
 
 argocd-bonus-down:
-	@chmod +x scripts/argocd_bonus_down.sh 2>/dev/null || true
-	@IOW_DIR="$(IOW_DIR)" bash scripts/argocd_bonus_down.sh
+	@chmod +x scripts/argocd_bonus_down.sh scripts/ensure_gitops_tools.sh 2>/dev/null || true
+	@IOW_DIR="$(IOW_DIR)" PATH="$(IOW_DIR)/bin:$$PATH" KUBECONFIG="$(IOW_DIR)/kube/config" \
+		bash scripts/argocd_bonus_down.sh
 
 
 stop:

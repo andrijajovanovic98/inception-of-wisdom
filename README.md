@@ -259,8 +259,8 @@ make down
 ```sh
 make bonus                 # classifier + consensus (Bonus tab; no Gitea required)
 make pr-bonus              # + local Gitea forge + HITL / verified heal PRs
-make argocd-bonus          # + k3d + Argo CD (commit → sync redeploy); needs k3d/kubectl
-make argocd-bonus-down     # delete k3d cluster 'iow'
+make argocd-bonus          # + k3s-in-Docker + Argo CD (CLIs → /tmp/iow/bin, no sudo)
+make argocd-bonus-down     # delete iow-k3s (+ legacy nested k3d if any)
 make gitea                 # forge only → http://localhost:3000
 make up                    # demo_app + gitea; :8000 stays free for host dashboard
 make docker-restart        # recreate infra; does not bring back iow_agent
@@ -268,7 +268,21 @@ make up-agent              # optional: dashboard inside Docker instead of host m
 ```
 
 Credentials: `/tmp/iow/gitea/gitea.env` (user `iow`, pass `iowiow123`).  
-GitOps env (after `argocd-bonus`): `/tmp/iow/gitops/env` — target NodePort `http://127.0.0.1:30051`.
+GitOps env (after `argocd-bonus`): `/tmp/iow/gitops/env` - demo NodePort `http://127.0.0.1:30051`.
+
+Campus note: nested **k3d** fails under rootless Docker (`failed to find cpu cgroup (v2)`).  
+`make argocd-bonus` runs **k3s in one privileged Docker container** (`iow-k3s`) with `--cgroupns=host` instead.
+
+```sh
+# After make argocd-bonus finishes:
+source /tmp/iow/gitops/path.env
+kubectl get nodes
+kubectl -n iow-demo get pods,svc
+# Argo CD UI (port-forwarded by the script):
+#   http://127.0.0.1:8080   user=admin  (password printed at end of make)
+# Dashboard:
+#   http://127.0.0.1:8000
+```
 
 ### Alternative Workflow: Local Host Development (`/tmp/iow`)
 

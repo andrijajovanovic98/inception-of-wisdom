@@ -120,7 +120,7 @@ class GitManager:
     def prepare_heal_branch(self) -> bool:
         """Ensure we are on iow/auto-heal without destroying uncommitted agent WIP.
 
-        Never uses `checkout -B <branch> <hash>` — that resets the whole working tree
+        Never uses `checkout -B <branch> <hash>` - that resets the whole working tree
         and would wipe uncommitted edits under p3/, dashboard/, bonus/, etc.
 
         Does not snapshot: caller must snapshot AFTER this returns so pre_loop_hash
@@ -250,7 +250,7 @@ class GitManager:
 
         Subject wants a hard rewind of the *target* after failed heals. A full
         `git reset --hard` / `git clean -fd` would also delete uncommitted agent
-        development (p3/, dashboard/, bonus/) in this monorepo — that is forbidden.
+        development (p3/, dashboard/, bonus/) in this monorepo - that is forbidden.
         """
         if not self._pre_loop_hash:
             logger.error("Cannot rollback: no pre-loop snapshot hash recorded.")
