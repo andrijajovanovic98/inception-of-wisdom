@@ -86,7 +86,7 @@ def create_observer_router(
         log_streamer.add_line_listener(_on_log_line)
 
     @router.get("/status")
-    async def get_status() -> Dict[str, Any]:
+    def get_status() -> Dict[str, Any]:
         """Subject requirement: GET /status
         Returns target container status, health, and probe summaries.
         """
@@ -120,7 +120,7 @@ def create_observer_router(
         }
 
     @router.get("/logs")
-    async def get_logs(tail: int = 100) -> Dict[str, Any]:
+    def get_logs(tail: int = 100) -> Dict[str, Any]:
         """Subject requirement: GET /logs
         Returns the most recent log lines streamed from the target container.
         """
@@ -134,14 +134,14 @@ def create_observer_router(
         }
 
     @router.post("/logs/clear")
-    async def clear_logs() -> Dict[str, Any]:
+    def clear_logs() -> Dict[str, Any]:
         """Clear the Observer ring buffer (Dashboard Clear button)."""
         if log_streamer:
             log_streamer.clear()
         return {"status": "cleared", "count": 0}
 
     @router.post("/logs/restart")
-    async def restart_logs() -> Dict[str, Any]:
+    def restart_logs() -> Dict[str, Any]:
         """Reattach Docker log follow without restarting the whole agent."""
         if log_streamer:
             log_streamer.restart()
@@ -149,7 +149,7 @@ def create_observer_router(
         return {"status": "unavailable"}
 
     @router.get("/events")
-    async def get_events(
+    def get_events(
         limit: int = 50,
         type: Optional[str] = None
     ) -> Dict[str, Any]:

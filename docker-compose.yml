@@ -84,6 +84,39 @@ services:
     networks:
       - iow-net
 
+  # Subject: "A single docker compose up must bring up the agent, the local LLM
+  # runtime, and the demo target service." The model runs locally on this machine -
+  # nothing is ever sent to a remote LLM service.
+  ollama:
+    image: ollama/ollama:0.5.7
+    container_name: iow_ollama
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        srv=$$!
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        echo "[iow-ollama] pulling $${IOW_LLM_MODEL}..."
+        ollama pull "$${IOW_LLM_MODEL}" || echo "[iow-ollama] pull failed - retry on first use"
+        echo "[iow-ollama] ready"
+        wait $$srv
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - IOW_LLM_MODEL=${IOW_LLM_MODEL:-qwen2.5-coder:1.5b}
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "11436:11434"
+    networks:
+      - iow-net
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
   agent:
     build:
       context: .
@@ -93,7 +126,12 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Rootless Docker (42 campus) serves $XDG_RUNTIME_DIR/docker.sock, not
+      # /var/run/docker.sock - mounting the latter hands the agent a socket it
+      # cannot read, so it can neither inspect nor restart its siblings.
+      # `make up` exports DOCKER_SOCK; for a bare `docker compose up` set it with:
+      #   export DOCKER_SOCK=$XDG_RUNTIME_DIR/docker.sock
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
       - .:/workspace
       - /tmp/iow_cache:/tmp/iow_cache
       - /tmp/iow/gitea:/tmp/iow/gitea
@@ -103,7 +141,8 @@ services:
       - IOW_CONFIG_PATH=/workspace/demo_app/iow.config.yml
       - IOW_TARGET_DIR=/workspace/demo_app
       - IOW_REPO_PATH=/workspace
-      - OLLAMA_HOST=http://host.docker.internal:11436
+      - OLLAMA_HOST=${IOW_AGENT_OLLAMA_HOST:-http://ollama:11434}
+      - OLLAMA_MODEL=${IOW_LLM_MODEL:-qwen2.5-coder:1.5b}
       - HF_HOME=/tmp/iow_cache/huggingface
       - SENTENCE_TRANSFORMERS_HOME=/tmp/iow_cache/sentence_transformers
       - CHROMA_CACHE_DIR=/tmp/iow_cache/chroma
@@ -123,6 +162,8 @@ services:
         condition: service_started
       gitea:
         condition: service_healthy
+      ollama:
+        condition: service_started
 
 networks:
   iow-net:
@@ -132,3 +173,5 @@ networks:
 volumes:
   gitea-data:
     name: iow-gitea-data
+  ollama-models:
+    name: iow-ollama-models

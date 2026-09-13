@@ -64,7 +64,7 @@ def create_bonus_router(
         }
 
     @router.get("/status")
-    async def get_bonus_status() -> Dict[str, Any]:
+    def get_bonus_status() -> Dict[str, Any]:
         """Returns overall configuration and statistics of all Bonus features."""
         clf_stats = classifier.get_stats() if classifier else {}
         pr_count = len(pr_manager.prs) if pr_manager else 0
@@ -86,14 +86,14 @@ def create_bonus_router(
         }
 
     @router.get("/gitea/status")
-    async def get_gitea_status() -> Dict[str, Any]:
+    def get_gitea_status() -> Dict[str, Any]:
         """Returns Gitea remote connectivity and configuration."""
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         return pr_manager.remote_status()
 
     @router.post("/flags/toggle")
-    async def toggle_bonus_flag(flag_name: str) -> Dict[str, Any]:
+    def toggle_bonus_flag(flag_name: str) -> Dict[str, Any]:
         """Toggle bonus flags (human_in_the_loop, second_opinion_mandatory, fast_path_classifier)."""
         if flag_name not in flags:
             available = list(flags.keys())
@@ -106,7 +106,7 @@ def create_bonus_router(
         return {"flags": flags}
 
     @router.post("/flags/set")
-    async def set_bonus_flag(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def set_bonus_flag(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Set one or more bonus flags explicitly from the UI."""
         for key, value in payload.items():
             if key not in flags:
@@ -122,7 +122,7 @@ def create_bonus_router(
     # Classifier Endpoints
     # ==========================================================================
     @router.get("/classifier/stats")
-    async def get_classifier_stats() -> Dict[str, Any]:
+    def get_classifier_stats() -> Dict[str, Any]:
         if not classifier:
             raise HTTPException(status_code=404, detail="Classifier not initialized")
         return classifier.get_stats()
@@ -131,7 +131,7 @@ def create_bonus_router(
     # Second Opinion Consensus Endpoints
     # ==========================================================================
     @router.post("/consensus/evaluate")
-    async def evaluate_second_opinion(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def evaluate_second_opinion(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not consensus_engine:
             raise HTTPException(status_code=404, detail="Second Opinion consensus engine not initialized")
         log_excerpt = payload.get("log_excerpt", "")
@@ -145,13 +145,13 @@ def create_bonus_router(
     # Pull Request & Review Endpoints
     # ==========================================================================
     @router.get("/prs")
-    async def list_pull_requests(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_pull_requests(status: Optional[str] = None) -> List[Dict[str, Any]]:
         if not pr_manager:
             return []
         return pr_manager.list_prs(status_filter=status)
 
     @router.get("/prs/{pr_id}")
-    async def get_pull_request(pr_id: str) -> Dict[str, Any]:
+    def get_pull_request(pr_id: str) -> Dict[str, Any]:
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         pr = pr_manager.get_pr(pr_id)
@@ -160,7 +160,7 @@ def create_bonus_router(
         return pr.to_dict()
 
     @router.post("/prs/create")
-    async def create_pull_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def create_pull_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new Human-in-the-Loop PR (local branch + Gitea remote)."""
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
@@ -178,7 +178,7 @@ def create_bonus_router(
         return {"status": "created", "pr": pr.to_dict()}
 
     @router.post("/prs/{pr_id}/merge")
-    async def merge_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def merge_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         comment = (payload or {}).get("comment")
@@ -189,12 +189,12 @@ def create_bonus_router(
         return {"status": "merged", "message": message, "pr": merged.to_dict() if merged else {}}
 
     @router.post("/prs/{pr_id}/approve")
-    async def approve_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def approve_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Alias for merge: operator approves PR, triggering merge & container restart."""
-        return await merge_pull_request(pr_id, payload)
+        return merge_pull_request(pr_id, payload)
 
     @router.post("/prs/{pr_id}/reject")
-    async def reject_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def reject_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         reason = (payload or {}).get("comment") or (payload or {}).get("reason")

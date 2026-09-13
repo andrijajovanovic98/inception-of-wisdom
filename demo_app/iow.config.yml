@@ -1,6 +1,10 @@
 # Inception-of-Wisdom (IoW) - Target Configuration
 # All timing values and safety bounds MUST be read from this file dynamically.
 # Hard-coded timing values are strictly forbidden by the subject.
+#
+# Every key below is live: the agent re-reads this file whenever its mtime changes,
+# so a peer can retune the loop mid-defense without restarting anything. The agent is
+# also forbidden from patching this file, and a rollback preserves your edits.
 
 # ==============================================================================
 # Wisdom Loop Safety Bounds (Subject Mandatory)
@@ -19,14 +23,30 @@ target:
   service_url: "http://demo_app:5000"
   probe_interval_seconds: 3
   probe_timeout_seconds: 2
+  # Seconds of matching log lines collapsed into one incident, so a traceback
+  # raises a single crash event instead of one per line.
+  incident_debounce_seconds: 1.0
+  # Sliding deduplication windows. One bad start must raise one event, so the crash
+  # window has to outlast Docker's exponential restart backoff; suggestions use the
+  # longer window the subject asks for.
+  crash_dedup_window_seconds: 60
+  suggestion_dedup_window_seconds: 300
   probe_urls:
     - "/"
     - "/healthz"
+    # 4xx -> a *suggestion*: surfaced for a human, never auto-patched.
+    - "/api/missing-route"
+  # These are regular expressions. Literal parentheses must be escaped, otherwise
+  # "(most recent call last)" is read as a capture group and the pattern silently
+  # matches nothing at all. Use \w* rather than \b before Error/Exception: there is
+  # no word boundary inside "RuntimeError", so "\bError:" would miss it.
   error_patterns:
-    - "Traceback (most recent call last):"
+    - "Traceback \\(most recent call last\\):"
     - "CRITICAL:"
-    - "Error:"
-    - "Exception:"
+    - "\\w*(?:Error|Exception):"
+    - "ModuleNotFoundError"
+    - "ImportError"
+    - "SyntaxError"
 
 # ==============================================================================
 # Analyst Configuration (Local Model & Retrieval)
@@ -35,4 +55,5 @@ analyst:
   model: "qwen2.5-coder:1.5b"
   embedding_model: "all-MiniLM-L6-v2"
   top_k: 3
-
+  # Watch mode: how often the index reconciles with the target source tree.
+  watch_interval_seconds: 3

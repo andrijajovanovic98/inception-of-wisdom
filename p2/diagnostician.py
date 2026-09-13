@@ -43,6 +43,12 @@ class DiagnosticReport:
     candidate_chunks: List[Dict[str, Any]] = field(default_factory=list)
     raw_response: Optional[str] = None
     error_message: Optional[str] = None
+    # 'llm'          - the local model produced and validated this diagnosis
+    # 'unavailable'  - the model could not be reached; nothing was inferred
+    # 'unusable'     - the model answered but cited nothing real
+    mode: str = "llm"
+    # Deterministic traceback facts, shown for context but never treated as a diagnosis.
+    traceback_hint: Optional[Dict[str, Any]] = None
     timestamp: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -86,9 +92,27 @@ class CrashDiagnostician:
             log_excerpt, top_k=top_k
         )
 
-        valid_known_files = set(extracted_symbols.get("files", []))
-        for c in candidate_chunks:
-            valid_known_files.add(c.get("file_path", ""))
+        # Subject: "The diagnosis must cite real files from the index. It must not
+        # invent paths." Only indexed paths are offered to the model - never the bare
+        # basenames scraped out of a traceback, which are not real index entries.
+        valid_known_files = {
+            c.get("file_path", "") for c in candidate_chunks if c.get("file_path")
+        }
+
+        if not valid_known_files:
+            return DiagnosticReport(
+                success=False,
+                summary="",
+                files=[],
+                candidate_chunks=candidate_chunks,
+                error_message=(
+                    "Diagnosis failed: retrieval returned no indexed code for this crash, "
+                    "so there is no real file to cite."
+                ),
+                mode="unusable",
+                traceback_hint=extracted_symbols,
+                timestamp=now,
+            )
 
         # Step 2: Build the prompt for the < 3B coder model
         prompt = self._build_diagnosis_prompt(
@@ -103,8 +127,11 @@ class CrashDiagnostician:
         raw_output, call_error = self._call_ollama(prompt)
 
         if call_error:
-            logger.warning(f"Ollama call failed ({call_error}). Attempting deterministic fallback...")
-            return self._create_fallback_report(
+            logger.error(
+                "Local model unreachable (%s). The Analyst does not guess - "
+                "surfacing an explicit failure.", call_error
+            )
+            return self._create_unavailable_report(
                 extracted_symbols, candidate_chunks, call_error, now
             )
 
@@ -232,21 +259,19 @@ RESPONSE FORMAT (JSON):
         if not isinstance(files, list):
             files = [files] if files else []
 
-        # Sanitize suspect files: must exist in index (Subject: must not invent paths)
-        verified_files = []
+        # Sanitize suspect files: each answer must resolve to exactly one indexed path
+        # (Subject: must cite real files, must not invent paths).
+        verified_files: List[str] = []
         for f in files:
-            norm = str(f).strip()
-            # Direct match or basename match
-            for v in valid_files:
-                if norm == v or os.path.basename(norm) == os.path.basename(v):
-                    if v not in verified_files:
-                        verified_files.append(v)
+            resolved = self._resolve_indexed_path(str(f).strip(), valid_files)
+            if resolved and resolved not in verified_files:
+                verified_files.append(resolved)
 
         # Subject: surface explicit failure if model returns no usable file or empty summary
         if not summary or not verified_files:
             err_msg = (
-                "Diagnosis failed: model produced empty summary or unverified files. "
-                "The pipeline does not guess."
+                "Diagnosis failed: the model produced an empty summary or cited no file "
+                "from the index. The pipeline does not guess."
             )
             return DiagnosticReport(
                 success=False,
@@ -255,6 +280,7 @@ RESPONSE FORMAT (JSON):
                 candidate_chunks=candidate_chunks,
                 raw_response=raw_output,
                 error_message=err_msg,
+                mode="unusable",
                 timestamp=timestamp
             )
 
@@ -268,38 +294,66 @@ RESPONSE FORMAT (JSON):
             timestamp=timestamp
         )
 
-    def _create_fallback_report(
+    def _resolve_indexed_path(self, answer: str, valid_files: set) -> Optional[str]:
+        """Map one model answer onto a single real indexed path, or nothing.
+
+        An ambiguous basename (two files called app.py) resolves to nothing rather
+        than silently selecting both, which used to report one file twice.
+        """
+        if not answer:
+            return None
+        if answer in valid_files:
+            return answer
+
+        needle = answer.lstrip("./")
+        suffix_matches = [
+            v for v in valid_files
+            if v == needle or v.endswith("/" + needle) or needle.endswith("/" + v)
+        ]
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+
+        base_matches = [
+            v for v in valid_files
+            if os.path.basename(v) == os.path.basename(needle)
+        ]
+        if len(base_matches) == 1:
+            return base_matches[0]
+
+        if base_matches:
+            logger.warning(
+                "Model cited '%s', which matches %d indexed files (%s) - ambiguous, "
+                "dropping it rather than guessing.",
+                answer, len(base_matches), base_matches,
+            )
+        else:
+            logger.warning("Model cited '%s', which is not in the index - dropped.", answer)
+        return None
+
+    def _create_unavailable_report(
         self,
         extracted_symbols: Dict[str, Any],
         candidate_chunks: List[Dict[str, Any]],
         reason: str,
         timestamp: float
     ) -> DiagnosticReport:
-        """Deterministic fallback when LLM service is offline or unreachable."""
-        suspect_files = extracted_symbols.get("files", [])
-        error_type = extracted_symbols.get("error_type")
-        error_msg = extracted_symbols.get("error_msg")
-        funcs = extracted_symbols.get("functions", [])
+        """Explicit failure when the local model cannot be reached.
 
-        if suspect_files:
-            summary = (
-                f"Deterministic diagnosis: {error_type or 'Exception'} occurred in "
-                f"{', '.join(funcs) if funcs else 'target'} ({error_msg or 'runtime crash'})."
-            )
-            return DiagnosticReport(
-                success=True,
-                summary=summary,
-                files=suspect_files,
-                candidate_chunks=candidate_chunks,
-                raw_response="fallback_deterministic",
-                timestamp=timestamp
-            )
-
+        The traceback facts are attached for the dashboard, but this is never
+        reported as a successful diagnosis: the subject requires the Analyst to
+        surface an explicit failure mode rather than guess a culprit.
+        """
         return DiagnosticReport(
             success=False,
             summary="",
             files=[],
             candidate_chunks=candidate_chunks,
-            error_message=f"LLM diagnosis unavailable ({reason}) and no deterministic traceback found.",
+            error_message=(
+                f"Diagnosis unavailable: the local LLM could not be reached ({reason}). "
+                "Start it with `make setup` (Ollama on :11436) and retry - "
+                "the pipeline does not guess a culprit."
+            ),
+            mode="unavailable",
+            traceback_hint=extracted_symbols,
             timestamp=timestamp
         )

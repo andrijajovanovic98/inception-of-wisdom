@@ -1,6 +1,10 @@
 """
 Inception-of-Wisdom (IoW) - Part 3: Wisdom Loop
 Patcher: Structured JSON Patch Generator (Ollama Code Repair)
+
+The model is the only source of a fix. There is no canned answer for any particular
+bug: when the model truncates a file the patcher asks it again with a stricter prompt,
+and when it still fails the attempt fails honestly.
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ import os
 import json
 import time
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass, field, asdict
 
 try:
@@ -23,6 +27,10 @@ logger = logging.getLogger("p3.patcher")
 
 DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11436")
 DEFAULT_MODEL = "qwen2.5-coder:1.5b"
+
+# A full-file rewrite that keeps less than this share of the original is almost
+# certainly a truncated generation rather than a deliberate deletion.
+TRUNCATION_KEEP_RATIO = 0.5
 
 
 @dataclass
@@ -57,6 +65,28 @@ class StructuredPatch:
             "timestamp": self.timestamp
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StructuredPatch":
+        """Rebuild a patch from its serialised form (classifier fast path)."""
+        files: List[FilePatch] = []
+        for item in data.get("files") or []:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path", "")).strip()
+            if not path:
+                continue
+            files.append(FilePatch(
+                path=path,
+                op=str(item.get("op", "modify")),
+                content=str(item.get("content", "")),
+            ))
+        return cls(
+            summary=str(data.get("summary", "Cached patch")),
+            files=files,
+            success=bool(files),
+            timestamp=time.time(),
+        )
+
 
 class CodePatcher:
     """Generates structured code repairs using the local Ollama coder model (< 3B).
@@ -75,12 +105,20 @@ class CodePatcher:
         self.model_name = model_name
         self.request_timeout = request_timeout
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def generate_patch(
         self,
         diagnosis: DiagnosticReport,
-        log_excerpt: str
+        log_excerpt: str,
+        refusal_hint: Optional[str] = None,
     ) -> StructuredPatch:
-        """Generates a structured JSON repair patch for the suspect files."""
+        """Generates a structured JSON repair patch for the suspect files.
+
+        refusal_hint carries why the previous attempt was rejected, so a retry is
+        never a byte-identical request.
+        """
         now = time.time()
 
         if not diagnosis.files:
@@ -91,7 +129,6 @@ class CodePatcher:
                 timestamp=now
             )
 
-        # Read current contents of all suspect files
         file_contexts: Dict[str, str] = {}
         for rel_path in diagnosis.files:
             full_path = os.path.join(self.base_dir, rel_path)
@@ -106,44 +143,88 @@ class CodePatcher:
             return StructuredPatch(
                 summary="Patch generation failed: suspect files could not be read from disk.",
                 success=False,
-                error_message="Suspect files not found on disk.",
+                error_message=(
+                    "Suspect files not found on disk: "
+                    f"{', '.join(diagnosis.files)} (relative to {self.base_dir})"
+                ),
                 timestamp=now
             )
 
-        # Build prompt for the local coder model
-        prompt = self._build_patch_prompt(diagnosis.summary, log_excerpt, file_contexts)
-
-        # Call Ollama
+        prompt = self._build_patch_prompt(
+            diagnosis.summary, log_excerpt, file_contexts, refusal_hint
+        )
         raw_output, call_error = self._call_ollama(prompt)
 
         if call_error:
             logger.warning(f"Ollama patch generation failed ({call_error}).")
-            surgical = self._try_surgical_fallback(
-                file_contexts, raw_output, now, f"model error: {call_error}"
-            )
-            if surgical:
-                return surgical
             return StructuredPatch(
-                summary="Patch generation failed due to model service error.",
+                summary="Patch generation failed: the local model could not be reached.",
                 success=False,
                 raw_response=raw_output,
                 error_message=f"Model call failed: {call_error}",
                 timestamp=now
             )
 
-        # Parse and validate JSON structure
-        return self._parse_patch_response(raw_output, file_contexts, now)
+        patch = self._parse_patch_response(raw_output, file_contexts, now)
+        if not patch.success:
+            return patch
 
+        # One stricter retry when the model truncated the file instead of rewriting it.
+        truncated = self._truncated_files(patch, file_contexts)
+        if not truncated:
+            return patch
+
+        logger.warning(
+            "Model returned truncated file(s) %s - retrying once with an explicit "
+            "length requirement.", [t[0] for t in truncated]
+        )
+        retry_prompt = self._build_patch_prompt(
+            diagnosis.summary, log_excerpt, file_contexts,
+            refusal_hint=self._truncation_hint(truncated),
+        )
+        retry_raw, retry_err = self._call_ollama(retry_prompt)
+        if not retry_err:
+            retry_patch = self._parse_patch_response(retry_raw, file_contexts, now)
+            if retry_patch.success and not self._truncated_files(retry_patch, file_contexts):
+                return retry_patch
+            if retry_patch.success:
+                truncated = self._truncated_files(retry_patch, file_contexts)
+                patch = retry_patch
+
+        return StructuredPatch(
+            summary="Patch rejected: the model returned an incomplete file.",
+            success=False,
+            raw_response=patch.raw_response,
+            error_message=self._truncation_hint(truncated),
+            timestamp=now,
+        )
+
+    # ------------------------------------------------------------------
+    # Prompting
+    # ------------------------------------------------------------------
     def _build_patch_prompt(
         self,
         diagnostic_summary: str,
         log_excerpt: str,
-        file_contexts: Dict[str, str]
+        file_contexts: Dict[str, str],
+        refusal_hint: Optional[str] = None,
     ) -> str:
         """Constructs an unambiguous prompt enforcing full-file JSON patches."""
         files_text = ""
         for path, code in file_contexts.items():
-            files_text += f"\n--- File: {path} ---\n{code}\n"
+            line_count = code.count("\n") + 1
+            files_text += (
+                f"\n--- File: {path} ({line_count} lines, "
+                f"{len(code)} characters) ---\n{code}\n"
+            )
+
+        retry_block = ""
+        if refusal_hint:
+            retry_block = (
+                "\nYOUR PREVIOUS ATTEMPT WAS REJECTED:\n"
+                f"{refusal_hint}\n"
+                "Fix that specific problem in this attempt.\n"
+            )
 
         prompt = f"""You are an autonomous software repair agent.
 A containerized service crashed. Fix the error in the suspect file.
@@ -156,16 +237,18 @@ ERROR LOG EXCERPT:
 
 CURRENT SOURCE CODE:
 {files_text}
-
+{retry_block}
 CRITICAL RULES (SUBJECT CONSTRAINTS):
 1. Output MUST be strictly valid JSON and NOTHING ELSE.
-2. The "content" field MUST be the COMPLETE, FULL-FILE post-change code (same length order as input).
-3. Keep ALL existing imports, routes, and helpers. Change ONLY the buggy lines.
-4. For Intentional /api/crash RuntimeError: replace the raise with:
-   return jsonify({{"status": "ok", "message": "disarmed by auto-heal"}}), 200
-5. DIFFS ARE NOT ACCEPTED (no '+' / '-' unified diffs).
-6. PLACEHOLDERS ARE FORBIDDEN (no TODO, no "...", no omitted code).
-7. "op" must be "modify", "create", or "delete".
+2. The "content" field MUST be the COMPLETE post-change file, from its first line to
+   its last. Copy every line you are not changing verbatim. The result must have
+   roughly the same number of lines as the original shown above.
+3. Keep ALL existing imports, routes, helpers and docstrings. Change ONLY the
+   lines that cause the failure described in the diagnosis.
+4. DIFFS ARE NOT ACCEPTED (no '+' / '-' unified diffs, no "@@" hunks).
+5. PLACEHOLDERS ARE FORBIDDEN (no TODO, no "...", no "rest of code unchanged").
+6. "op" must be "modify", "create", or "delete".
+7. Patch at most 3 files.
 
 RESPONSE JSON SCHEMA:
 {{
@@ -181,70 +264,57 @@ RESPONSE JSON SCHEMA:
 """
         return prompt
 
-    def _surgical_demo_crash_fix(self, original: str) -> Optional[str]:
-        """Reliable fix for the intentional demo crash when the small LLM truncates the file."""
-        marker = 'raise RuntimeError("Intentional target service crash for IoW verification")'
-        if marker not in original:
-            return None
-        fixed = original.replace(
-            marker,
-            'return jsonify({"status": "ok", "message": "disarmed by auto-heal"}), 200',
-            1,
-        )
-        # Avoid re-firing Observer: healed endpoint must not log CRITICAL ERROR.
-        fixed = fixed.replace(
-            'logger.error("CRITICAL: Intentional crash triggered via /api/crash!")',
-            'logger.info("/api/crash disarmed by auto-heal")',
-            1,
-        )
-        return fixed
-
-    def _resolve_original(self, path: str, file_contexts: Dict[str, str]) -> str:
-        if path in file_contexts:
-            return file_contexts[path]
-        for key, val in file_contexts.items():
-            if key.endswith(path) or path.endswith(key) or key.endswith("app.py"):
-                return val
-        if len(file_contexts) == 1:
-            return next(iter(file_contexts.values()))
-        return ""
-
-    def _canonical_path(self, path: str, file_contexts: Dict[str, str]) -> Optional[str]:
-        if path in file_contexts:
-            return path
-        for key in file_contexts:
-            if key.endswith(path) or path.endswith(key):
-                return key
-        return None
-
-    def _try_surgical_fallback(
+    # ------------------------------------------------------------------
+    # Truncation detection
+    # ------------------------------------------------------------------
+    def _truncated_files(
         self,
+        patch: StructuredPatch,
         file_contexts: Dict[str, str],
-        raw_output: Optional[str],
-        timestamp: float,
-        reason: str,
-    ) -> Optional[StructuredPatch]:
-        for ctx_path, original in file_contexts.items():
-            surgical = self._surgical_demo_crash_fix(original)
-            if surgical:
-                logger.warning(
-                    "Applying surgical intentional-crash disarm for '%s' (%s).",
-                    ctx_path,
-                    reason,
-                )
-                return StructuredPatch(
-                    summary=(
-                        "Disarmed intentional /api/crash RuntimeError "
-                        f"(surgical fallback after {reason})."
-                    ),
-                    files=[FilePatch(path=ctx_path, op="modify", content=surgical)],
-                    success=True,
-                    raw_response=raw_output,
-                    timestamp=timestamp,
-                )
-        return None
+    ) -> List[Tuple[str, int, int]]:
+        """Files whose proposed content is far shorter than the original they replace.
 
-    def _call_ollama(self, prompt: str) -> tuple[Optional[str], Optional[str]]:
+        Returns (path, original_lines, proposed_lines) for each suspicious entry.
+        """
+        suspicious: List[Tuple[str, int, int]] = []
+        for fp in patch.files:
+            if fp.op != "modify":
+                continue
+            original = file_contexts.get(fp.path) or self._read_from_disk(fp.path)
+            if not original:
+                continue
+            orig_lines = original.count("\n") + 1
+            new_lines = fp.content.count("\n") + 1
+            if orig_lines < 10:
+                continue
+            if new_lines < orig_lines * TRUNCATION_KEEP_RATIO:
+                suspicious.append((fp.path, orig_lines, new_lines))
+        return suspicious
+
+    def _truncation_hint(self, truncated: List[Tuple[str, int, int]]) -> str:
+        if not truncated:
+            return "The model returned an incomplete file."
+        parts = [
+            f"'{path}' came back with {new} lines but the original has {orig}; "
+            "the file was cut off instead of rewritten in full"
+            for path, orig, new in truncated
+        ]
+        return "; ".join(parts)
+
+    def _read_from_disk(self, rel_path: str) -> str:
+        full_path = os.path.join(self.base_dir, rel_path)
+        if not os.path.isfile(full_path):
+            return ""
+        try:
+            with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+        except Exception:
+            return ""
+
+    # ------------------------------------------------------------------
+    # Model call & parsing
+    # ------------------------------------------------------------------
+    def _call_ollama(self, prompt: str) -> Tuple[Optional[str], Optional[str]]:
         """Sends code repair request to Ollama with JSON mode."""
         if httpx is None:
             return None, "httpx library not installed"
@@ -267,7 +337,7 @@ RESPONSE JSON SCHEMA:
                 if res.status_code != 200:
                     return None, f"Ollama HTTP {res.status_code}: {res.text[:200]}"
                 data = res.json()
-                return data.get("response", "").strip(), None
+                return (data.get("response", "") or "").strip(), None
         except Exception as e:
             return None, str(e)
 
@@ -279,16 +349,11 @@ RESPONSE JSON SCHEMA:
     ) -> StructuredPatch:
         """Validates JSON structure, verifies full-file content, and rejects diffs."""
         if not raw_output:
-            surgical = self._try_surgical_fallback(
-                file_contexts, raw_output, timestamp, "empty LLM response"
-            )
-            if surgical:
-                return surgical
             return StructuredPatch(
                 summary="Model produced empty patch output.",
                 success=False,
                 raw_response=raw_output,
-                error_message="Empty response from LLM",
+                error_message="Empty response from the local model.",
                 timestamp=timestamp
             )
 
@@ -296,11 +361,6 @@ RESPONSE JSON SCHEMA:
             parsed = json.loads(raw_output)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode patch JSON from model: {e}")
-            surgical = self._try_surgical_fallback(
-                file_contexts, raw_output, timestamp, "malformed LLM JSON"
-            )
-            if surgical:
-                return surgical
             return StructuredPatch(
                 summary="Model produced malformed JSON.",
                 success=False,
@@ -309,7 +369,16 @@ RESPONSE JSON SCHEMA:
                 timestamp=timestamp
             )
 
-        summary = parsed.get("summary", "Automatic fix").strip()
+        if not isinstance(parsed, dict):
+            return StructuredPatch(
+                summary="Model produced JSON that is not a patch object.",
+                success=False,
+                raw_response=raw_output,
+                error_message="Expected a JSON object with 'summary' and 'files'.",
+                timestamp=timestamp
+            )
+
+        summary = str(parsed.get("summary", "Automatic fix")).strip()
         raw_files = parsed.get("files", [])
         if not isinstance(raw_files, list):
             raw_files = [raw_files] if raw_files else []
@@ -324,11 +393,13 @@ RESPONSE JSON SCHEMA:
             op = str(item.get("op", "modify")).lower().strip()
             content = str(item.get("content", ""))
 
-            # Subject rule: op in {create, modify, delete}
-            if op not in ["create", "modify", "delete"]:
+            if not path:
+                continue
+
+            if op not in ("create", "modify", "delete"):
                 op = "modify"
 
-            # Subject constraint: Diffs are not accepted!
+            # Subject constraint: Diffs are not accepted.
             if self._is_unified_diff(content):
                 logger.error(f"Patch rejected: content for '{path}' is a diff, not a full file.")
                 return StructuredPatch(
@@ -339,40 +410,15 @@ RESPONSE JSON SCHEMA:
                     timestamp=timestamp
                 )
 
-            # Small coder models often truncate full-file JSON. If the proposal is
-            # drastically shorter than the original, apply a surgical demo-crash fix.
-            original = self._resolve_original(path, file_contexts)
-            if original and op == "modify":
-                shrink = 1.0 - (len(content.encode("utf-8")) / max(1, len(original.encode("utf-8"))))
-                looks_broken = shrink > 0.5 or content.count("\n") < max(5, original.count("\n") // 2)
-                if looks_broken:
-                    fixed_src = self._surgical_demo_crash_fix(original)
-                    if fixed_src:
-                        logger.warning(
-                            "LLM full-file patch looked truncated (%.0f%% shrink); "
-                            "applying surgical intentional-crash disarm for '%s'.",
-                            shrink * 100,
-                            path,
-                        )
-                        content = fixed_src
-                        summary = (
-                            "Disarmed intentional /api/crash RuntimeError "
-                            "(surgical fallback after truncated LLM file)."
-                        )
-                        path = self._canonical_path(path, file_contexts) or path
-
+            # Map the model's path onto a real suspect path when that is unambiguous.
+            canonical = self._canonical_path(path, file_contexts)
             valid_patches.append(FilePatch(
-                path=path,
+                path=canonical or path,
                 op=op,
                 content=content
             ))
 
         if not valid_patches:
-            fallback = self._try_surgical_fallback(
-                file_contexts, raw_output, timestamp, "empty LLM files"
-            )
-            if fallback:
-                return fallback
             return StructuredPatch(
                 summary="Patch rejected: no valid files specified in patch.",
                 success=False,
@@ -390,16 +436,40 @@ RESPONSE JSON SCHEMA:
             timestamp=timestamp
         )
 
+    def _canonical_path(self, path: str, file_contexts: Dict[str, str]) -> Optional[str]:
+        """Resolve a model-written path to a real suspect path, when unambiguous.
+
+        Only exact and whole-segment suffix matches count - never a bare 'endswith'
+        against an unrelated file name.
+        """
+        if path in file_contexts:
+            return path
+        needle = path.lstrip("./")
+        matches = [
+            key for key in file_contexts
+            if key == needle or key.endswith("/" + needle) or needle.endswith("/" + key)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        base_matches = [
+            key for key in file_contexts
+            if os.path.basename(key) == os.path.basename(needle)
+        ]
+        if len(base_matches) == 1:
+            return base_matches[0]
+        return None
+
     def _is_unified_diff(self, content: str) -> bool:
         """Detects if content is accidentally formatted as a git/unified diff."""
         lines = content.strip().splitlines()
         if not lines:
             return False
 
-        first_few = "\n".join(lines[:6])
-        if "diff --git" in first_few:
+        first_few = lines[:6]
+        if any("diff --git" in ln for ln in first_few):
             return True
-        if "--- " in first_few and "+++ " in first_few:
+        if (any(ln.startswith("--- ") for ln in first_few)
+                and any(ln.startswith("+++ ") for ln in first_few)):
             return True
         if any(line.startswith("@@ -") for line in lines[:15]):
             return True

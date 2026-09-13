@@ -14,9 +14,17 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger("p2.chunker")
 
+# Binary and generated files carry no retrievable meaning and would be embedded as
+# replacement-character noise.
+SKIP_EXTENSIONS = (
+    ".pyc", ".pyo", ".so", ".o", ".a", ".bin", ".onnx", ".safetensors", ".pt", ".pth",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".pdf",
+    ".zip", ".gz", ".tar", ".whl", ".sqlite3", ".db", ".lock", ".woff", ".woff2",
+)
+
 DEFAULT_IGNORE_DIRS = {
     ".git", "__pycache__", ".venv", "venv", ".chroma", "chroma_db",
-    ".pytest_cache", ".cache", "build", "dist", "docu"
+    ".pytest_cache", ".cache", "build", "dist", "docu", "docs", "node_modules",
 }
 
 
@@ -126,7 +134,7 @@ class AstChunker:
         if preamble_text:
             sha = hashlib.sha256(preamble_text.encode("utf-8")).hexdigest()
             preamble_chunk = CodeChunk(
-                chunk_id=f"{rel_path}:module:{sha[:8]}",
+                chunk_id=f"{rel_path}:module:module_preamble",
                 file_path=rel_path,
                 symbol_name="module_preamble",
                 symbol_type="module",
@@ -141,6 +149,17 @@ class AstChunker:
         if not chunks:
             return self._chunk_generic_file(rel_path, source_code)
 
+        return self._disambiguate_ids(chunks)
+
+    @staticmethod
+    def _disambiguate_ids(chunks: List[CodeChunk]) -> List[CodeChunk]:
+        """Ensure ids are unique within a file (e.g. two same-named defs)."""
+        seen: Dict[str, int] = {}
+        for chunk in chunks:
+            count = seen.get(chunk.chunk_id, 0)
+            seen[chunk.chunk_id] = count + 1
+            if count:
+                chunk.chunk_id = f"{chunk.chunk_id}#{count}"
         return chunks
 
     def _extract_node_chunk(
@@ -171,7 +190,9 @@ class AstChunker:
             symbol_name = f"{class_name}.{symbol_name}"
 
         sha = hashlib.sha256(chunk_content.encode("utf-8")).hexdigest()
-        chunk_id = f"{rel_path}:{symbol_name}:{sha[:8]}"
+        # Identity is the symbol, not its current text: an edited function keeps its
+        # id so upsert replaces it in place instead of leaving a stale twin behind.
+        chunk_id = f"{rel_path}:{symbol_type}:{symbol_name}"
 
         return CodeChunk(
             chunk_id=chunk_id,
@@ -193,7 +214,7 @@ class AstChunker:
         total_lines = len(source_code.splitlines())
         return [
             CodeChunk(
-                chunk_id=f"{rel_path}:file:{sha[:8]}",
+                chunk_id=f"{rel_path}:file:{os.path.basename(rel_path)}",
                 file_path=rel_path,
                 symbol_name=os.path.basename(rel_path),
                 symbol_type="file",
@@ -219,7 +240,7 @@ class AstChunker:
             dirs[:] = [d for d in dirs if d not in ignored and not d.startswith(".")]
 
             for filename in files:
-                if filename.startswith(".") or filename.endswith((".pyc", ".png", ".pdf", ".sqlite3")):
+                if filename.startswith(".") or filename.endswith(SKIP_EXTENSIONS):
                     continue
                 full_path = os.path.join(root, filename)
                 chunks = self.chunk_file(full_path)

@@ -218,9 +218,86 @@ class ChromaVectorDB:
             logger.error(f"Failed to upsert chunks into ChromaDB: {e}")
             return {"added": 0, "skipped": skipped_count, "failed": len(to_embed_chunks)}
 
+    def prune_missing_chunks(self, chunks: List[CodeChunk]) -> int:
+        """Delete rows for symbols that no longer exist in the files just indexed.
+
+        Without this an edited or removed function survives in the index forever and
+        retrieval can serve pre-patch code back to the Analyst.
+        """
+        if not self._ensure_initialized() or self._collection is None:
+            return 0
+
+        wanted: Dict[str, set] = {}
+        for chunk in chunks:
+            wanted.setdefault(chunk.file_path, set()).add(chunk.chunk_id)
+
+        removed = 0
+        for file_path, keep_ids in wanted.items():
+            try:
+                existing = self._collection.get(
+                    where={"file_path": file_path}, include=[]
+                )
+            except Exception as e:
+                logger.warning(f"Could not list existing chunks for {file_path}: {e}")
+                continue
+
+            stale = [cid for cid in existing.get("ids", []) if cid not in keep_ids]
+            if not stale:
+                continue
+            try:
+                self._collection.delete(ids=stale)
+                removed += len(stale)
+                logger.info(
+                    f"Pruned {len(stale)} superseded chunk(s) from {file_path}."
+                )
+            except Exception as e:
+                logger.error(f"Failed pruning stale chunks for {file_path}: {e}")
+
+        return removed
+
     def sync_chunks(self, chunks: List[CodeChunk]) -> Dict[str, int]:
-        """Alias for index_chunks (dashboard/orchestrator compatibility)."""
-        return self.index_chunks(chunks)
+        """Index chunks and drop whatever they replaced (incremental, never a wipe)."""
+        stats = self.index_chunks(chunks)
+        stats["pruned"] = self.prune_missing_chunks(chunks)
+        return stats
+
+    def sync_directory_chunks(
+        self,
+        chunks: List[CodeChunk],
+        known_files: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """Full-tree sync: index, prune superseded symbols, drop deleted files."""
+        stats = self.sync_chunks(chunks)
+        if known_files is not None:
+            stats["files_removed"] = self.prune_missing_files(known_files)
+        return stats
+
+    def prune_missing_files(self, existing_files: List[str]) -> int:
+        """Delete rows whose source file has disappeared from the target tree."""
+        if not self._ensure_initialized() or self._collection is None:
+            return 0
+        keep = set(existing_files)
+        try:
+            everything = self._collection.get(include=["metadatas"])
+        except Exception as e:
+            logger.warning(f"Could not enumerate the index for file pruning: {e}")
+            return 0
+
+        ids = everything.get("ids", []) or []
+        metas = everything.get("metadatas", []) or []
+        stale = [
+            cid for cid, meta in zip(ids, metas)
+            if (meta or {}).get("file_path") not in keep
+        ]
+        if not stale:
+            return 0
+        try:
+            self._collection.delete(ids=stale)
+            logger.info(f"Pruned {len(stale)} chunk(s) from files no longer on disk.")
+            return len(stale)
+        except Exception as e:
+            logger.error(f"Failed pruning chunks of deleted files: {e}")
+            return 0
 
     def query_similar(
         self,

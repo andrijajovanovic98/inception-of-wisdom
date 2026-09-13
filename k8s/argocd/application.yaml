@@ -10,6 +10,9 @@ metadata:
 spec:
   project: default
   source:
+    # repoURL is patched by scripts/argocd_bonus_up.sh to reach the local Gitea.
+    # targetRevision stays on the heal branch: that is the branch the Wisdom Loop
+    # commits to and pushes, so a heal is what drives the redeploy.
     repoURL: http://gitea.iow.svc.cluster.local:3000/iow/inception-of-wisdom.git
     targetRevision: iow/auto-heal
     path: k8s/demo-app

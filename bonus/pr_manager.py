@@ -16,7 +16,6 @@ import urllib.error
 import urllib.request
 from typing import Optional, List, Dict, Any, Tuple, Callable
 from dataclasses import dataclass, asdict, field
-from urllib.parse import quote
 
 try:
     import httpx
@@ -77,6 +76,14 @@ class PullRequestManager:
         self.creds_file = os.path.abspath(creds_file or DEFAULT_CREDS_FILE)
         self.prs: Dict[str, PullRequestRecord] = {}
         self._creds: Dict[str, str] = {}
+        # remote_status() is polled by /api/overview every few seconds. Probing an
+        # unreachable forge on every call used to stall the dashboard for a full
+        # timeout each time, so the answer is cached briefly and the probe is short.
+        self._status_cache: Optional[Dict[str, Any]] = None
+        self._status_cache_at: float = 0.0
+        self._status_ttl_ok: float = 15.0
+        self._status_ttl_fail: float = 30.0
+        self._status_timeout: float = 2.0
         self._load_creds()
         self._load_store()
 
@@ -175,21 +182,32 @@ class PullRequestManager:
         except Exception as e:
             return 0, {"error": str(e)}
 
-    def remote_status(self) -> Dict[str, Any]:
-        """Report Gitea connectivity and configuration."""
+    def remote_status(self, force: bool = False) -> Dict[str, Any]:
+        """Report Gitea connectivity and configuration (cached, short timeout)."""
+        now = time.time()
+        if not force and self._status_cache is not None:
+            ttl = self._status_ttl_ok if self._status_cache.get("reachable") else self._status_ttl_fail
+            if (now - self._status_cache_at) < ttl:
+                return self._status_cache
+
         self._load_creds()
         token = self._token()
         configured = bool(token and self._owner() and self._repo())
         reachable = False
         detail: Dict[str, Any] = {}
         if configured:
-            code, data = self._http_request("GET", f"/api/v1/repos/{self._owner()}/{self._repo()}")
+            code, data = self._http_request(
+                "GET",
+                f"/api/v1/repos/{self._owner()}/{self._repo()}",
+                timeout=self._status_timeout,
+            )
             reachable = code == 200
             if reachable:
                 detail = {"default_branch": data.get("default_branch", "main")}
             else:
                 detail = {"http_code": code, "error": data.get("message") or data.get("error")}
-        return {
+
+        status = {
             "configured": configured,
             "reachable": reachable,
             "gitea_url": self._api_base(),
@@ -199,35 +217,57 @@ class PullRequestManager:
             "creds_file": self.creds_file,
             "detail": detail,
         }
+        self._status_cache = status
+        self._status_cache_at = now
+        return status
+
+    def _remote_url(self) -> str:
+        """Credential-free remote URL. Auth travels per-command, not on disk."""
+        owner, repo = self._owner(), self._repo()
+        return f"{self._api_base()}/{owner}/{repo}.git"
+
+    def _push(self, refspec: str, force: bool = False) -> Tuple[int, str]:
+        """Push one refspec, passing the token as a header instead of storing it.
+
+        Writing `https://user:token@host/...` into .git/config leaks the credential
+        into the peer's repository and outlives `make fclean`.
+        """
+        args = ["-c", f"http.extraHeader=Authorization: token {self._token()}", "push"]
+        if force:
+            args.append("--force")
+        args += [self._remote_url(), refspec]
+        rc, _, err = self.git_manager._run_git(args, check=False)
+        return rc, err
 
     def ensure_remote_ready(self) -> Tuple[bool, str]:
-        """Ensure git remote 'gitea' exists and heal branch is pushed."""
+        """Ensure the Gitea remote is reachable and the heal branch is pushed."""
         status = self.remote_status()
         if not status["configured"]:
             return False, "Gitea not configured (missing token or repo info)."
-        owner = self._owner()
-        repo = self._repo()
-        token = self._token()
-        remote_url = (
-            f"{self._api_base().replace('://', f'://{quote(owner)}:{quote(token)}@')}"
-            f"/{owner}/{repo}.git"
-        )
+        if not status["reachable"]:
+            return False, (
+                f"Gitea unreachable at {self._api_base()} "
+                f"({status.get('detail', {})})"
+            )
+
+        owner, repo = self._owner(), self._repo()
         remote_name = "gitea"
+
+        # Keep a convenience remote for humans, but never with credentials in it.
         _, remotes_out, _ = self.git_manager._run_git(["remote"], check=False)
         remotes = [r.strip() for r in remotes_out.splitlines() if r.strip()]
         if remote_name not in remotes:
-            rc, _, err = self.git_manager._run_git(["remote", "add", remote_name, remote_url], check=False)
-            if rc != 0:
-                return False, f"Failed to add remote '{remote_name}': {err}"
-            logger.info(f"Added git remote '{remote_name}' -> {owner}/{repo}")
+            self.git_manager._run_git(
+                ["remote", "add", remote_name, self._remote_url()], check=False
+            )
+            logger.info(f"Added credential-free git remote '{remote_name}' -> {owner}/{repo}")
         else:
-            self.git_manager._run_git(["remote", "set-url", remote_name, remote_url], check=False)
+            self.git_manager._run_git(
+                ["remote", "set-url", remote_name, self._remote_url()], check=False
+            )
 
         heal_branch = self.git_manager.heal_branch
-        rc, _, err = self.git_manager._run_git(
-            ["push", "-u", remote_name, f"{heal_branch}:{heal_branch}"],
-            check=False,
-        )
+        rc, err = self._push(f"refs/heads/{heal_branch}:refs/heads/{heal_branch}", force=True)
         if rc != 0:
             logger.warning(f"Push heal branch warning: {err}")
         return True, f"Remote '{remote_name}' ready for {owner}/{repo}"
@@ -283,6 +323,26 @@ class PullRequestManager:
         )
         return "\n".join(diff)
 
+    def ensure_base_branch(self, base_rev: str, base_branch: str) -> bool:
+        """Publish the pre-heal revision as the PR's base branch.
+
+        The bootstrap creates the mirror with `auto_init`, so its default branch holds
+        nothing but a README. Opening a PR against that makes a one-line fix show up
+        as "50 files changed" and the review is useless. Pushing the base revision
+        first means the PR diff is exactly the patch.
+        """
+        if not base_rev:
+            return False
+        rc, err = self._push(f"{base_rev}:refs/heads/{base_branch}", force=True)
+        if rc != 0:
+            logger.warning(f"Could not publish base branch '{base_branch}': {err}")
+            return False
+        logger.info(
+            f"Published base '{base_branch}' at {base_rev[:8]} so the PR diff shows "
+            "only the proposed change."
+        )
+        return True
+
     def _resolve_base_branch(self) -> str:
         status = self.remote_status()
         if status.get("reachable") and status.get("detail", {}).get("default_branch"):
@@ -331,27 +391,47 @@ class PullRequestManager:
 *Created autonomously by Inception of Wisdom (IoW) Human-in-the-Loop Review Agent.*
 """
 
-        try:
-            self.git_manager._run_git(["checkout", "-B", branch_name], check=False)
-            for pf in patch_files:
-                rel_path = str(pf.get("path") or "unknown")
-                self.git_manager._write_file_atomically(rel_path, pf.get("content", ""))
-            self.git_manager._run_git(["add", "-A"], check=False)
-            self.git_manager._run_git(["commit", "-m", f"review: {title}"], check=False)
-            self.git_manager._run_git(["checkout", self.git_manager.heal_branch], check=False)
-            logger.info(f"Created review branch '{branch_name}' for PR [{pr_id}]")
-        except Exception as e:
-            logger.error(f"Error creating git branch for PR: {e}")
+        # Build the review commit out of the patch files ONLY, with git plumbing.
+        # `git add -A` used to sweep the peer's whole working tree - untracked notes
+        # included - into a PR that claims to contain a one-file fix, and pushed it.
+        rejected: List[str] = [
+            rel for rel in files_changed
+            if not self.git_manager._is_heal_path(rel)
+        ]
+        if rejected:
+            raise ValueError(
+                f"Refusing to open a review PR touching paths outside "
+                f"{self.git_manager.heal_paths_list()}: {rejected}"
+            )
+
+        entries = [
+            (str(pf.get("path")), pf.get("content", ""))
+            for pf in patch_files
+            if pf.get("path")
+        ]
+        review_commit = self.git_manager.commit_blobs_to_branch(
+            branch=branch_name,
+            entries=entries,
+            message=f"review: {title}",
+            parent=base_rev,
+        )
+        if review_commit:
+            logger.info(
+                f"Created review branch '{branch_name}' for PR [{pr_id}] "
+                f"with {len(entries)} file(s) - working tree untouched."
+            )
+        else:
+            logger.error(f"Could not build review commit for PR [{pr_id}]")
 
         remote_pr_number: Optional[int] = None
         remote_html_url: Optional[str] = None
         remote_api_url: Optional[str] = None
 
         ready, msg = self.ensure_remote_ready()
-        if ready:
-            rc, _, err = self.git_manager._run_git(
-                ["push", "-u", "gitea", f"{branch_name}:{branch_name}"],
-                check=False,
+        if ready and review_commit:
+            self.ensure_base_branch(base_rev, base_branch)
+            rc, err = self._push(
+                f"refs/heads/{branch_name}:refs/heads/{branch_name}", force=True
             )
             if rc != 0:
                 logger.warning(f"Push review branch failed: {err}")
@@ -378,6 +458,8 @@ class PullRequestManager:
                     logger.info(f"Gitea PR #{remote_pr_number} opened: {remote_html_url}")
                 else:
                     logger.warning(f"Gitea PR create failed (HTTP {code}): {data}")
+        elif not review_commit:
+            logger.warning("Review commit missing - PR recorded locally only.")
         else:
             logger.warning(f"Remote not ready: {msg}")
 
@@ -444,6 +526,11 @@ Verified healthy after Wisdom Loop auto-heal.
         if not ready:
             logger.warning(f"Cannot open verified heal PR: {msg}")
             return None
+
+        # Same reason as above: without a real base, the heal PR diffs the whole repo.
+        pre_loop = self.git_manager.get_pre_loop_hash() or self.git_manager.get_current_head()
+        if pre_loop:
+            self.ensure_base_branch(pre_loop, base_branch)
 
         owner, repo = self._owner(), self._repo()
         existing = self._find_open_pr(heal_branch, base_branch)
@@ -566,9 +653,24 @@ Verified healthy after Wisdom Loop auto-heal.
                 logger.warning(f"Gitea merge API returned {code}: {data}; attempting local merge.")
 
         try:
-            self.git_manager._run_git(["checkout", self.git_manager.heal_branch])
-            merge_msg = f"Merge PR #{pr_id}: {pr.title}"
-            self.git_manager._run_git(["merge", "--no-ff", pr.branch_name, "-m", merge_msg])
+            # Fast-forward the heal branch onto the review commit without checking
+            # anything out, then bring demo_app/ in the working tree up to it so the
+            # restarted container actually runs the approved code.
+            merged_sha = self.git_manager.get_branch_tip(pr.branch_name)
+            if not merged_sha:
+                return False, f"Review branch '{pr.branch_name}' no longer exists."
+            self.git_manager._run_git(
+                ["update-ref", f"refs/heads/{self.git_manager.heal_branch}", merged_sha],
+                check=False,
+            )
+            self.git_manager._run_git(
+                ["checkout", merged_sha, "--", *self.git_manager.heal_paths_list()],
+                check=False,
+            )
+            self.git_manager._run_git(
+                ["reset", "--quiet", "--", *self.git_manager.heal_paths_list()],
+                check=False,
+            )
             pr.status = "merged"
             pr.resolved_at = time.time()
             pr.reviewer_comment = comment or "Approved and merged by human operator."
