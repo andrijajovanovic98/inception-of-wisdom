@@ -122,10 +122,10 @@ class GitManager:
 
         Never uses `checkout -B <branch> <hash>` — that resets the whole working tree
         and would wipe uncommitted edits under p3/, dashboard/, bonus/, etc.
-        """
-        if not self._pre_loop_hash:
-            self.snapshot_pre_loop()
 
+        Does not snapshot: caller must snapshot AFTER this returns so pre_loop_hash
+        is the heal-branch tip (not main).
+        """
         current = self.get_current_branch()
         if current == self.heal_branch:
             logger.info(f"Already on dedicated heal branch '{self.heal_branch}'.")
@@ -134,7 +134,7 @@ class GitManager:
         logger.info(f"Checking out dedicated branch '{self.heal_branch}' (preserving local WIP)...")
         code, _, err = self._run_git(["checkout", self.heal_branch], check=False)
         if code != 0:
-            # Create branch from current HEAD (pre-loop snapshot tip).
+            # Create branch from current HEAD.
             code, _, err = self._run_git(
                 ["checkout", "-b", self.heal_branch],
                 check=False,

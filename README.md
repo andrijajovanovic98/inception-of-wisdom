@@ -254,17 +254,21 @@ make status
 make down
 ```
 
-### Gitea Human-in-the-Loop PRs (Bonus)
+### Bonus modes (split targets)
 
 ```sh
-make gitea                 # local Gitea forge + bootstrap → http://localhost:3000
-make bonus                 # host dashboard on :8000 (does not start/need iow_agent)
-make up                    # demo_app + gitea; :8000 stays free for make bonus
-make docker-restart        # same infra recreate; does not bring back iow_agent
-make up-agent              # only if you want the dashboard inside Docker instead
+make bonus                 # classifier + consensus (Bonus tab; no Gitea required)
+make pr-bonus              # + local Gitea forge + HITL / verified heal PRs
+make argocd-bonus          # + k3d + Argo CD (commit → sync redeploy); needs k3d/kubectl
+make argocd-bonus-down     # delete k3d cluster 'iow'
+make gitea                 # forge only → http://localhost:3000
+make up                    # demo_app + gitea; :8000 stays free for host dashboard
+make docker-restart        # recreate infra; does not bring back iow_agent
+make up-agent              # optional: dashboard inside Docker instead of host make *
 ```
 
-Credentials: `/tmp/iow/gitea/gitea.env` (user `iow`, pass `iowiow123`).
+Credentials: `/tmp/iow/gitea/gitea.env` (user `iow`, pass `iowiow123`).  
+GitOps env (after `argocd-bonus`): `/tmp/iow/gitops/env` — target NodePort `http://127.0.0.1:30051`.
 
 ### Alternative Workflow: Local Host Development (`/tmp/iow`)
 

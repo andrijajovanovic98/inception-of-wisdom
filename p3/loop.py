@@ -123,13 +123,15 @@ class WisdomLoop:
         cycle_id = str(uuid.uuid4())[:8]
         start_now = time.time()
 
-        # Step 1: Snapshot pre-loop revision and switch to iow/auto-heal
+        # Step 1: Switch to iow/auto-heal FIRST, then snapshot THAT tip.
+        # Snapshotting while still on main, then rolling back auto-heal to main's
+        # hash, digs out older demo_app and erases already-committed heal fixes.
         try:
-            pre_loop_hash = self.git_manager.snapshot_pre_loop()
             if not self.git_manager.prepare_heal_branch():
                 raise RuntimeError(
                     f"Could not checkout heal branch '{self.git_manager.heal_branch}'"
                 )
+            pre_loop_hash = self.git_manager.snapshot_pre_loop()
         except Exception as e:
             logger.error(f"Failed to prepare heal branch / pre-loop snapshot: {e}")
             self._is_running_cycle = False

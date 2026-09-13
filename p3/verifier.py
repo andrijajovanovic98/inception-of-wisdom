@@ -62,25 +62,51 @@ class TargetVerifier:
         the grace_period expires or an immediate crash occurs.
         """
         now = time.time()
-        logger.info(f"Initiating target restart and verification (grace_period={grace_period}s)...")
+        mode = "docker"
+        try:
+            from bonus.gitops import redeploy_mode, wait_for_gitops_redeploy
+            mode = redeploy_mode()
+        except Exception:
+            wait_for_gitops_redeploy = None  # type: ignore[assignment]
+
+        logger.info(
+            f"Initiating target redeploy/verify "
+            f"(mode={mode}, grace_period={grace_period}s)..."
+        )
 
         # Step 1: Clear old log buffers and event traces for clean observation
         if self.log_streamer:
             self.log_streamer.clear()
 
-        # Step 2: Restart the container via Docker socket
-        restart_ok = self.docker_monitor.restart_target(timeout=10)
-        if not restart_ok:
-            logger.error("Failed to execute docker restart on target container.")
-            return VerificationResult(
-                is_healed=False,
-                status="restart_failed",
-                grace_period_seconds=grace_period,
-                elapsed_seconds=0.0,
-                error_log="Docker restart command failed",
-                container_status="error",
-                timestamp=now
-            )
+        # Step 2: Redeploy — Docker restart (default) or GitOps wait (Argo CD / k3d)
+        if mode == "gitops" and wait_for_gitops_redeploy is not None:
+            ok, detail = wait_for_gitops_redeploy(grace_period=grace_period)
+            if not ok:
+                logger.error(f"GitOps redeploy failed: {detail}")
+                return VerificationResult(
+                    is_healed=False,
+                    status="restart_failed",
+                    grace_period_seconds=grace_period,
+                    elapsed_seconds=0.0,
+                    error_log=f"GitOps redeploy failed: {detail}",
+                    container_status="error",
+                    details={"redeploy_mode": mode},
+                    timestamp=now,
+                )
+            logger.info(f"GitOps redeploy OK: {detail}")
+        else:
+            restart_ok = self.docker_monitor.restart_target(timeout=10)
+            if not restart_ok:
+                logger.error("Failed to execute docker restart on target container.")
+                return VerificationResult(
+                    is_healed=False,
+                    status="restart_failed",
+                    grace_period_seconds=grace_period,
+                    elapsed_seconds=0.0,
+                    error_log="Docker restart command failed",
+                    container_status="error",
+                    timestamp=now
+                )
 
         # Allow initial container bootstrap time (1.5s)
         time.sleep(1.5)

@@ -1,0 +1,56 @@
+# IoW demo target — deployed into k3d and synced by Argo CD (argocd-bonus).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iow-demo
+  namespace: iow-demo
+  labels:
+    app: iow-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iow-demo
+  template:
+    metadata:
+      labels:
+        app: iow-demo
+    spec:
+      containers:
+        - name: demo
+          image: inception-of-wisdom-demo_app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PORT
+              value: "5000"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iow-demo
+  namespace: iow-demo
+spec:
+  type: NodePort
+  selector:
+    app: iow-demo
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      nodePort: 30051
