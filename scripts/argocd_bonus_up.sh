@@ -97,7 +97,7 @@ cluster_healthy() {
 }
 
 start_k3s() {
-  echo "[*] Starting k3s container '${K3S_NAME}' (privileged + cgroupns=host — campus rootless fix)"
+  echo "[*] Starting k3s container '${K3S_NAME}' (privileged + cgroupns=host - campus rootless fix)"
   echo "    image=${K3S_IMAGE}  api=127.0.0.1:${API_PORT}  nodePort=${NODE_PORT}"
   local net_args=()
   if docker network inspect iow-network >/dev/null 2>&1; then
@@ -132,7 +132,7 @@ gitea_ip() {
 publish_manifests_to_gitea() {
   local creds="${IOW_DIR}/gitea/gitea.env"
   if [ ! -f "${creds}" ]; then
-    echo "[!] Missing ${creds} — skip git publish" >&2
+    echo "[!] Missing ${creds} - skip git publish" >&2
     return 1
   fi
   # shellcheck disable=SC1090
@@ -218,7 +218,7 @@ import_demo_image() {
   fi
   echo "[*] Importing ${img} into k3s containerd..."
   docker save "${img}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import - || {
-    echo "[!] ctr import failed — trying k3s ctr"
+    echo "[!] ctr import failed - trying k3s ctr"
     docker save "${img}" | docker exec -i "${K3S_NAME}" k3s ctr images import -
   }
 
@@ -302,7 +302,7 @@ ensure_cluster() {
       kubectl get nodes
       return 0
     fi
-    echo "[!] Existing ${K3S_NAME} unhealthy — recreating"
+    echo "[!] Existing ${K3S_NAME} unhealthy - recreating"
   fi
   purge_cluster
   start_k3s
@@ -318,7 +318,7 @@ write_kubeconfig
 echo "[*] Installing Argo CD into namespace ${NS_ARGO}..."
 kubectl create namespace "${NS_ARGO}" --dry-run=client -o yaml | kubectl apply -f -
 if ! kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.3/manifests/install.yaml; then
-  echo "[!] Could not fetch Argo CD install.yaml from GitHub — retry once..."
+  echo "[!] Could not fetch Argo CD install.yaml from GitHub - retry once..."
   sleep 2
   kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.3/manifests/install.yaml
 fi

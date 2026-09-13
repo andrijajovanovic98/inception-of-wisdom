@@ -98,7 +98,7 @@ help:
 	@echo " make break-hard       - hard crash: target exits 1 (exit-code path)"
 	@echo " make break-import     - startup crash: missing import -> restart loop"
 	@echo " make suggest          - 4xx probe: surfaced for a human, never auto-healed"
-	@echo " make flake | mypy | lint"
+	@echo " make flake | mypy | lint - lint check (flake8 + mypy) on $(LINT_DIRS)"
 	@echo " make stop             - stop IoW ollama (pid file + orphans on $(OLLAMA_BIND))"
 	@echo " make clean            - docker-clean + caches (keep venv)"
 	@echo " make fclean           - docker-fclean + full wipe of $(IOW_DIR)"
