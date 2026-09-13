@@ -186,11 +186,18 @@ RESPONSE JSON SCHEMA:
         marker = 'raise RuntimeError("Intentional target service crash for IoW verification")'
         if marker not in original:
             return None
-        return original.replace(
+        fixed = original.replace(
             marker,
             'return jsonify({"status": "ok", "message": "disarmed by auto-heal"}), 200',
             1,
         )
+        # Avoid re-firing Observer: healed endpoint must not log CRITICAL ERROR.
+        fixed = fixed.replace(
+            'logger.error("CRITICAL: Intentional crash triggered via /api/crash!")',
+            'logger.info("/api/crash disarmed by auto-heal")',
+            1,
+        )
+        return fixed
 
     def _resolve_original(self, path: str, file_contexts: Dict[str, str]) -> str:
         if path in file_contexts:

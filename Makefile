@@ -49,7 +49,8 @@ export OLLAMA_MODELS     := $(OLLAMA_DIR)
 export OLLAMA_HOST
 export DOCKER_CONFIG     := $(DOCKER_CONFIG_DIR)
 
-.PHONY: all up up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus gitea \
+.PHONY: all up up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
+	pr-bonus argocd-bonus argocd-bonus-down gitea \
 	break heal rollback status logs setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
 	ensure-embed ensure-lint-tools ensure-target ensure-gitea ensure-dashboard-port \
@@ -67,13 +68,19 @@ help:
 	@echo " make up               - Docker infra: demo_app + gitea (host dashboard via make bonus)"
 	@echo " make up-agent         - also start iow_agent dashboard in Docker on :8000"
 	@echo " make gitea            - ensure Gitea forge ready (wait + bootstrap, fail on error)"
-	@echo " make bonus            - host dashboard on :8000 (Gitea + target; does not need iow_agent)"
+	@echo " make bonus            - host dashboard :8000 — classifier/consensus (no Gitea)"
+	@echo " make pr-bonus         - host dashboard + Gitea PRs (HITL / verified heal PR)"
+	@echo " make argocd-bonus     - GitOps path: k3d + Argo CD; commit triggers redeploy"
 	@echo " make down             - stop and tear down Docker containers"
 	@echo " make docker-restart   - recreate demo_app + gitea (leaves :8000 free for make bonus)"
 	@echo " make docker-clean     - remove IoW containers/network (keep images)"
 	@echo " make docker-fclean    - remove IoW containers/network/volumes/images"
 	@echo " make setup            - prepare $(IOW_DIR) (venv, pip, embeddings, ollama)"
 	@echo " make p1 | p2 | p3 | bonus | run  - progressive dashboard on :$(PORT)"
+	@echo " make bonus            - classifier + consensus (Bonus tab; no Gitea required)"
+	@echo " make pr-bonus         - bonus + Gitea forge + HITL / verified PRs"
+	@echo " make argocd-bonus     - bonus + k3d/Argo CD GitOps redeploy (commit → sync)"
+	@echo " make argocd-bonus-down - delete k3d cluster 'iow'"
 	@echo " make flake | mypy | lint"
 	@echo " make stop             - stop IoW ollama (pid file + orphans on $(OLLAMA_BIND))"
 	@echo " make clean            - docker-clean + caches (keep venv)"
@@ -466,8 +473,15 @@ p3: ensure-ready ensure-ollama-quick ensure-target ensure-dashboard-port
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	$(call IOW_UVICORN,p3)
 
-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-dashboard-port
-	@echo "[*] Bonus Suite (classifier / consensus / Gitea PRs) on :$(PORT)"
+bonus: ensure-ready ensure-ollama-quick ensure-target ensure-dashboard-port
+	@echo "[*] Bonus Suite (classifier / consensus) on :$(PORT)"
+	@echo "    tabs: all visible - all unlocked"
+	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
+	@echo "    Gitea PRs: make pr-bonus   |   GitOps: make argocd-bonus"
+	$(call IOW_UVICORN,bonus)
+
+pr-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-dashboard-port
+	@echo "[*] PR Bonus (classifier / consensus / Gitea PRs) on :$(PORT)"
 	@echo "    tabs: all visible - all unlocked"
 	@echo "    target: iow_demo_target → $(TARGET_URL)  Ollama: $(OLLAMA_HOST)"
 	@echo "    Gitea: http://127.0.0.1:3000  (creds $(IOW_DIR)/gitea/gitea.env)"
@@ -481,6 +495,31 @@ bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-dashbo
 		ec=$$?; \
 		if [ $$ec -eq 0 ] || [ $$ec -eq 130 ] || [ $$ec -eq 143 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
 		exit $$ec'
+
+argocd-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure-dashboard-port
+	@chmod +x scripts/argocd_bonus_up.sh scripts/argocd_bonus_down.sh 2>/dev/null || true
+	@echo "[*] Bootstrapping k3d + Argo CD (argocd-bonus)..."
+	@IOW_DIR="$(IOW_DIR)" bash scripts/argocd_bonus_up.sh
+	@echo "[*] Argo CD Bonus dashboard on :$(PORT) (GitOps redeploy mode)"
+	@echo "    Target NodePort: http://127.0.0.1:30051  (Docker target still on $(TARGET_URL))"
+	@echo "    Gitea: http://127.0.0.1:3000  |  tear down: make argocd-bonus-down"
+	@bash -c 'set +e; \
+		trap "exit 0" INT TERM; \
+		if [ -f "$(IOW_DIR)/gitops/env" ]; then set -a; . "$(IOW_DIR)/gitops/env"; set +a; fi; \
+		export GITEA_URL=http://127.0.0.1:3000 GITEA_PUBLIC_URL=http://127.0.0.1:3000 \
+			GITEA_CREDS_FILE="$(IOW_DIR)/gitea/gitea.env" \
+			IOW_PR_STORE="$(IOW_DIR)/gitea/pull_requests.json" \
+			IOW_MODE=bonus \
+			IOW_REDEPLOY_MODE=gitops \
+			TARGET_URL="$${TARGET_URL:-http://127.0.0.1:30051}"; \
+		$(PYTHON) -m uvicorn dashboard.app:app $(UVICORN_OPTS); \
+		ec=$$?; \
+		if [ $$ec -eq 0 ] || [ $$ec -eq 130 ] || [ $$ec -eq 143 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
+		exit $$ec'
+
+argocd-bonus-down:
+	@chmod +x scripts/argocd_bonus_down.sh 2>/dev/null || true
+	@IOW_DIR="$(IOW_DIR)" bash scripts/argocd_bonus_down.sh
 
 
 stop:
