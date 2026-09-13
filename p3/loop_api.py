@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 import uuid
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 
 try:
     from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -39,7 +39,8 @@ if FASTAPI_AVAILABLE:
 def create_loop_router(
     wisdom_loop: Optional[WisdomLoop] = None,
     safety_manager: Optional[SafetyManager] = None,
-    event_manager: Optional[EventManager] = None
+    event_manager: Optional[EventManager] = None,
+    heal_executor: Optional[Callable[[ObserverEvent, float], None]] = None,
 ) -> Any:
     """Factory function that creates and wires the FastAPI APIRouter for the Wisdom Loop."""
     if not FASTAPI_AVAILABLE:
@@ -103,15 +104,20 @@ def create_loop_router(
         return safety_manager.get_status()
 
     def _run_heal_in_background(event: ObserverEvent, sig: str, grace_period: float) -> None:
-        """Background worker executing the 3-attempt cycle and managing safety slot."""
-        if not wisdom_loop:
+        """Background worker executing heal (HITL-aware if heal_executor provided)."""
+        if not wisdom_loop and heal_executor is None:
             logger.error("Background heal skipped: Wisdom Loop not configured.")
             if safety_manager:
                 safety_manager.release_heal_slot(sig)
             return
         try:
             logger.info(f"Background heal cycle started for signature [{sig}]")
-            wisdom_loop.execute_heal(event, grace_period=grace_period)
+            if heal_executor is not None:
+                heal_executor(event, grace_period)
+            elif wisdom_loop is not None:
+                wisdom_loop.execute_heal(event, grace_period=grace_period)
+            else:
+                logger.error("Background heal skipped: no heal executor or Wisdom Loop.")
         except Exception as e:
             logger.error(f"Unexpected error in background heal cycle: {e}")
         finally:

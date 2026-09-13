@@ -231,8 +231,9 @@ Before any AI-generated patch is applied to the filesystem, it must satisfy four
 ### Primary Workflow: Docker Compose Orchestration
 
 ```sh
-# 1. Build and bring up the complete stack (Agent + Target container)
+# 1. Infra only (demo target + Gitea). Dashboard runs on the host via make bonus|p1|p2|p3|run
 make up
+# Optional: make up-agent   # containerized dashboard on :8000 instead of host make bonus
 
 # 2. Follow unified live container logs
 make logs
@@ -257,8 +258,10 @@ make down
 
 ```sh
 make gitea                 # local Gitea forge + bootstrap → http://localhost:3000
-make bonus                 # bonus dashboard; auto-starts Gitea if needed
-make up                    # full stack including Gitea (Compose)
+make bonus                 # host dashboard on :8000 (does not start/need iow_agent)
+make up                    # demo_app + gitea; :8000 stays free for make bonus
+make docker-restart        # same infra recreate; does not bring back iow_agent
+make up-agent              # only if you want the dashboard inside Docker instead
 ```
 
 Credentials: `/tmp/iow/gitea/gitea.env` (user `iow`, pass `iowiow123`).

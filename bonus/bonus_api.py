@@ -105,6 +105,19 @@ def create_bonus_router(
         logger.info(f"Bonus flag [{flag_name}] set to {flags[flag_name]}")
         return {"flags": flags}
 
+    @router.post("/flags/set")
+    async def set_bonus_flag(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Set one or more bonus flags explicitly from the UI."""
+        for key, value in payload.items():
+            if key not in flags:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid flag '{key}'. Available: {list(flags.keys())}",
+                )
+            flags[key] = bool(value)
+            logger.info(f"Bonus flag [{key}] set to {flags[key]}")
+        return {"flags": flags}
+
     # ==========================================================================
     # Classifier Endpoints
     # ==========================================================================
