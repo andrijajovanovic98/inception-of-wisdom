@@ -96,7 +96,7 @@
         <div class="card">
           <h3>PersistentClient Mód</h3>
           <ul>
-            <li>A <code>chromadb.PersistentClient(path=".chroma")</code> klienst használja.</li>
+            <li>A <code>chromadb.PersistentClient(path="/tmp/iow/chroma_db")</code> klienst használja a <code>CHROMA_CACHE_DIR</code> beállításon keresztül.</li>
             <li><strong>Inkrementális frissítés:</strong> Összeveti az új chunkok SHA-256 hash-ét a tárolt metaadatokkal. Csak a valóban módosult függvényeket ágyazza be újra!</li>
             <li>Subject szabály: Az indexnek túlélnie kell az újraindítást, és <strong>tilos nulláról újraépülnie</strong>.</li>
           </ul>
@@ -184,7 +184,7 @@ ZeroDivisionError: division by zero
           <li><strong>K: Miért AST-vel daraboltok és nem sima karakter-hasítással?</strong><br>
               V: Subject előírás. Az AST garantálja, hogy a kódkockák tiszteletben tartják a függvény- és osztályhatárokat, így nem kerül csonka, szintaktikailag hibás kód az LLM elé.</li>
           <li><strong>K: Törlődik a ChromaDB újraindításkor?</strong><br>
-              V: Nem! <code>PersistentClient</code> módban fut a <code>.chroma</code> mappában, és az SHA-256 ujjlenyomatok alapján csak a változott részeket frissíti.</li>
+              V: Nem! <code>PersistentClient</code> módban fut a <code>/tmp/iow/chroma_db</code> mappában, és az SHA-256 ujjlenyomatok alapján csak a változott részeket frissíti.</li>
           <li><strong>K: Hogyan véditek ki a kis 1.5B modell hallucinációit?</strong><br>
               V: A traceback szimbólumai lehorgonyozzák a kontextust, a kimeneti fájlokat pedig a rendszer ellenőrzi a valódi indexelt fájllista alapján.</li>
         </ul>

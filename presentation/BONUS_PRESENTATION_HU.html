@@ -52,7 +52,7 @@
       <span class="badge">Chapter VI</span>
       <span>Bónusz Rendszer Részletes Bemutató - Inception of Wisdom</span>
     </div>
-    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
+    <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
   </header>
 
   <div class="slides-container">
@@ -126,7 +126,7 @@
         </div>
         <div class="card">
           <h3>Egykattintásos Döntéshozatal a Weben</h3>
-          <pre>POST /api/bonus/prs/{pr_id}/approve  --> Merge az iow/auto-heal-re & Újraindítás
+          <pre>POST /api/bonus/prs/{pr_id}/merge    --> Merge az iow/auto-heal-re & Újraindítás
 POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre>
           <div class="highlight-box">
             A Dashboard 4. fülén azonnal látható a színes diff és a Jóváhagyás / Elutasítás gombok.
@@ -141,11 +141,12 @@ POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre
       <div class="card">
         <h3>FastAPI Bonus Router</h3>
         <ul>
-          <li><code>POST /api/bonus/classify</code>: Nyers logok azonnali osztályozása hibatípusra és fájlra.</li>
-          <li><code>POST /api/bonus/consensus</code>: Kettős promptos értékelés lefuttatása és konszenzus score visszaadása.</li>
+          <li><code>GET /api/bonus/classifier/stats</code>: A tanult tünetek és ellenőrzött javítások cache-statisztikái.</li>
+          <li><code>POST /api/bonus/consensus/evaluate</code>: Kettős promptos értékelés és konszenzusjelentés.</li>
           <li><code>GET /api/bonus/prs</code>: Függőben lévő Human-in-the-Loop jóváhagyások listázása.</li>
-          <li><code>POST /api/bonus/prs/{pr_id}/approve</code>: Kezelői jóváhagyás, atomikus merge és konténer újraindítás.</li>
-          <li><code>POST /api/bonus/prs/{pr_id}/reject</code>: Kezelői elutasítás és biztonságos állapotvisszaállítás.</li>
+          <li><code>POST /api/bonus/prs/create</code>: Review ág és helyi/Gitea pull request létrehozása.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/merge</code>: Kezelői jóváhagyás és merge; az <code>/approve</code> alias is elérhető.</li>
+          <li><code>POST /api/bonus/prs/{pr_id}/reject</code>: Kezelői elutasítás és a review ág eldobása.</li>
         </ul>
       </div>
     </div>
@@ -167,7 +168,33 @@ POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre
       </div>
     </div>
 
-    <!-- Slide 7: Peer-Evaluation Checklist -->
+    <!-- Slide 7: Gitea HITL és GitOps -->
+    <div class="slide">
+      <h2>Gitea HITL és Argo CD GitOps Üzemeltetés</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Auditálható Gitea Felülvizsgálat</h3>
+          <ul>
+            <li>Indítsd a <code>make up</code>, majd hoston a <code>make pr-bonus</code> parancsot.</li>
+            <li>A helyi pull requestek a Gitea <code>http://127.0.0.1:3000</code> felületén vizsgálhatók.</li>
+            <li>A dashboard/API merge vagy reject döntése auditálható kezelői lépés.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Campus-Biztos GitOps Redeploy</h3>
+          <ul>
+            <li>A <code>make argocd-bonus</code> privileged <code>iow-k3s</code>-t hoz létre, nem nested k3d-t.</li>
+            <li>Az Argo CD a helyi Giteából szinkronizálja a <code>k8s/demo-app</code> állapotot.</li>
+            <li>Argo UI: <code>:8080</code>; demo NodePort: <code>:30051</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="defense-tip">
+        <strong>Defense Tipp:</strong> Előbb mutasd meg a PR-t a Giteában, majd az Argo CD szinkronizált és egészséges állapotát.
+      </div>
+    </div>
+
+    <!-- Slide 8: Peer-Evaluation Checklist -->
     <div class="slide">
       <h2>Chapter VI Védési Ellenőrzőlista</h2>
       <div class="card">

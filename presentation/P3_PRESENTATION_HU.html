@@ -93,6 +93,7 @@
             <li>A modell teljes fájlt ír felül vagy hoz létre.</li>
             <li>Nincsenek pontatlan eltolási (offset) anomáliák.</li>
             <li>A system prompt szintaktikailag zárt, teljes kódot követel meg.</li>
+            <li>Ha a generált patch elbukik, a sebészi fallback célzottan hatástalaníthatja az ismert szándékos crash markert.</li>
           </ul>
         </div>
       </div>
@@ -127,11 +128,9 @@
           </ul>
         </div>
         <div class="card">
-          <h3>Automatikus Hard Rollback</h3>
+          <h3>Hatókörös Mixed Rollback</h3>
           <div class="highlight-box">
-            <strong>Garantált Állapotvédelem:</strong> Ha a verifikáció az utolsó (3.) kísérlet után sem sikeres, a rendszer kiadja:
-            <code>git reset --hard &lt;pre_loop_sha&gt;</code>
-            A repó maradéktalanul visszaáll a kiinduló, tiszta állapotra.
+            <strong>Védett Munkakönyvtár:</strong> Ha mindhárom verifikáció sikertelen, a GitManager mixed resetet és kizárólag a <code>demo_app/</code> célzott visszaállítását végzi. A másutt lévő nem commitolt ágens- és dashboard-munka megmarad.
           </div>
         </div>
       </div>
@@ -145,7 +144,8 @@
           <h3>Docker Engine Újraindítás</h3>
           <ul>
             <li>A host Docker démonnal kommunikál a <code>/var/run/docker.sock</code>-on keresztül.</li>
-            <li>Újraindítja a célkonténert: <code>POST /containers/{id}/restart</code>.</li>
+            <li>Alapértelmezetten a Docker Engine API-val indítja újra a célkonténert.</li>
+            <li><code>IOW_REDEPLOY_MODE=gitops</code> esetén Argo CD/kubectl rolloutra vár.</li>
             <li>Lekéri az új állapotot és kilépési kódot.</li>
           </ul>
         </div>
@@ -153,7 +153,8 @@
           <h3>Aktív Türelmi Időszak (Grace Period, 20s)</h3>
           <ul>
             <li>Nem fogadja el azonnal a helyreállást pusztán a konténer elindulása miatt.</li>
-            <li>HTTP health végpontokat (<code>/health</code>, <code>/crash</code>) tesztel a türelmi idő alatt.</li>
+            <li>A <code>/</code> és <code>/healthz</code> végpontokat teszteli a türelmi idő alatt.</li>
+            <li>Az <code>/api/crash</code> kizárólag a <code>make break</code> szándékos hibatriggere, nem health probe.</li>
             <li>Pásztázza a konténer logjait, hogy nem lép-e fel azonnali újabb crash loop.</li>
           </ul>
         </div>
@@ -171,7 +172,7 @@
                  ▼ (Visszacsatolás: Konténer kilépési kód: 1, Traceback log átadva)
 2. Kísérlet: Bővített prompt az előző hibával -> Új patch -> Sikeres!
                  │
-                 └─ Ha a 3. kísérlet is bukik: Automatikus Git Reset --hard</pre>
+                 └─ Ha a 3. kísérlet is bukik: hatókörös demo_app/ mixed rollback</pre>
         <ul>
           <li>Az 1. kísérlet hibaüzenete és tracebackje beépül a 2. kísérlet promptjába.</li>
           <li>Lehetővé teszi, hogy az 1.5B modell korrigálja a korábbi tévedéseit.</li>
@@ -187,9 +188,9 @@
           <h3>iow.config.yml Korlátok</h3>
           <ul>
             <li><strong>Single-Flight Lock:</strong> Egyszerre kizárólag egyetlen javítási hurok futhat.</li>
-            <li><strong>Cooldown:</strong> Kötelező csendes periódus a ciklusok között (pl. 60 mp).</li>
-            <li><strong>Rate Limit Per Hour:</strong> Óránkénti javítások maximális száma (pl. 10 javítás / óra).</li>
-            <li><strong>Hard Cap:</strong> Abszolút plafon; túllépése esetén kötelező az emberi felülvizsgálat.</li>
+            <li><strong>Cooldown:</strong> Azonos incidensszignatúránál 300 mp kötelező csendes periódus.</li>
+            <li><strong>Rate Limit Per Hour:</strong> Legfeljebb 5 javítás egy gördülő 60 perces ablakban.</li>
+            <li><strong>Hard Cap:</strong> Folyamatonként legfeljebb 20 javítás.</li>
           </ul>
         </div>
         <div class="card">
@@ -212,7 +213,7 @@
           <li><strong>K: Mi gátolja meg, hogy a modell letörölje a teljes projektet a 'javítás' kedvéért?</strong><br>
               V: A Sanity ellenőrzések: max 3 fájl, max 60% méretcsökkenés, és kötelező AST szintaktikai érvényesítés a lemezre írás előtt.</li>
           <li><strong>K: Hogyan demonstráljátok a rollback működését a védésen?</strong><br>
-              V: Szándékosan feloldhatatlan hibát idézünk elő; a logokon látható lesz a 3 kísérlet elbukása, majd a <code>git reset --hard</code> automatikus visszaállása a kiinduló revízióra.</li>
+              V: Szándékosan feloldhatatlan hibát idézünk elő; 3 sikertelen kísérlet után ellenőrizzük, hogy csak a <code>demo_app/</code> tért vissza a kiinduló állapotba, a független munka pedig megmaradt.</li>
         </ul>
       </div>
     </div>

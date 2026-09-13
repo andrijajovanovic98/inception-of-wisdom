@@ -96,7 +96,7 @@
         <div class="card">
           <h3>PersistentClient Mode</h3>
           <ul>
-            <li>Uses <code>chromadb.PersistentClient(path=".chroma")</code>.</li>
+            <li>Uses <code>chromadb.PersistentClient(path="/tmp/iow/chroma_db")</code> via <code>CHROMA_CACHE_DIR</code>.</li>
             <li><strong>Incremental updates:</strong> Compares chunk SHA-256 against stored metadata. Only newly modified functions are re-embedded.</li>
             <li>Subject rule: The index must survive restarts and <strong>never rebuild from scratch</strong> on boot.</li>
           </ul>
@@ -184,7 +184,7 @@ ZeroDivisionError: division by zero
           <li><strong>Q: Why AST chunking instead of LangChain RecursiveCharacterTextSplitter?</strong><br>
               A: Subject requirement. AST guarantees that code chunks respect function and class boundaries, preventing broken syntax from reaching the LLM.</li>
           <li><strong>Q: Does ChromaDB wipe the database when the container restarts?</strong><br>
-              A: No. It runs in <code>PersistentClient</code> mode in <code>.chroma</code> and updates incrementally based on chunk SHA-256 hashes.</li>
+              A: No. It runs in <code>PersistentClient</code> mode under <code>/tmp/iow/chroma_db</code> and updates incrementally based on chunk SHA-256 hashes.</li>
           <li><strong>Q: How do you prevent the 1.5B model from hallucinating?</strong><br>
               A: Traceback symbols anchor the context, and output file paths are cross-checked against actual known indexed files.</li>
         </ul>

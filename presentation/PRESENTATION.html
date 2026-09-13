@@ -192,7 +192,7 @@
  │ 4. VERIFY    │◄─────────────────────────────────┤ 3. ACT       │
  │  (Verifier)  │      Commit on iow/auto-heal     │ (Wisdom Loop)│
  └──────────────┘                                  └──────────────┘
-  (Failure after 3 attempts rewinds auto-heal branch byte-for-byte)
+  (Failure after 3 attempts restores only heal-scoped demo_app/ paths)
       </pre>
       <div class="grid-2">
         <div class="card">
@@ -216,7 +216,7 @@
             <li><strong>demo_app:</strong> Containerized target Flask service (port 5001:5000) with bind-mount <code>./demo_app:/app</code>.</li>
             <li><strong>agent:</strong> IoW orchestrator and web dashboard (port 8000:8000).</li>
             <li><strong>/var/run/docker.sock:</strong> Bound directly into the agent container for container lifecycle control.</li>
-            <li><strong>UID / GID Matching:</strong> Agent runs with host UID 101888 and GID 4224 so disk writes preserve exact repository ownership.</li>
+            <li><strong>Campus-Safe Writes:</strong> The agent image has no fixed <code>USER</code> or host-specific chown requirement; host execution remains the preferred campus workflow.</li>
           </ul>
         </div>
         <div class="card">
@@ -230,7 +230,7 @@
         </div>
       </div>
       <div class="defense-tip">
-        <strong>Defense Tip:</strong> Evaluators will check if any cloud APIs are used. Show them <code>docker-compose.yml</code> extra_hosts pointing to <code>host.docker.internal:11434</code>!
+        <strong>Defense Tip:</strong> Evaluators will check if any cloud APIs are used. Show them <code>docker-compose.yml</code> extra_hosts and the local Ollama bridge at <code>host.docker.internal:11436</code>.
       </div>
     </div>
 
@@ -282,7 +282,7 @@
             <li>Subject forbids fixed-size chunking (e.g. 500 characters).</li>
             <li>Uses Python <code>ast</code> module to split along logical function and class boundaries.</li>
             <li>Calculates SHA-256 hash per chunk for incremental indexing.</li>
-            <li>ChromaDB <code>PersistentClient</code> in <code>.chroma</code> skips unchanged chunks across restarts.</li>
+            <li>ChromaDB <code>PersistentClient</code> in <code>/tmp/iow/chroma_db</code> skips unchanged chunks across restarts.</li>
           </ul>
         </div>
         <div class="card">
@@ -320,11 +320,11 @@
         </div>
         <div class="card">
           <h3>GitManager & Branching</h3>
-          <p>Snapshots pre-loop revision hash. Applies files atomically via <code>os.replace</code>. Commits to dedicated <code>iow/auto-heal</code> branch.</p>
+          <p>Snapshots the pre-loop revision. Applies files atomically via <code>os.replace</code>, scopes writes to <code>demo_app/</code>, and commits to <code>iow/auto-heal</code>.</p>
         </div>
       </div>
       <div class="defense-tip">
-        <strong>The 3-Attempt Guarantee:</strong> If after 3 repair attempts the target fails grace period verification, GitManager immediately runs <code>git reset --hard &lt;pre_loop_hash&gt;</code>, restarts the container, and leaves the repository in a clean state.
+        <strong>The 3-Attempt Guarantee:</strong> If all 3 attempts fail, GitManager uses a mixed reset plus targeted restore for <code>demo_app/</code>. Agent and dashboard work elsewhere in the repository is preserved.
       </div>
     </div>
 
@@ -376,7 +376,7 @@ kill_switch: false
         </div>
       </div>
       <div class="highlight-box">
-        All bonus components are organized cleanly under the <code>bonus/</code> directory, keeping the mandatory parts pristine.
+        Gitea HITL runs with <code>make pr-bonus</code> on <code>:3000</code>. GitOps runs with <code>make argocd-bonus</code> using campus-safe <code>iow-k3s</code> (not nested k3d), Argo UI <code>:8080</code>, and demo NodePort <code>:30051</code>.
       </div>
     </div>
 
@@ -387,8 +387,11 @@ kill_switch: false
         <div class="card">
           <h3>Step 1: Launch & Show Health</h3>
           <pre>
-# Start complete stack
+# Start demo_app + Gitea infrastructure
 make up
+
+# Start the host dashboard and bonus services
+make bonus
 
 # Open Dashboard in browser:
 http://localhost:8000
@@ -422,23 +425,23 @@ make break
           <h3>Mandatory Requirements</h3>
           <p> * Observe $\to$ Think $\to$ Act $\to$ Verify loop<br>
              * Diff-free structured JSON patches<br>
-             * Max 3 attempts + automatic hard rollback<br>
+             * Max 3 attempts + scoped mixed rollback<br>
              * 5 dynamic safety guardrails<br>
              * Local models only (no cloud API)</p>
         </div>
         <div class="card">
           <h3>Container & 42 Quota</h3>
-          <p> * Single <code>docker compose up</code><br>
+          <p> * <code>make up</code> + host <code>make bonus</code><br>
              * Docker socket control<br>
-             * Host UID matching (101888/4224)<br>
+             * No fixed container UID/GID requirement<br>
              * All caches redirected to <code>/tmp/</code></p>
         </div>
         <div class="card">
           <h3>Bonus Suite (Chapter VI)</h3>
           <p> * Tiny Symptom Classifier & cache<br>
              * Second Opinion Consensus<br>
-             * Human-in-the-Loop PR manager<br>
-             * 4-tab interactive web dashboard</p>
+             * Gitea HITL PR manager on <code>:3000</code><br>
+             * Argo CD GitOps on <code>iow-k3s</code></p>
         </div>
       </div>
       <div class="highlight-box" style="margin-top: 24px; text-align: center;">

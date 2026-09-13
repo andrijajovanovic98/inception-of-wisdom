@@ -13,7 +13,7 @@
 [![Local LLM](https://img.shields.io/badge/Inference-Local_Sub--3B-black?style=for-the-badge)](https://ollama.ai)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Reactive_SSE-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Zero Cloud Egress](https://img.shields.io/badge/Security-100%25_Air--Gapped_/_Offline-success?style=for-the-badge)]()
-[![Git Hard Rollback](https://img.shields.io/badge/Reliability-Atomic_Git_Rollback-red?style=for-the-badge)]()
+[![Scoped Git Rollback](https://img.shields.io/badge/Reliability-Scoped_Git_Rollback-red?style=for-the-badge)]()
 
 <br>
 
@@ -38,7 +38,7 @@
 * **100% Air-Gapped & Local:** All machine learning inference (embeddings via `all-MiniLM-L6-v2` and code diagnosis via `Qwen 2.5 Coder 1.5B`) runs entirely on local host hardware. No proprietary cloud LLM APIs are called, guaranteeing total data sovereignty and zero telemetry egress.
 * **Deterministic AST Code Intelligence:** Application source code is parsed into Abstract Syntax Trees, preserving discrete function and class boundaries rather than using arbitrary character chunking.
 * **Non-Destructive Atomic Patching:** Corrective changes are structured as full-file replacements and validated through strict pre-disk sanity boundaries, preventing partial corruptions and syntax regressions.
-* **Automated Rollback Guarantee:** If verification fails after maximum retry turns (default: 3), the repository executes an immediate `git reset --hard` to the baseline revision, returning the application to a clean, known-good state.
+* **Scoped Rollback Guarantee:** If verification fails after maximum retry turns (default: 3), IoW rewinds only heal-scoped paths (`demo_app/`) to the pre-loop snapshot - never a repo-wide wipe of uncommitted agent/dashboard work.
 
 ---
 
@@ -68,18 +68,18 @@ sequenceDiagram
     Ana->>Ana: Local LLM Synthesis (Structured JSON Diagnosis)
     Ana->>Wis: Diagnosis Contract {summary, suspect_files}
     Note over Wis: Pre-Disk Sanity Gate (Max 3 files, 60% shrinkage guard, AST parse)
-    Wis->>Wis: Atomic File Write & Git Commit on iow/auto-heal
-    Wis->>Ver: Issue Container Restart Command via Docker Engine API
-    Note over Ver: 20s Active Grace Period Polling (HTTP probes & log stream)
+    Wis->>Wis: Atomic File Write under demo_app/ & Git Commit on iow/auto-heal
+    Wis->>Ver: Redeploy (Docker restart or Argo/kubectl when IOW_REDEPLOY_MODE=gitops)
+    Note over Ver: 20s Grace Period - HTTP probes /, /healthz + log stream
     alt Verification Succeeded (Crash-Free Uptime)
-        Ver-->>Target: Container State Confirmed Healthy
+        Ver-->>Target: Container/Pod State Confirmed Healthy
         Ver-->>Obs: Mark Incident As Resolved (VERIFIED HEALED)
     else Verification Failed (Attempt < 3)
         Ver->>Ana: Provide Crash Diagnostics as Iterative Turn Feedback
     else Verification Failed (Exhausted 3 Attempts)
-        Ver->>Wis: Trigger Emergency Atomic Rollback
-        Note over Wis: Execute git reset --hard <pre_loop_sha>
-        Wis-->>Obs: Mark Incident As Aborted (Baseline Codebase Restored)
+        Ver->>Wis: Trigger Scoped Emergency Rollback
+        Note over Wis: reset --mixed + restore demo_app/ only (agent WIP safe)
+        Wis-->>Obs: Mark Incident As Aborted (Target Baseline Restored)
     end
 ```
 
@@ -102,7 +102,7 @@ The centralized administrative interface provides a modern SRE console powered b
 | **1. Observer** | `p1/observer_api.py` | Live container lifecycle telemetry (`running`, `restarting`, `dead`), real-time FIFO log streaming, active synthetic HTTP probes, and deduplicated incident log. |
 | **2. Analyst** | `p2/analyst_api.py` | Semantic vector search across indexed codebase chunks, real-time cosine similarity ranking, and structured root-cause diagnostic reports. |
 | **3. Wisdom Loop** | `p3/loop_api.py` | Multi-turn remediation history, full-file JSON patch inspector, commit SHA tracking, dynamic safety metrics, manual remediation trigger, and force rollback. |
-| **4. Extensions** | `bonus/bonus_api.py` | Sub-millisecond symptom classifier test bench, dual-prompt consensus evaluation gauge, and Human-in-the-Loop review queue with live color-coded diffs. |
+| **4. Extensions** | `bonus/bonus_api.py` | Symptom classifier stats, Second Opinion consensus tester, Gitea HITL / verified PR queue, and GitOps redeploy hooks (`bonus/gitops.py`). |
 
 ---
 
@@ -125,10 +125,10 @@ The centralized administrative interface provides a modern SRE console powered b
 │   └── analyst_api.py          # Semantic code search & diagnostic query endpoints
 │
 ├── p3/                         # PHASE 3 & 4: REMEDIATION & VERIFICATION
-│   ├── patcher.py              # Structured full-file replacement ({path, op, content})
+│   ├── patcher.py              # Full-file LLM patches + surgical intentional-crash disarm
 │   ├── sanity.py               # Pre-disk safety filter: file count, shrinkage & AST validation
-│   ├── git_manager.py          # Atomic pre-loop snapshot, iow/auto-heal branch, hard rollback
-│   ├── verifier.py             # Docker restart manager & 20s active grace period verifier
+│   ├── git_manager.py          # Heal scoped to demo_app/; iow/auto-heal; mixed rollback
+│   ├── verifier.py             # Docker restart or GitOps (Argo/kubectl) + 20s grace
 │   ├── loop.py                 # Multi-turn coordinator (up to 3 attempts with failure feedback)
 │   ├── safety.py               # Production guardrails: single-flight, cooldown, rate-limit, kill-switch
 │   └── loop_api.py             # Remediation orchestration & emergency rollback API
@@ -137,7 +137,17 @@ The centralized administrative interface provides a modern SRE console powered b
 │   ├── classifier.py           # Sub-millisecond symptom classifier (0.01s Fast-Path bypass)
 │   ├── consensus.py            # "Second Opinion" dual-perspective consensus engine
 │   ├── pr_manager.py           # Human-in-the-Loop PR review manager with live unified diff
+│   ├── gitops.py               # Argo CD/kubectl rollout verification for GitOps mode
 │   └── bonus_api.py            # Fast-path triage, consensus scoring & PR approval endpoints
+│
+├── k8s/                        # ARGO CD DESIRED STATE
+│   └── demo-app/               # Namespace, Deployment and NodePort manifests
+│
+├── scripts/                    # CAMPUS-SAFE GITOPS BOOTSTRAP & OPERATIONS
+│   ├── argocd_bonus_up.sh      # Creates iow-k3s and installs/configures Argo CD
+│   ├── argocd_bonus_down.sh    # Removes the GitOps runtime
+│   ├── ensure_gitops_tools.sh  # Installs kubectl/argocd under /tmp/iow/bin
+│   └── gitops_doctor.sh        # Diagnoses and optionally purges broken GitOps state
 │
 ├── dashboard/                  # UNIFIED OPERATIONS DASHBOARD
 │   ├── app.py                  # Central FastAPI application uniting all subsystems
@@ -170,135 +180,148 @@ The centralized administrative interface provides a modern SRE console powered b
 
 ## Enterprise Reliability Extensions
 
-To meet rigorous production reliability and compliance standards, the platform includes three high-speed governance extensions:
+To meet rigorous production reliability and compliance standards, the platform includes four governance extensions:
 
 ```mermaid
 graph LR
     A[Incoming Failure Trace] --> B{Symptom Classifier}
-    B -->|Confidence > 0.85| C[Fast-Path Bypass: 0.01s Fix]
+    B -->|Confidence > 0.85| C[Fast-Path Bypass: cached patch]
     B -->|Ambiguous| D[Full Semantic RAG + LLM Pipeline]
     D --> E[Second Opinion Engine]
-    E -->|Consensus = 1.0| F[Autonomous Auto-Heal]
+    E -->|Consensus = agree| F[Autonomous Auto-Heal]
     E -->|Consensus Diverged| G[Human-in-the-Loop PR]
-    G --> H[Interactive Diff Review]
+    G --> H[Interactive Diff Review / Gitea]
     H -->|Approve| F
-    H -->|Reject| I[Clean Abort & Branch Reset]
+    H -->|Reject| I[Clean Abort]
+    F --> J{Redeploy Mode}
+    J -->|docker| K[Container Restart]
+    J -->|gitops| L[Argo Sync / kubectl Rollout]
 ```
 
 ### 1. Sub-Millisecond Symptom Classifier (`bonus/classifier.py`)
 * **Objective:** Eliminate LLM latency for deterministic, known failure modes.
-* **Mechanism:** Pre-compiled regular expressions extract exception signatures, module paths, and stacktrace coordinates in under 1 millisecond.
-* **Performance:** When confidence exceeds 0.85, the platform executes a verified patch in **0.01 seconds**, bypassing vector search and LLM compute overhead.
+* **Mechanism:** Extracts exception signatures / stack coordinates; stores verified heals under `/tmp/iow/classifier_store.json`.
+* **Governance:** When confidence exceeds **0.85** and a cached patch exists, the heal path can bypass vector search + LLM (`fast_path_classifier` flag).
+* **Test:** Bonus tab → classifier stats; heals after a verified fix train the store for the next identical crash.
 
 ### 2. "Second Opinion" Consensus Engine (`bonus/consensus.py`)
 * **Objective:** Mitigate single-prompt hallucination in sub-3B parameter models.
-* **Mechanism:** Evaluates the incident from two independent reasoning perspectives:
-  * *Perspective A (Root Cause Analysis):* Focuses on the immediate call-stack trace and execution context.
-  * *Perspective B (Defensive Architecture):* Focuses on defensive contracts, bounds checking, and input validation.
-* **Governance:** If both models agree on the target suspect file, autonomous remediation proceeds. If findings diverge, the incident is safely flagged for human evaluation.
+* **Mechanism:** Two independent prompts (root-cause vs defensive architecture) vote on suspect files.
+* **Governance:** Agreement → autonomous patch may proceed. Divergence → HITL / review path (`second_opinion_mandatory`, default on).
+* **Test:** Bonus tab → **Second Opinion Consensus Tester**, or `POST /api/bonus/consensus/evaluate`.
 
 ### 3. Human-in-the-Loop PR Manager (`bonus/pr_manager.py`)
-* **Objective:** Provide auditable change management in environments prohibiting fully autonomous writes to production branches.
-* **Mechanism:** Stages candidate patches on dedicated review branches (`iow/review/pr-<timestamp>`).
-* **Interface:** Generates syntax-highlighted unified diffs directly on the dashboard, allowing operations teams to review, approve, or reject changes with a single click.
+* **Objective:** Auditable change management via local **Gitea** (`make pr-bonus` / `make gitea`).
+* **Mechanism:** Review branches `iow/review/...` with dashboard diffs; verified heals can open `iow/auto-heal` → `main` PRs when HITL is off.
+* **Credentials:** `/tmp/iow/gitea/gitea.env` - UI http://127.0.0.1:3000 (`iow` / `iowiow123`).
+* **API:** `GET /api/bonus/prs`, `POST /api/bonus/prs/create`, `/prs/{id}/merge`, `/prs/{id}/reject`.
+
+### 4. GitOps Redeploy (`bonus/gitops.py` + `make argocd-bonus`)
+* **Objective:** After a heal commit, redeploy the target via **Argo CD** / kubectl instead of only Docker restart.
+* **Campus path:** Nested k3d fails under rootless Docker (missing `cpu` cgroup). Bootstrap runs **`iow-k3s`** - privileged k3s-in-Docker with `--cgroupns=host` - then installs Argo CD and syncs from Gitea over `iow-network`. Each run rebuilds `inception-of-wisdom-demo_app:latest` from root `demo_app/`, imports it into k3s, and publishes both `demo_app/` and `k8s/demo-app` to Gitea so the cluster app matches compose (`:5001`).
+* **URLs:** Argo UI http://127.0.0.1:8080 (`admin` / password printed by make); in-cluster demo NodePort http://127.0.0.1:30051; dashboard http://127.0.0.1:8000.
+* **Ops:** `make gitops-doctor` / `make gitops-doctor-purge` / `make argocd-bonus-down` / `make ensure-gitops-tools`.
 
 ---
 
 ## Production Guardrails & Configuration
 
-All system limits, timing parameters, and safety thresholds are configured dynamically in [`demo_app/iow.config.yml`](demo_app/iow.config.yml) - **no values are hard-coded in source files**:
+Operational limits are loaded dynamically from [`demo_app/iow.config.yml`](demo_app/iow.config.yml) (subject requirement - do not hard-code timings in application logic). Defaults:
 
 ```yaml
 # demo_app/iow.config.yml
 grace_period: 20          # Seconds the target must remain stable to confirm recovery
 cooldown: 300             # Minimum seconds before the same incident signature may retrigger
-rate_limit_per_hour: 10   # Maximum autonomous remediation flights allowed per rolling hour
-hard_cap: 25              # Absolute total lifecycle remediation operations before manual reset
+rate_limit_per_hour: 5    # Maximum autonomous remediation flights per rolling hour
+hard_cap: 20              # Absolute total lifecycle remediation operations before manual reset
 kill_switch: false        # Immediate global kill-switch: set to true to refuse all actions
+
+target:
+  probe_urls: ["/", "/healthz"]   # Synthetic HTTP probes (not /health or /crash)
 ```
 
 ### Pre-Disk Sanity Filters (`p3/sanity.py`)
 Before any AI-generated patch is applied to the filesystem, it must satisfy four immutable validation criteria:
-1. **File Count Bound:** Maximum 3 files modified per operation to prevent broad unintended modifications.
-2. **Shrinkage Guard:** The file size cannot decrease by more than 60% compared to baseline (protects against destructive truncation).
-3. **Anti-Placeholder Filter:** Rejects code containing stubs (`# TODO`, `# implement here`, `# rest of code`).
-4. **AST Syntax Parse:** Validates that modified Python code compiles cleanly without syntax errors before disk write.
+1. **File Count Bound:** Maximum 3 files modified per operation.
+2. **Shrinkage Guard:** File size cannot decrease by more than 60% vs baseline.
+3. **Anti-Placeholder Filter:** Rejects stubs (`# TODO`, `# implement here`, …).
+4. **AST Syntax Parse:** Modified Python must compile before disk write.
+
+Heal writes and rollback are **scoped to `demo_app/`** (`p3/git_manager.py`) so agent/dashboard WIP is never wiped. If the LLM patch fails sanity, a **surgical disarm** of the intentional crash marker may still recover the target (`p3/patcher.py`).
 
 ---
 
 ## Operational Guide
 
-### Primary Workflow: Docker Compose Orchestration
+### Ports (quick map)
+
+| Port | Service |
+|:---:|:---|
+| **8000** | Dashboard (host `make bonus` / `p1`–`p3` / `run`, or `make up-agent`) |
+| **5001** | Docker demo target (`iow_demo_target` → container :5000) |
+| **3000** | Local Gitea forge |
+| **30051** | In-cluster demo NodePort after `argocd-bonus` |
+| **8080** | Argo CD UI (port-forwarded by `argocd-bonus`) |
+| **6550** | k3s API (`iow-k3s`) |
+| **11436** | IoW Ollama (avoids campus :11434 / IoC :11435) |
+
+### Primary Workflow
 
 ```sh
-# 1. Infra only (demo target + Gitea). Dashboard runs on the host via make bonus|p1|p2|p3|run
-make up
-# Optional: make up-agent   # containerized dashboard on :8000 instead of host make bonus
+make setup                 # once (or after fclean) - venv, deps, embeddings, ollama
+make up                    # demo_app + gitea; leaves :8000 free for host dashboard
+make bonus                 # dashboard :8000 (classifier + consensus)
+# or: make pr-bonus        # + Gitea HITL / verified PRs
+# or: make argocd-bonus    # + iow-k3s + Argo CD GitOps
 
-# 2. Follow unified live container logs
-make logs
-
-# 3. Trigger a synthetic runtime crash on the target service
-make break
-
-# 4. Trigger manual remediation cycle via REST API (if needed)
-make heal
-
-# 5. Execute an emergency rollback to baseline revision
-make rollback
-
-# 6. Query live system health and operational metrics
+make break                 # POST /api/crash on demo → expect HTTP 500
+make heal                  # optional manual heal trigger
 make status
-
-# 7. Gracefully tear down all containers and networks
-make down
+make logs
+make down                  # stop compose stack
 ```
 
-### Bonus modes (split targets)
+### Bonus / GitOps targets
 
 ```sh
-make bonus                 # classifier + consensus (Bonus tab; no Gitea required)
-make pr-bonus              # + local Gitea forge + HITL / verified heal PRs
-make argocd-bonus          # + k3s-in-Docker + Argo CD (CLIs → /tmp/iow/bin, no sudo)
-make argocd-bonus-down     # delete iow-k3s (+ legacy nested k3d if any)
-make gitea                 # forge only → http://localhost:3000
-make up                    # demo_app + gitea; :8000 stays free for host dashboard
-make docker-restart        # recreate infra; does not bring back iow_agent
-make up-agent              # optional: dashboard inside Docker instead of host make *
+make bonus                 # classifier + consensus (Bonus tab)
+make pr-bonus              # + Gitea forge + HITL / verified heal PRs
+make argocd-bonus          # + k3s-in-Docker + Argo CD (CLIs → /tmp/iow/bin)
+make argocd-bonus-down     # delete iow-k3s (+ legacy k3d leftovers)
+make ensure-gitops-tools   # kubectl / argocd only
+make gitops-doctor         # inspect compose vs iow-k3s
+make gitops-doctor-purge   # wipe broken GitOps only (keep demo/gitea)
+make gitea                 # forge only → http://127.0.0.1:3000
+make up-agent              # optional: dashboard inside Docker on :8000
+make docker-restart        # recreate demo + gitea (not iow_agent)
+make docker-clean          # stop IoW containers (keep images)
+make docker-fclean         # remove IoW containers + images (compose/Gitea/k3s/alpine)
 ```
 
 Credentials: `/tmp/iow/gitea/gitea.env` (user `iow`, pass `iowiow123`).  
-GitOps env (after `argocd-bonus`): `/tmp/iow/gitops/env` - demo NodePort `http://127.0.0.1:30051`.
+GitOps env: `/tmp/iow/gitops/env` - demo `http://127.0.0.1:30051`.
 
-Campus note: nested **k3d** fails under rootless Docker (`failed to find cpu cgroup (v2)`).  
-`make argocd-bonus` runs **k3s in one privileged Docker container** (`iow-k3s`) with `--cgroupns=host` instead.
+Campus: nested **k3d** fails under rootless Docker (`failed to find cpu cgroup (v2)`).  
+`make argocd-bonus` uses privileged **`iow-k3s`** + `--cgroupns=host`, attaches to `iow-network` for Gitea, rebuilds/imports the same `demo_app` image as compose, syncs `demo_app/` + manifests to Gitea, and port-forwards Argo to :8080.
 
 ```sh
-# After make argocd-bonus finishes:
 source /tmp/iow/gitops/path.env
 kubectl get nodes
 kubectl -n iow-demo get pods,svc
-# Argo CD UI (port-forwarded by the script):
-#   http://127.0.0.1:8080   user=admin  (password printed at end of make)
-# Dashboard:
-#   http://127.0.0.1:8000
+# Argo CD: http://127.0.0.1:8080  (admin / password printed by make argocd-bonus)
 ```
 
-### Alternative Workflow: Local Host Development (`/tmp/iow`)
+### Runtime under `/tmp/iow`
 
 ```sh
-# Initialize virtual environment, dependencies, local embeddings, and model weights
-make setup
-
-# Launch the unified dashboard locally on http://127.0.0.1:8000
-make run
-
-# Clean transient ChromaDB data and model caches
-make clean
-
-# Full clean wipe of runtime directories
-make fclean
+make setup                 # venv + pip + embeddings + ollama on :11436
+make run                   # all tabs unlocked on :8000
+make clean                 # wipe chroma / caches under /tmp/iow (keep tools optional)
+make fclean                # docker-fclean + full wipe of /tmp/iow
+make re                    # fclean + setup
 ```
+
+`ensure-ready` auto-runs `make setup` if the venv/deps are missing (e.g. after `fclean`).
 
 ---
 
@@ -316,15 +339,21 @@ Small LLMs (< 3B parameters) struggle with character-accurate arithmetic require
 Through a layered defense-in-depth approach:
 1. Event deduplication sliding window (10 seconds for crashes).
 2. Per-signature cooldown periods (300 seconds).
-3. Rolling hourly rate-limits (10 heals/hour) and hard lifetime caps.
+3. Rolling hourly rate-limits (<strong>5</strong> heals/hour) and hard lifetime caps (<strong>20</strong>) from <code>iow.config.yml</code>.
 4. Turn-limited remediation flights (maximum 3 attempts).
-5. Automated hard rollback (<code>git reset --hard</code>) restoring the pre-incident revision if stability is not confirmed within the grace period.
+5. Scoped rollback restoring <code>demo_app/</code> to the pre-loop revision if stability is not confirmed within the grace period.
 </details>
 
 <details>
 <summary><b>How does incremental indexing work in ChromaDB?</b></summary>
 <br>
-ChromaDB operates in <code>PersistentClient</code> mode in <code>.chroma/</code>. The AST parser computes a deterministic SHA-256 hash for each extracted function and class chunk. Upon startup or file modification, only chunks with modified content hashes are re-embedded, eliminating unnecessary embedding re-computation.
+ChromaDB runs as a <code>PersistentClient</code> under <code>/tmp/iow/chroma_db</code> (see <code>CHROMA_CACHE_DIR</code>). The AST parser computes a SHA-256 hash per function/class chunk; only changed hashes are re-embedded on sync.
+</details>
+
+<details>
+<summary><b>Why not nested k3d on campus?</b></summary>
+<br>
+Rootless Docker only delegates <code>memory</code>/<code>pids</code> cgroup controllers to the user. Nested k3d/k3s fatals with <code>failed to find cpu cgroup (v2)</code>. IoW uses a single privileged <code>iow-k3s</code> container with <code>--cgroupns=host</code> and kubelet flags for user namespaces, then installs Argo CD inside that cluster.
 </details>
 
 ---
