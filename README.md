@@ -206,7 +206,7 @@ graph LR
 
 ## 🛡️ Production Guardrails & Configuration
 
-All system limits, timing parameters, and safety thresholds are configured dynamically in [`demo_app/iow.config.yml`](demo_app/iow.config.yml) — **no values are hard-coded in source files**:
+All system limits, timing parameters, and safety thresholds are configured dynamically in [`demo_app/iow.config.yml`](demo_app/iow.config.yml) - **no values are hard-coded in source files**:
 
 ```yaml
 # demo_app/iow.config.yml

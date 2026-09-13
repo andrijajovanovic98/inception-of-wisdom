@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 3: Wisdom Loop
+Inception-of-Wisdom (IoW) - Part 3: Wisdom Loop
 Wisdom Loop API: Healing Execution, History Log, Safety Status & Rollback Endpoints
 """
 
@@ -195,7 +195,7 @@ def create_loop_router(
     @router.post("/rollback")
     async def emergency_rollback(payload: Optional[RollbackRequest] = None) -> Dict[str, Any]:
         """Manually forces a git rollback to pre-loop revision and restarts target container.
-        Only operates on the iow/auto-heal branch when a pre-loop snapshot exists —
+        Only operates on the iow/auto-heal branch when a pre-loop snapshot exists -
         refuses to wipe local WIP on main.
         """
         if not wisdom_loop or not wisdom_loop.git_manager:
@@ -223,7 +223,7 @@ def create_loop_router(
                 if not gm.get_pre_loop_hash():
                     raise HTTPException(
                         status_code=400,
-                        detail="No pre-loop snapshot — nothing to roll back (start a heal first).",
+                        detail="No pre-loop snapshot - nothing to roll back (start a heal first).",
                     )
                 rollback_ok = gm.rollback_to_pre_loop()
                 restored_hash = gm.get_pre_loop_hash() if rollback_ok else None

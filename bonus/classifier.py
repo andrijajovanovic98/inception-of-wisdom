@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Chapter VI: Bonus Part
+Inception-of-Wisdom (IoW) - Chapter VI: Bonus Part
 Tiny Symptom Classifier & Known-Crash Patch Cache: Skips LLM on Known-Symptom Crashes
 """
 

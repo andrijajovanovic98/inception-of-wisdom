@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Chapter VI: Bonus Part
+Inception-of-Wisdom (IoW) - Chapter VI: Bonus Part
 Bonus API: Tiny Classifier, Second Opinion Consensus & Human-in-the-Loop PR Router
 """
 

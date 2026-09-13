@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 2: Analyst
+Inception-of-Wisdom (IoW) - Part 2: Analyst
 Diagnostician: Structured LLM Crash Diagnosis (Ollama JSON output)
 """
 

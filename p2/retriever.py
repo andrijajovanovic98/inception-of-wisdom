@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 2: Analyst
+Inception-of-Wisdom (IoW) - Part 2: Analyst
 Code Retriever: Top-k Semantic Retrieval & Traceback Symbol Extraction
 """
 

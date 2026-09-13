@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 2: Analyst
+Inception-of-Wisdom (IoW) - Part 2: Analyst
 AST Chunker: Logical Code Decomposition for Semantic Indexing
 """
 

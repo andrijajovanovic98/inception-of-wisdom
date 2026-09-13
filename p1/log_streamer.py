@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 1: Observer
+Inception-of-Wisdom (IoW) - Part 1: Observer
 Log Streamer: Real-Time Container Log Streaming & Error Pattern Detection
 """
 

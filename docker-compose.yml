@@ -1,4 +1,4 @@
-# Inception-of-Wisdom (IoW) — Multi-Container Docker Compose Stack
+# Inception-of-Wisdom (IoW) - Multi-Container Docker Compose Stack
 # Subject requirement: The entire environment must launch with a single 'docker compose up' command.
 
 services:

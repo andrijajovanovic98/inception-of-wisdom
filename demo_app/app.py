@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Demo Target Service
+Inception-of-Wisdom (IoW) - Demo Target Service
 This is the containerized target application that the IoW agent observes,
 diagnoses, and automatically repairs when failures occur.
 """

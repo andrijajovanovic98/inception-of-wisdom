@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Dashboard & Central Application
+Inception-of-Wisdom (IoW) - Dashboard & Central Application
 Integrates Part 1 (Observer), Part 2 (Analyst), and Part 3 (Wisdom Loop) into a unified FastAPI service.
 """
 

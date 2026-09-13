@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 1: Observer
+Inception-of-Wisdom (IoW) - Part 1: Observer
 Docker Monitor: Container State Inspection & Lifecycle Management
 """
 
@@ -63,7 +63,7 @@ class DockerMonitor:
                 self._client = None
 
         try:
-            # Prefer env (DOCKER_HOST) then unix socket — campus users often lack
+            # Prefer env (DOCKER_HOST) then unix socket - campus users often lack
             # docker-group access to /var/run/docker.sock from the Python client.
             try:
                 self._client = docker.from_env()

@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 1: Observer
+Inception-of-Wisdom (IoW) - Part 1: Observer
 Observer API & SSE Streaming: GET /status, GET /logs, GET /events (SSE)
 """
 

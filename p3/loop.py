@@ -1,5 +1,5 @@
 """
-Inception-of-Wisdom (IoW) — Part 3: Wisdom Loop
+Inception-of-Wisdom (IoW) - Part 3: Wisdom Loop
 Wisdom Loop Controller: 3-Attempt Healing Orchestrator & Automatic Rollback
 """
 
@@ -165,7 +165,7 @@ class WisdomLoop:
                 )
                 cycle_record.attempts.append(attempt_record)
 
-                # Beat 2: Think — Retrieve code & ask LLM for structured diagnosis
+                # Beat 2: Think - Retrieve code & ask LLM for structured diagnosis
                 diagnosis: DiagnosticReport = self.diagnostician.diagnose_crash(
                     log_excerpt=current_error_log,
                     exit_code=current_exit_code,
@@ -178,7 +178,7 @@ class WisdomLoop:
                     attempt_record.error_message = f"Diagnosis failed: {diagnosis.error_message}"
                     continue
 
-                # Beat 3: Act — Generate structured JSON patch
+                # Beat 3: Act - Generate structured JSON patch
                 patch: StructuredPatch = self.patcher.generate_patch(
                     diagnosis=diagnosis,
                     log_excerpt=current_error_log
@@ -210,7 +210,7 @@ class WisdomLoop:
                     attempt_record.error_message = f"Git commit failed: {commit_res.error_message}"
                     continue
 
-                # Beat 4: Verify — Restart target container and observe grace period
+                # Beat 4: Verify - Restart target container and observe grace period
                 verify_res: VerificationResult = self.verifier.restart_and_verify(
                     grace_period=grace_period
                 )
