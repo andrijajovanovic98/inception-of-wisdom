@@ -6,10 +6,11 @@ Diagnostician: Structured LLM Crash Diagnosis (Ollama JSON output)
 from __future__ import annotations
 
 import os
+import re
 import json
 import time
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Sequence
 from dataclasses import dataclass, field, asdict
 
 try:
@@ -32,6 +33,54 @@ def _normalize_ollama_host(host: str) -> str:
 
 
 DEFAULT_MODEL = "qwen2.5-coder:1.5b"
+
+RETRY_NOTE = (
+    "\nYOUR PREVIOUS ANSWER WAS UNUSABLE (invalid JSON, or no file from the allowed list).\n"
+    'Answer again with BOTH keys: "files" first, then a plain-words "summary" without any\n'
+    "double quotes or code inside it.\n"
+)
+
+
+_FILES_RE = re.compile(r'"files"\s*:\s*(\[[^\]]*\])', re.DOTALL)
+_SUMMARY_RE = re.compile(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)', re.DOTALL)
+
+
+def _salvage_cut_json(raw: str) -> Optional[Dict[str, Any]]:
+    """Recover {"files", "summary"} from an answer cut off mid-JSON.
+
+    Only a *complete* files array counts, and every path in it is still checked
+    against the index afterwards - nothing is guessed, a truncated tail is dropped.
+    """
+    files_match = _FILES_RE.search(raw or "")
+    summary_match = _SUMMARY_RE.search(raw or "")
+    if not files_match or not summary_match:
+        return None
+    try:
+        files = json.loads(files_match.group(1))
+    except json.JSONDecodeError:
+        return None
+    summary = summary_match.group(1).replace('\\"', '"').strip()
+    if not isinstance(files, list) or not summary:
+        return None
+    return {"files": files, "summary": summary}
+
+
+def _describe_chunk(chunk: Dict[str, Any]) -> str:
+    """How a chunk is named to the model.
+
+    Synthetic chunk names (module_preamble, module_block_L40) are index bookkeeping,
+    not identifiers - shown raw, a small model "fixed" a crash by calling
+    module_preamble() as if it were a function.
+    """
+    name = str(chunk.get("symbol_name") or "")
+    kind = str(chunk.get("symbol_type") or "")
+    if kind == "module":
+        if name == "__main__":
+            return 'the if __name__ == "__main__": block (startup code)'
+        return "module-level code (imports, globals and startup statements)"
+    if kind == "file":
+        return "the whole file"
+    return f"{kind} {name}"
 
 
 @dataclass
@@ -66,7 +115,7 @@ class CrashDiagnostician:
         retriever: CodeRetriever,
         ollama_host: Optional[str] = None,
         model_name: str = DEFAULT_MODEL,
-        request_timeout: float = 45.0
+        request_timeout: float = 120.0
     ):
         self.retriever = retriever
         self.ollama_host = _normalize_ollama_host(ollama_host or DEFAULT_OLLAMA_HOST)
@@ -78,9 +127,15 @@ class CrashDiagnostician:
         log_excerpt: str,
         exit_code: Optional[int] = None,
         status: str = "crashed",
-        top_k: int = 3
+        top_k: Optional[int] = None,
+        exclude_files: Optional[Sequence[str]] = None,
     ) -> DiagnosticReport:
-        """Runs the complete diagnostic pipeline:
+        """Runs the complete diagnostic pipeline.
+
+        exclude_files: indexed files the caller can never act on (the Wisdom Loop
+        passes the operator-owned iow.config.yml) - offering them to the model would
+        only waste an attempt on a file that may not be patched.
+
         1. Retrieves relevant code chunks and extracts traceback symbols.
         2. Prompts local LLM using JSON format constraint.
         3. Validates and sanitizes model output against real indexed files.
@@ -95,6 +150,9 @@ class CrashDiagnostician:
         # Subject: "The diagnosis must cite real files from the index. It must not
         # invent paths." Only indexed paths are offered to the model - never the bare
         # basenames scraped out of a traceback, which are not real index entries.
+        if exclude_files:
+            excluded = set(exclude_files)
+            candidate_chunks = [c for c in candidate_chunks if c.get("file_path") not in excluded]
         valid_known_files = {
             c.get("file_path", "") for c in candidate_chunks if c.get("file_path")
         }
@@ -143,6 +201,21 @@ class CrashDiagnostician:
             timestamp=now
         )
 
+        # One more ask when the answer was unusable. The classic small-model slip: a
+        # bare quote inside the summary ("os.environ["...) ends the string, and the JSON
+        # grammar closes the object before "files" is ever written.
+        if not report.success and report.mode == "unusable" and report.raw_response is not None:
+            retry_raw, retry_error = self._call_ollama(prompt + RETRY_NOTE)
+            if not retry_error:
+                retried = self._parse_and_validate_response(
+                    raw_output=retry_raw,
+                    valid_files=valid_known_files,
+                    candidate_chunks=candidate_chunks,
+                    timestamp=now,
+                )
+                if retried.success:
+                    return retried
+
         return report
 
     def _build_diagnosis_prompt(
@@ -159,7 +232,7 @@ class CrashDiagnostician:
             chunks_context += (
                 f"\n--- Code Snippet #{i} ---\n"
                 f"File: {chunk.get('file_path')}\n"
-                f"Symbol: {chunk.get('symbol_name')} ({chunk.get('symbol_type')})\n"
+                f"Part: {_describe_chunk(chunk)}\n"
                 f"Lines: {chunk.get('start_line')}-{chunk.get('end_line')}\n"
                 f"Code:\n{chunk.get('content')}\n"
             )
@@ -184,12 +257,13 @@ Identify which file is responsible and explain in ONE concise paragraph what loo
 CRITICAL CONSTRAINTS:
 1. Output MUST be valid JSON and NOTHING ELSE.
 2. In the "files" array, cite ONLY real files from the ALLOWED SUSPECT FILES list above. Do NOT invent paths.
-3. The "summary" must clearly explain the root cause.
+3. The "summary" must clearly explain the root cause in plain words. Do not put code or
+   double quotes inside it.
 
-RESPONSE FORMAT (JSON):
+RESPONSE FORMAT (JSON, "files" first):
 {{
-  "summary": "Concise root cause explanation paragraph.",
-  "files": ["exact/path/to/file.py"]
+  "files": ["exact/path/to/file.py"],
+  "summary": "Concise root cause explanation paragraph."
 }}
 """
         return prompt
@@ -207,7 +281,9 @@ RESPONSE FORMAT (JSON):
             "stream": False,
             "options": {
                 "temperature": 0.1,  # Low temperature for deterministic output
-                "num_predict": 300
+                # A one-paragraph summary plus the file list; 300 cut answers off
+                # mid-JSON on a chatty small model.
+                "num_predict": 768
             }
         }
 
@@ -236,28 +312,54 @@ RESPONSE FORMAT (JSON):
                 files=[],
                 candidate_chunks=candidate_chunks,
                 error_message="Ollama returned an empty response",
+                mode="unusable",
                 timestamp=timestamp
             )
 
         try:
             parsed = json.loads(raw_output)
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM JSON diagnosis: {e}. Raw: {raw_output[:200]}")
+            salvaged = _salvage_cut_json(raw_output)
+            if salvaged is not None:
+                logger.warning(
+                    f"Diagnosis JSON was cut off ({e}); using its complete 'files' list and "
+                    "the summary written so far."
+                )
+                parsed = salvaged
+            else:
+                logger.error(f"Failed to parse LLM JSON diagnosis: {e}. Raw: {raw_output[:200]}")
+                return DiagnosticReport(
+                    success=False,
+                    summary="",
+                    files=[],
+                    candidate_chunks=candidate_chunks,
+                    raw_response=raw_output,
+                    error_message=f"Invalid JSON produced by model: {e}",
+                    mode="unusable",
+                    timestamp=timestamp
+                )
+
+        if not isinstance(parsed, dict):
             return DiagnosticReport(
                 success=False,
                 summary="",
                 files=[],
                 candidate_chunks=candidate_chunks,
                 raw_response=raw_output,
-                error_message=f"Invalid JSON produced by model: {e}",
+                error_message="Diagnosis failed: the model did not return a JSON object.",
+                mode="unusable",
                 timestamp=timestamp
             )
 
-        summary = parsed.get("summary", "").strip()
+        # A small model answers null, numbers or nested objects often enough that
+        # none of it may reach .strip() unchecked.
+        raw_summary = parsed.get("summary")
+        summary = raw_summary.strip() if isinstance(raw_summary, str) else ""
         files = parsed.get("files", [])
 
         if not isinstance(files, list):
             files = [files] if files else []
+        files = [f for f in files if isinstance(f, str)]
 
         # Sanitize suspect files: each answer must resolve to exactly one indexed path
         # (Subject: must cite real files, must not invent paths).
@@ -349,9 +451,9 @@ RESPONSE FORMAT (JSON):
             files=[],
             candidate_chunks=candidate_chunks,
             error_message=(
-                f"Diagnosis unavailable: the local LLM could not be reached ({reason}). "
-                "Start it with `make setup` (Ollama on :11436) and retry - "
-                "the pipeline does not guess a culprit."
+                f"Diagnosis unavailable: the local LLM at {self.ollama_host} could not be "
+                f"reached ({reason}). Start it (`make setup` for the host runtime, or the "
+                "iow_ollama container) and retry - the pipeline does not guess a culprit."
             ),
             mode="unavailable",
             traceback_hint=extracted_symbols,

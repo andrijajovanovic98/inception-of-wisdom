@@ -1,10 +1,11 @@
 # Inception-of-Wisdom (IoW) - Multi-Mode Automation & Campus Runtime under /tmp/iow
 # Usage:
-#   make up / down / docker-restart / docker-clean / docker-fclean
-#   make flake / mypy / lint
+#   make up / down                    # whole system in Docker (agent + LLM + target + gitea)
+#   make up-infra / docker-restart / docker-clean / docker-fclean
+#   make flake / mypy / lint / test / gates
 #   make setup
-#   make p1 / p2 / p3 / bonus / run   # progressive tabs + auto-start target
-#   make break / heal / rollback / status / logs
+#   make p1 / p2 / p3 / bonus / run   # progressive tabs + auto-start target (host agent)
+#   make break / break-hard / break-import / suggest / heal / rollback / status / logs
 #   make clean / fclean / re
 # NOTE: Do not revert lint (.flake8, mypy.ini) or these Makefile rules.
 
@@ -22,6 +23,10 @@ IOW_LEGACY   := /tmp/iow_cache /tmp/iow-lint /tmp/iow-lint-pip-cache /tmp/iow_do
 # Avoid campus 11434 and IoC 11435
 OLLAMA_BIND  := 0.0.0.0:11436
 OLLAMA_HOST  := 127.0.0.1:11436
+OLLAMA_PID   := $(IOW_DIR)/ollama.pid
+# The pid file is only ours while that pid is still an ollama: after a reboot or a
+# crash the number can belong to any other process of the user.
+OLLAMA_PID_LIVE = [ -f $(OLLAMA_PID) ] && [ "$$(cat /proc/$$(cat $(OLLAMA_PID))/comm 2>/dev/null)" = ollama ]
 PYTHON       := /usr/bin/python3
 PY_VER       := $(shell $(PYTHON) -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE_PACKAGES:= $(VENV)/lib/python$(PY_VER)/site-packages
@@ -33,6 +38,8 @@ TARGET       := demo_app
 TARGET_URL   ?= http://127.0.0.1:5001
 DOCKER_TARGET := iow_demo_target
 LINT_DIRS    := p1 p2 p3 bonus demo_app dashboard
+# Each part carries its own regression suite: p1/tests, p2/tests, p3/tests, bonus/tests.
+TEST_PARTS   := p1 p2 p3 bonus
 DOCKER_IMAGE_AGENT := inception-of-wisdom-agent
 DOCKER_IMAGE_DEMO  := inception-of-wisdom-demo_app
 DOCKER_NETWORK     := iow-network
@@ -58,13 +65,17 @@ DOCKER_SOCK  ?= $(shell if [ -S "$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}/docker
 export DOCKER_SOCK
 IOW_LLM_MODEL ?= $(LLM_MODEL)
 export IOW_LLM_MODEL
+# Host port of the containerized dashboard (docker-compose.yml: ${IOW_PORT:-8000}).
+export IOW_PORT = $(PORT)
+DASHBOARD_URL = http://127.0.0.1:$(PORT)
 
-.PHONY: all up up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
+.PHONY: all up up-infra up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
 	pr-bonus argocd-bonus argocd-bonus-down ensure-gitops-tools gitops-doctor gitops-doctor-purge gitea \
-	break break-hard break-import suggest heal rollback status logs setup clean fclean re help stop \
+	break break-hard break-import break-env break-syntax demo-reset suggest heal rollback status logs \
+	setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
 	ensure-embed ensure-lint-tools ensure-target ensure-gitea ensure-dashboard-port \
-	flake mypy lint
+	flake mypy lint test test-p1 test-p2 test-p3 test-bonus gates
 
 # Infra for host make bonus/p1/p2/p3/run. Containerized dashboard is opt-in (up-agent).
 DOCKER_INFRA := demo_app gitea
@@ -75,8 +86,10 @@ help:
 	@echo "================================================================================"
 	@echo "                    INCEPTION OF WISDOM (IoW) - COMMANDS                        "
 	@echo "================================================================================"
-	@echo " make up               - Docker infra: demo_app + gitea (host dashboard via make bonus)"
-	@echo " make up-agent         - also start iow_agent dashboard in Docker on :8000"
+	@echo " make up               - whole system in Docker: agent + ollama + demo_app + gitea"
+	@echo "                         (dashboard :$(PORT); IOW_MODE=p1|p2|p3|bonus|full, default full)"
+	@echo " make up-infra         - Docker infra only: demo_app + gitea (host dashboard via make p1..)"
+	@echo " make up-agent         - alias of make up"
 	@echo " make gitea            - ensure Gitea forge ready (wait + bootstrap, fail on error)"
 	@echo " make bonus            - host dashboard :8000 - classifier/consensus (no Gitea)"
 	@echo " make pr-bonus         - host dashboard + Gitea PRs (HITL / verified heal PR)"
@@ -89,7 +102,7 @@ help:
 	@echo " make p1 | p2 | p3 | bonus | run  - progressive dashboard on :$(PORT)"
 	@echo " make bonus            - classifier + consensus (Bonus tab; no Gitea required)"
 	@echo " make pr-bonus         - bonus + Gitea forge + HITL / verified PRs"
-	@echo " make argocd-bonus     - bonus + k3s/Argo CD GitOps (iow-k3s; UI :8080)"
+	@echo " make argocd-bonus     - bonus + k3s/Argo CD GitOps (iow-k3s; UI :8080, IOW_ARGOCD_PORT=...)"
 	@echo " make argocd-bonus-down - delete iow-k3s / legacy k3d"
 	@echo " make ensure-gitops-tools - download kubectl/argocd → $(IOW_DIR)/bin (no sudo)"
 	@echo " make gitops-doctor       - list compose vs k3s containers + dump failing logs"
@@ -97,34 +110,60 @@ help:
 	@echo " make break            - soft crash: HTTP 500 + traceback (process survives)"
 	@echo " make break-hard       - hard crash: target exits 1 (exit-code path)"
 	@echo " make break-import     - startup crash: missing import -> restart loop"
+	@echo " make break-env        - startup crash: reads an unset environment variable"
+	@echo " make break-syntax     - startup crash: syntax error (unclosed parenthesis)"
+	@echo " make demo-reset       - restore demo_app/app.py from HEAD + restart the target"
 	@echo " make suggest          - 4xx probe: surfaced for a human, never auto-healed"
 	@echo " make flake | mypy | lint - lint check (flake8 + mypy) on $(LINT_DIRS)"
+	@echo " make test             - regression suites p1/ p2/ p3/ bonus/tests (stdlib unittest)"
+	@echo " make test-p1 | test-p2 | test-p3 | test-bonus - one part's suite (verbose)"
+	@echo " make gates            - every quality gate: lint + test"
 	@echo " make stop             - stop IoW ollama (pid file + orphans on $(OLLAMA_BIND))"
 	@echo " make clean            - docker-clean + caches (keep venv)"
 	@echo " make fclean           - docker-fclean + full wipe of $(IOW_DIR)"
 	@echo " make re               - fclean + setup"
 	@echo "================================================================================"
 
-up: ensure-dirs
+# Subject entry point: `make up` backed by `docker compose up` brings up the agent (in
+# its container), the local LLM runtime and the demo target - plus the Gitea forge the
+# PR bonus uses. The first run builds the agent image and pulls the model.
+up: ensure-dirs ensure-dashboard-port
+	@echo "[*] Launching the whole IoW system in Docker (agent + ollama + demo_app + gitea), IOW_MODE=$${IOW_MODE:-full}..."
+	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR) $(IOW_DIR)/gitea 2>/dev/null || true
+	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
+	@docker compose up --build -d 2>/dev/null || docker-compose up --build -d
+	@$(MAKE) --no-print-directory ensure-gitea
+	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
+	@echo "[*] Waiting for the agent dashboard on :$(PORT) (first start loads the embedding model)..."
+	@i=0; until curl -sf $(DASHBOARD_URL)/api/overview >/dev/null 2>&1; do \
+		i=$$((i + 1)); \
+		if [ $$i -ge 180 ]; then \
+			echo "[!] iow_agent did not answer on :$(PORT) - last log lines:"; \
+			docker logs --tail 40 iow_agent 2>&1 || true; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
+	@echo "[+] Dashboard: $(DASHBOARD_URL)   Target: http://localhost:5001   Gitea: http://localhost:3000"
+	@echo "    LLM: iow_ollama pulls $(IOW_LLM_MODEL) on first start (docker logs -f iow_ollama)"
+	@echo "    Try: make break | break-hard | break-import | suggest   ·   make status   ·   make down"
+
+up-agent: up
+
+# Infra only (the previous `make up`): demo_app + gitea, :$(PORT) left free for a host
+# dashboard started with make p1 | p2 | p3 | bonus | run.
+up-infra: ensure-dirs
 	@echo "[*] Launching IoW Docker infra ($(DOCKER_INFRA))..."
 	@mkdir -p $(IOW_DIR)/gitea && chmod 777 $(IOW_DIR) $(IOW_DIR)/gitea 2>/dev/null || true
 	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
-	@# Keep :8000 free for host make bonus/p1/p2/p3/run (same app as iow_agent)
 	@docker compose stop agent >/dev/null 2>&1 || docker-compose stop agent >/dev/null 2>&1 || true
 	@docker stop iow_agent >/dev/null 2>&1 || true
 	@docker compose up --build -d $(DOCKER_INFRA) 2>/dev/null \
 		|| docker-compose up --build -d $(DOCKER_INFRA)
-	@$(MAKE) ensure-gitea
+	@$(MAKE) --no-print-directory ensure-gitea
 	@docker rm -f iow_gitea_init >/dev/null 2>&1 || true
 	@echo "[+] Target: http://localhost:5001  Gitea: http://localhost:3000"
 	@echo "    Dashboard: make bonus | p1 | p2 | p3 | run  → http://127.0.0.1:$(PORT)"
-	@echo "    (optional Docker dashboard: make up-agent)"
-
-up-agent: up
-	@echo "[*] Starting containerized dashboard (iow_agent on :$(PORT))..."
-	@echo "[!] Stop host make bonus/p1/p2/p3/run first if it is using :$(PORT)"
-	@docker compose up --build -d agent 2>/dev/null || docker-compose up --build -d agent
-	@echo "[+] iow_agent → http://127.0.0.1:$(PORT)"
 
 down:
 	@docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
@@ -214,7 +253,7 @@ docker-clean:
 		docker compose down --remove-orphans >/dev/null 2>&1 \
 			|| docker-compose down --remove-orphans >/dev/null 2>&1 \
 			|| true; \
-		for c in iow_agent iow_demo_target iow_gitea iow_gitea_init; do \
+		for c in iow_agent iow_ollama iow_demo_target iow_gitea iow_gitea_init; do \
 			if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$$c"; then \
 				docker rm -f "$$c" >/dev/null 2>&1 || true; \
 				echo "[*] Removed container $$c"; \
@@ -251,7 +290,7 @@ docker-fclean:
 			docker rm -f iow-k3s >/dev/null 2>&1 || true; \
 			echo "[*] Removed container iow-k3s"; \
 		fi; \
-		for c in iow_agent iow_demo_target iow_gitea iow_gitea_init; do \
+		for c in iow_agent iow_ollama iow_demo_target iow_gitea iow_gitea_init; do \
 			if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$$c"; then \
 				docker rm -f "$$c" >/dev/null 2>&1 || true; \
 				echo "[*] Removed container $$c"; \
@@ -261,7 +300,7 @@ docker-fclean:
 			docker rm -f "$$c" >/dev/null 2>&1 || true; \
 			echo "[*] Removed leftover container $$c"; \
 		done; \
-		for vol in iow-gitea-data k3d-iow-images; do \
+		for vol in iow-gitea-data iow-ollama-models k3d-iow-images; do \
 			if docker volume inspect "$$vol" >/dev/null 2>&1; then \
 				docker volume rm -f "$$vol" >/dev/null 2>&1 || true; \
 				echo "[*] Removed volume $$vol"; \
@@ -278,10 +317,12 @@ docker-fclean:
 				echo "[*] Removed remaining $$img image tags"; \
 			fi; \
 		done; \
-		if docker image inspect gitea/gitea:1.22.6 >/dev/null 2>&1; then \
-			docker rmi -f gitea/gitea:1.22.6 >/dev/null 2>&1 || true; \
-			echo "[*] Removed image gitea/gitea:1.22.6"; \
-		fi; \
+		for img in gitea/gitea:1.22.6 ollama/ollama:0.5.7; do \
+			if docker image inspect "$$img" >/dev/null 2>&1; then \
+				docker rmi -f "$$img" >/dev/null 2>&1 || true; \
+				echo "[*] Removed image $$img"; \
+			fi; \
+		done; \
 		ids=$$(docker images -q gitea/gitea 2>/dev/null || true); \
 		if [ -n "$$ids" ]; then \
 			docker rmi -f $$ids >/dev/null 2>&1 || true; \
@@ -303,7 +344,7 @@ docker-fclean:
 			echo "[*] Removed network k3d-iow"; \
 		fi; \
 		left=$$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
-			| grep -iE 'inception-of-wisdom|gitea/gitea|ghcr.io/k3d-io|rancher/k3s|^alpine:' || true); \
+			| grep -iE 'inception-of-wisdom|gitea/gitea|ollama/ollama|ghcr.io/k3d-io|rancher/k3s|^alpine:' || true); \
 		if [ -n "$$left" ]; then \
 			echo "[*] Remaining IoW-related images:"; \
 			echo "$$left" | sed 's/^/    /'; \
@@ -357,21 +398,57 @@ break-import:
 		2>/dev/null || true
 	@echo "    Undo by hand: git checkout HEAD -- demo_app/app.py && docker restart $(DOCKER_TARGET)"
 
+# Startup crash #2 (subject: "a bad environment variable"): the target reads a variable
+# that is not set, so int(os.environ[...]) raises KeyError before the server starts.
+break-env:
+	@if ! grep -q 'port = int(os.environ.get("PORT", 5000))' demo_app/app.py; then \
+		echo "[*] demo_app/app.py already patched or modified - nothing to break"; exit 0; \
+	fi
+	@sed -i 's/port = int(os.environ.get("PORT", 5000))/port = int(os.environ["IOW_DEMO_PORT"])  # planted by make break-env/' demo_app/app.py
+	@echo "[!] demo_app/app.py now reads the unset IOW_DEMO_PORT - restarting target..."
+	@docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true
+	@sleep 4
+	@docker inspect $(DOCKER_TARGET) \
+		--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
+		2>/dev/null || true
+	@echo "    Undo: make demo-reset"
+
+# Startup crash #3 (subject: "a syntax error"): an unclosed parenthesis.
+break-syntax:
+	@if ! grep -q '^app = Flask(__name__)$$' demo_app/app.py; then \
+		echo "[*] demo_app/app.py already patched or modified - nothing to break"; exit 0; \
+	fi
+	@sed -i 's/^app = Flask(__name__)$$/app = Flask(__name__  # planted by make break-syntax/' demo_app/app.py
+	@echo "[!] demo_app/app.py no longer parses - restarting target..."
+	@docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true
+	@sleep 4
+	@docker inspect $(DOCKER_TARGET) \
+		--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
+		2>/dev/null || true
+	@echo "    Undo: make demo-reset"
+
+# Back to the committed demo target (drops planted bugs and unmerged heals in
+# demo_app/app.py only; iow.config.yml and everything else are left alone).
+demo-reset:
+	@git checkout HEAD -- demo_app/app.py
+	@docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true
+	@echo "[+] demo_app/app.py restored from HEAD and $(DOCKER_TARGET) restarted"
+
 # Suggestion signal: a 4xx probe target is flagged for a human, never auto-patched.
 suggest:
 	@curl -s -o /dev/null -w '[*] /api/missing-route -> HTTP %{http_code} (suggestion, never auto-healed)\n' \
 		$(TARGET_URL)/api/missing-route 2>/dev/null || echo "[!] Target unreachable"
 
 heal:
-	@curl -s -X POST http://localhost:8000/api/loop/trigger -H "Content-Type: application/json" -d '{}' \
-		| python3 -m json.tool 2>/dev/null || echo "[!] Dashboard unreachable"
+	@curl -s -X POST $(DASHBOARD_URL)/api/loop/trigger -H "Content-Type: application/json" -d '{}' \
+		| python3 -m json.tool 2>/dev/null || echo "[!] Dashboard unreachable on :$(PORT)"
 
 rollback:
-	@curl -s -X POST http://localhost:8000/api/loop/rollback -H "Content-Type: application/json" -d '{}' \
-		| python3 -m json.tool 2>/dev/null || echo "[!] Dashboard unreachable"
+	@curl -s -X POST $(DASHBOARD_URL)/api/loop/rollback -H "Content-Type: application/json" -d '{}' \
+		| python3 -m json.tool 2>/dev/null || echo "[!] Dashboard unreachable on :$(PORT)"
 
 status:
-	@curl -s http://localhost:8000/api/overview | python3 -m json.tool 2>/dev/null || echo "[!] Dashboard unreachable"
+	@curl -s $(DASHBOARD_URL)/api/overview | python3 -m json.tool 2>/dev/null || echo "[!] Dashboard unreachable on :$(PORT)"
 
 ensure-dirs:
 	@mkdir -p $(IOW_DIR) $(PIP_CACHE) $(HF_HOME) $(CHROMA_DIR) $(OLLAMA_DIR) $(MYPY_CACHE) \
@@ -424,8 +501,10 @@ ensure-target: ensure-dirs
 
 ensure-ollama: ensure-dirs
 	@command -v ollama >/dev/null 2>&1 || { echo "ollama not found"; exit 1; }
-	@if [ -f $(IOW_DIR)/ollama.pid ] && kill -0 $$(cat $(IOW_DIR)/ollama.pid) 2>/dev/null; then \
+	@if $(OLLAMA_PID_LIVE); then \
 		echo "[*] Ollama already running (bind $(OLLAMA_BIND))"; \
+	elif curl -sf http://$(OLLAMA_HOST)/api/version >/dev/null 2>&1; then \
+		echo "[*] An Ollama already answers on $(OLLAMA_HOST) - reusing it"; \
 	else \
 		echo "[*] Starting ollama serve (models=$(OLLAMA_DIR), bind=$(OLLAMA_BIND))"; \
 		nohup env HOME="$(IOW_DIR)" OLLAMA_MODELS="$(OLLAMA_DIR)" OLLAMA_HOST="$(OLLAMA_BIND)" \
@@ -436,7 +515,8 @@ ensure-ollama: ensure-dirs
 
 ensure-ollama-quick: ensure-dirs
 	@command -v ollama >/dev/null 2>&1 || exit 0
-	@if [ -f $(IOW_DIR)/ollama.pid ] && kill -0 $$(cat $(IOW_DIR)/ollama.pid) 2>/dev/null; then true; \
+	@if $(OLLAMA_PID_LIVE); then true; \
+	elif curl -sf http://$(OLLAMA_HOST)/api/version >/dev/null 2>&1; then true; \
 	else \
 		echo "[*] Starting ollama serve (models=$(OLLAMA_DIR), bind=$(OLLAMA_BIND))"; \
 		nohup env HOME="$(IOW_DIR)" OLLAMA_MODELS="$(OLLAMA_DIR)" OLLAMA_HOST="$(OLLAMA_BIND)" \
@@ -484,6 +564,24 @@ mypy: ensure-lint-tools
 
 lint: flake mypy
 	@echo "[+] lint OK (flake8 + mypy)"
+
+# Regression suites, one per part and next to the code they cover (stdlib unittest,
+# no extra dependency): everything that can be checked without a model, Docker or a
+# forge - exit-code / dedup logic, retrieval, sanity bounds, byte-for-byte rollback,
+# safety bounds, the classifier, the second-opinion vote and the HITL PR flow.
+test: ensure-ready
+	@for part in $(TEST_PARTS); do \
+		echo "[*] unittest → $$part/tests"; \
+		$(VENV)/bin/python -m unittest discover -s $$part/tests -t . || exit 1; \
+	done
+	@echo "[+] unittest OK ($(TEST_PARTS))"
+
+test-p1 test-p2 test-p3 test-bonus: test-%: ensure-ready
+	@echo "[*] unittest → $*/tests"
+	@$(VENV)/bin/python -m unittest discover -s $*/tests -t . -v
+
+gates: lint test
+	@echo "[+] all quality gates passed (flake8 + mypy + unittest)"
 
 UVICORN_OPTS := --host 127.0.0.1 --port $(PORT) --timeout-graceful-shutdown 0
 
@@ -638,12 +736,14 @@ argocd-bonus-down:
 
 
 stop:
-	@# Prefer pid file written by ensure-ollama*
-	@if [ -f $(IOW_DIR)/ollama.pid ]; then \
-		kill $$(cat $(IOW_DIR)/ollama.pid) 2>/dev/null || true; \
-		rm -f $(IOW_DIR)/ollama.pid; \
-		echo "[*] Stopped ollama via $(IOW_DIR)/ollama.pid"; \
-	fi
+	@# Prefer pid file written by ensure-ollama* - but never kill a reused pid.
+	@if $(OLLAMA_PID_LIVE); then \
+		kill $$(cat $(OLLAMA_PID)) 2>/dev/null || true; \
+		echo "[*] Stopped ollama via $(OLLAMA_PID)"; \
+	elif [ -f $(OLLAMA_PID) ]; then \
+		echo "[*] $(OLLAMA_PID) is stale (pid $$(cat $(OLLAMA_PID)) is not an ollama) - ignored"; \
+	fi; \
+	rm -f $(OLLAMA_PID)
 	@# Orphans after clean/fclean (pid file already gone): only IoW-bound ollama
 	@# (campus /opt/ollama and IoC :11435 are left alone). Match /proc environ -
 	@# OLLAMA_* is not on argv, so plain pkill -f OLLAMA_MODELS=… misses orphans.
@@ -657,13 +757,18 @@ stop:
 			echo "[*] Stopped orphan IoW ollama pid $$pid"; \
 		fi; \
 	done
-	@# Free IoW listen port if a leftover still holds it (11436 only)
-	@if command -v fuser >/dev/null 2>&1; then \
-		fuser -k 11436/tcp >/dev/null 2>&1 || true; \
-	elif command -v lsof >/dev/null 2>&1; then \
-		pids=$$(lsof -t -iTCP:11436 -sTCP:LISTEN 2>/dev/null || true); \
-		[ -n "$$pids" ] && kill $$pids 2>/dev/null || true; \
-	fi
+	@# Free the IoW listen port - but only from an ollama process. `fuser -k 11436/tcp`
+	@# used to kill whatever held it; on rootless Docker a published container port is
+	@# held by rootlesskit, the parent of the whole Docker daemon.
+	@for pid in $$(ss -ltnpH 'sport = :11436' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do \
+		comm=$$(cat /proc/$$pid/comm 2>/dev/null || echo "?"); \
+		if [ "$$comm" = "ollama" ]; then \
+			kill $$pid 2>/dev/null || true; \
+			echo "[*] Stopped ollama listener pid $$pid on :11436"; \
+		else \
+			echo "[*] :11436 is held by '$$comm' (pid $$pid) - not an IoW ollama, left alone"; \
+		fi; \
+	done
 	@rm -f $(IOW_DIR)/ollama.pid 2>/dev/null || true
 	@echo "[*] stop done (IoW ollama on $(OLLAMA_BIND) / models $(OLLAMA_DIR))"
 

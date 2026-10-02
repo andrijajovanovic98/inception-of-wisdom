@@ -1,0 +1,14 @@
+# Agent image build context (the repository is bind-mounted at /workspace at runtime,
+# so the copy baked into the image only needs the code).
+.git
+**/__pycache__
+**/*.py[cod]
+**/*.iow.tmp
+.mypy_cache
+.venv
+venv
+docu
+docs
+presentation
+*.log
+**/tests

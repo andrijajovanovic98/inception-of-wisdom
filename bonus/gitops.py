@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import logging
 import time
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger("bonus.gitops")
 
@@ -49,8 +49,13 @@ def _run(cmd: List[str], timeout: float = 60.0) -> Tuple[int, str, str]:
             check=False,
         )
         return res.returncode, (res.stdout or "").strip(), (res.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        # Not str(e): it quotes the whole command line, and `argocd login` carries the
+        # admin password on it - straight into the dashboard log.
+        what = " ".join([os.path.basename(cmd[0])] + cmd[1:2])
+        return -1, "", f"'{what}' timed out after {timeout:.0f}s"
     except Exception as e:
-        return -1, "", str(e)
+        return -1, "", f"{os.path.basename(cmd[0])}: {e}"
 
 
 def _bin_dirs() -> List[str]:
@@ -157,28 +162,54 @@ def _argocd_admin_password() -> Optional[str]:
         return None
 
 
+def _is_argocd(server: str, plaintext: bool) -> bool:
+    """Whether `server` answers like Argo CD (its unauthenticated /api/version)."""
+    try:
+        import httpx
+        scheme = "http" if plaintext else "https"
+        answer = httpx.get(f"{scheme}://{server}/api/version", verify=False, timeout=5.0)
+        return answer.status_code == 200 and "Version" in answer.json()
+    except Exception:
+        return False
+
+
 def _argocd_sync(app: str, timeout_s: int) -> Tuple[bool, str]:
     """Log in and sync. A failure here is reported, never swallowed."""
     argocd = _which("argocd")
     if not argocd:
         return False, "argocd CLI not found in PATH or /tmp/iow/bin"
 
-    server = os.environ.get("IOW_ARGOCD_SERVER", DEFAULT_ARGOCD_SERVER)
+    server = os.environ.get("IOW_ARGOCD_SERVER", DEFAULT_ARGOCD_SERVER).strip()
+    if not server:
+        return False, "no Argo CD API port-forward (IOW_ARGOCD_SERVER is empty)"
+    # The stock install (make argocd-bonus) serves TLS with a self-signed certificate:
+    # talk TLS and skip verification. `--plaintext` against it hangs until the timeout,
+    # so every sync used to fail and fall back to a bare rollout.
+    plaintext = os.environ.get("IOW_ARGOCD_PLAINTEXT", "").lower() in ("1", "true", "yes")
+    # The login carries the admin password. The port-forward's port can belong to some
+    # other local service (8080 is a popular one): never send it there.
+    if not _is_argocd(server, plaintext):
+        return False, f"{server} does not answer like Argo CD - not logging in there"
+
     password = os.environ.get("IOW_ARGOCD_PASSWORD") or _argocd_admin_password()
     if not password:
         return False, "could not read the Argo CD admin password from the cluster secret"
 
+    transport = ["--insecure"]
+    if plaintext:
+        transport.append("--plaintext")  # a server started with server.insecure=true
+
     code, _, err = _run(
-        [argocd, "login", server, "--username", "admin", "--password", password,
-         "--insecure", "--plaintext"],
-        timeout=10.0,
+        [argocd, "login", server, "--username", "admin", "--password", password]
+        + transport,
+        timeout=15.0,
     )
     if code != 0:
         return False, f"argocd login failed: {err}"
 
     code, out, err = _run(
-        [argocd, "app", "sync", app, "--server", server, "--insecure", "--plaintext",
-         "--prune", "--timeout", str(timeout_s)],
+        [argocd, "app", "sync", app, "--server", server] + transport
+        + ["--prune", "--timeout", str(timeout_s)],
         timeout=float(timeout_s + 15),
     )
     if code != 0:
@@ -302,6 +333,95 @@ def wait_for_gitops_redeploy(
     )
 
 
+# Waiting reasons that mean a container never got as far as running its command.
+_START_BLOCKERS = {
+    "ErrImagePull", "ImagePullBackOff", "InvalidImageName",
+    "CreateContainerConfigError", "CreateContainerError",
+}
+
+
+def _start_blocker(pod: Dict[str, Any]) -> Optional[str]:
+    """Why the pod cannot start the app at all, or None.
+
+    A failing init container (here: the one that fetches the source), an image that
+    cannot be pulled or a missing config keep the app from ever running. That is not
+    a crash a code patch can fix - seen live: the source fetch could not resolve
+    Gitea, the probes found nothing on the port, and the loop "healed" correct code.
+    """
+    status = pod.get("status", {}) or {}
+    for cs in status.get("initContainerStatuses", []) or []:
+        state = cs.get("state", {}) or {}
+        done = state.get("terminated") or {}
+        if done and done.get("exitCode") == 0:
+            continue
+        waiting = state.get("waiting") or {}
+        last = (cs.get("lastState", {}) or {}).get("terminated") or {}
+        failed = done.get("exitCode") not in (None, 0) or last.get("exitCode") not in (None, 0)
+        if waiting.get("reason") in _START_BLOCKERS or failed:
+            reason = waiting.get("reason") or done.get("reason") or last.get("reason") or "Error"
+            return (
+                f"Init container '{cs.get('name', '?')}' is failing ({reason}): "
+                "the pod never started the app"
+            )
+    for cs in status.get("containerStatuses", []) or []:
+        waiting = (cs.get("state", {}) or {}).get("waiting") or {}
+        if waiting.get("reason") in _START_BLOCKERS:
+            return (
+                f"Container '{cs.get('name', '?')}' cannot start ({waiting['reason']}): "
+                "the pod never started the app"
+            )
+    return None
+
+
+def _newest_pod(items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The pod the workload is converging to: the newest one not being deleted.
+
+    During a rollout the old pod keeps serving until the new one is Ready, and when
+    the new revision crash-loops Kubernetes leaves it that way: the service is up,
+    the deployed commit is broken. Watching the first pod of the list hid exactly
+    that crash (seen live).
+    """
+    live = [p for p in items if not (p.get("metadata") or {}).get("deletionTimestamp")]
+    pool = live or items
+    if not pool:
+        return None
+    return max(pool, key=lambda p: str((p.get("metadata") or {}).get("creationTimestamp", "")))
+
+
+def _app_has_run(pod: Dict[str, Any]) -> bool:
+    """Whether an app container of the pod has started at least once (so has logs)."""
+    for cs in (pod.get("status") or {}).get("containerStatuses", []) or []:
+        state = cs.get("state") or {}
+        last = cs.get("lastState") or {}
+        if state.get("running") or state.get("terminated") or last.get("terminated"):
+            return True
+    return False
+
+
+class _ProcessLines:
+    """A followed `kubectl logs` as a stream: iterate its lines, close() from any thread.
+
+    A generator cannot be closed while another thread is blocked inside it, so the
+    Observer's "Restart Stream" could never unblock a worker reading a pod's log.
+    """
+
+    def __init__(self, proc: "subprocess.Popen[bytes]") -> None:
+        self._proc = proc
+
+    def __iter__(self) -> Iterator[bytes]:
+        try:
+            for line in self._proc.stdout:  # type: ignore[union-attr]
+                yield line
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        try:
+            self._proc.terminate()
+        except Exception:
+            pass
+
+
 # ----------------------------------------------------------------------------------
 # Kubernetes target adapter (Observer in gitops mode)
 # ----------------------------------------------------------------------------------
@@ -370,7 +490,16 @@ class KubeTargetMonitor:
             self._last_state = state
             return state
 
-        pod = items[0]
+        pod = _newest_pod(items) or items[0]
+        blocker = _start_blocker(pod)
+        if blocker:
+            state = ContainerState(
+                name=self.container_name, status="not_started",
+                error_reason=blocker, timestamp=now,
+            )
+            self._last_state = state
+            return state
+
         phase = str(pod.get("status", {}).get("phase", "unknown")).lower()
         statuses = pod.get("status", {}).get("containerStatuses", []) or []
         restarts = sum(int(cs.get("restartCount", 0) or 0) for cs in statuses)
@@ -415,22 +544,85 @@ class KubeTargetMonitor:
     def get_last_state(self) -> Optional[Any]:
         return self._last_state
 
+    def target_facts(self) -> Dict[str, Any]:
+        """Container ports and (non-secret) literal env of the newest pod's app container."""
+        from p1.docker_monitor import target_facts_from
+
+        code, out, _ = _run(
+            [_kubectl(), "-n", self.namespace, "get", "pods", "-l", self.selector, "-o", "json"],
+            timeout=20.0,
+        )
+        try:
+            pod = _newest_pod(json.loads(out).get("items", [])) if code == 0 else None
+        except json.JSONDecodeError:
+            pod = None
+        containers = ((pod or {}).get("spec") or {}).get("containers") or []
+        if not containers:
+            return {}
+        app = containers[0]
+        ports = [p.get("containerPort") for p in app.get("ports") or []]
+        env = [
+            (str(e.get("name", "")), str(e.get("value", "")))
+            for e in app.get("env") or [] if "value" in e
+        ]
+        return target_facts_from(ports, env)
+
     # -- logs ----------------------------------------------------------------
+    def _newest_pod_with_logs(self) -> Optional[str]:
+        """Name of the newest pod, if its app has run at least once."""
+        code, out, _ = _run(
+            [_kubectl(), "-n", self.namespace, "get", "pods", "-l", self.selector, "-o", "json"],
+            timeout=20.0,
+        )
+        try:
+            items = json.loads(out).get("items", []) if code == 0 else []
+        except json.JSONDecodeError:
+            items = []
+        pod = _newest_pod(items)
+        if pod is None or not _app_has_run(pod):
+            return None
+        return str((pod.get("metadata") or {}).get("name", "")) or None
+
+    def fetch_logs(self, since: Optional[float] = None, tail: int = 60) -> str:
+        """What the newest pod printed (not followed), as DockerMonitor.fetch_logs.
+
+        The verifier hands this back to the Analyst when a redeploy fails. Without it
+        a gitops attempt that crashed the new pod reported only "kubectl rollout status
+        timed out", and the next attempt was aimed at an unrelated chunk (seen live).
+        """
+        ok, _ = tools_available()
+        if not ok:
+            return ""
+        name = self._newest_pod_with_logs()
+        if not name:
+            return ""
+        cmd = [_kubectl(), "-n", self.namespace, "logs", name, f"--tail={tail}"]
+        if since is not None:
+            cmd.append(f"--since-time={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(since))}")
+        code, out, _ = _run(cmd, timeout=20.0)
+        return out if code == 0 else ""
+
     def get_log_stream(
         self, tail: Optional[int] = None, since: Optional[int] = None
-    ) -> Optional[Iterator[bytes]]:
-        """Follow pod logs with timestamps, matching DockerMonitor's contract."""
+    ) -> Optional[Iterable[bytes]]:
+        """Follow the newest pod's logs with timestamps, matching DockerMonitor's contract.
+
+        By name, not by selector: during a rollout two pods match, and a followed
+        selector with --max-log-requests=1 fails outright - no logs for as long as a
+        rollout lasts, or for good when the new revision crash-loops.
+        """
         ok, _ = tools_available()
         if not ok:
             return None
 
-        # No Ready pod means there is nothing to follow yet; returning None lets the
+        # An app that has not run yet has nothing to follow; returning None lets the
         # streamer back off instead of spinning on an instantly-closing stream.
-        if not _ready_pod_identities(self.namespace, self.selector):
+        name = self._newest_pod_with_logs()
+        if not name:
             return None
 
-        cmd = [_kubectl(), "-n", self.namespace, "logs", "-l", self.selector,
-               "--timestamps=true", "--follow", "--max-log-requests=1"]
+        cmd = [_kubectl(), "-n", self.namespace, "logs", name,
+               "--timestamps=true", "--follow"]
         if since is not None:
             cmd.append(f"--since-time={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(since))}")
         elif tail is not None:
@@ -446,18 +638,7 @@ class KubeTargetMonitor:
 
         if proc.stdout is None:
             return None
-
-        def _iter() -> Iterator[bytes]:
-            try:
-                for line in proc.stdout:  # type: ignore[union-attr]
-                    yield line
-            finally:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-
-        return _iter()
+        return _ProcessLines(proc)
 
     # -- lifecycle -----------------------------------------------------------
     def restart_target(self, timeout: int = 10) -> bool:

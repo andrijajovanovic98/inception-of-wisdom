@@ -13,7 +13,7 @@ import time
 import logging
 import urllib.request
 import urllib.error
-from typing import Optional, List, Dict, Any, Set
+from typing import Optional, List, Dict, Any, Sequence, Set
 from dataclasses import dataclass, asdict
 
 from p2.diagnostician import CrashDiagnostician, DiagnosticReport, _normalize_ollama_host
@@ -52,7 +52,7 @@ class SecondOpinionEngine:
         retriever: CodeRetriever,
         model_name: str = DEFAULT_MODEL,
         ollama_host: str = DEFAULT_OLLAMA_HOST,
-        request_timeout: float = 45.0
+        request_timeout: float = 120.0
     ):
         self.retriever = retriever
         self.model_name = model_name
@@ -152,13 +152,21 @@ class SecondOpinionEngine:
     def evaluate_consensus(
         self,
         log_excerpt: str,
-        top_k: int = 3
+        top_k: Optional[int] = None,
+        exclude_files: Sequence[str] = (),
     ) -> ConsensusReport:
-        """Runs dual independent evaluations and checks if consensus is reached."""
+        """Runs dual independent evaluations and checks if consensus is reached.
+
+        exclude_files: indexed files the caller may never patch (the operator-owned
+        iow.config.yml) - two opinions agreeing on one would only waste an attempt.
+        """
         logger.info("⚖️ Running Second Opinion dual-prompt consensus evaluation...")
 
         # 1. Retrieve candidate context
         context_chunks, _ = self.retriever.retrieve_for_crash(log_excerpt, top_k=top_k)
+        if exclude_files:
+            excluded = set(exclude_files)
+            context_chunks = [c for c in context_chunks if c.get("file_path") not in excluded]
 
         # 2. Get Opinion A and Opinion B
         opinion_a = self.get_opinion_a(log_excerpt, context_chunks)

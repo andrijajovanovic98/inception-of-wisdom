@@ -10,7 +10,7 @@ import time
 import logging
 import asyncio
 import threading
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Sequence, Tuple
 from contextlib import asynccontextmanager
 
 # Configure logging
@@ -21,9 +21,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("iow.dashboard")
 
-# Enforce local cache directories in /tmp/ to protect user quota
+# Enforce local cache directories in /tmp/ to protect user quota. The embedding model
+# resolves through HF_HOME only - the cache `make setup` prefetches into.
 os.environ.setdefault("HF_HOME", "/tmp/iow/hf-cache")
-os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "/tmp/iow/hf-cache/sentence_transformers")
 os.environ.setdefault("CHROMA_CACHE_DIR", "/tmp/iow/chroma_db")
 os.environ.setdefault("TORCH_HOME", "/tmp/iow/hf-cache/torch")
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
@@ -55,7 +55,7 @@ for _name in ("uvicorn.error", "uvicorn.access", "sse_starlette.sse", "asyncio")
 # FastAPI imports
 try:
     from fastapi import FastAPI, Request, HTTPException
-    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
     from fastapi.staticfiles import StaticFiles
 except ImportError:
     FastAPI = None  # type: ignore[assignment,misc]
@@ -64,11 +64,12 @@ except ImportError:
     HTMLResponse = None  # type: ignore[assignment,misc]
     JSONResponse = None  # type: ignore[assignment,misc]
     FileResponse = None  # type: ignore[assignment,misc]
+    Response = None  # type: ignore[assignment,misc]
     StaticFiles = None  # type: ignore[assignment,misc]
 
 # Part 1: Observer imports
 from p1.docker_monitor import DockerMonitor  # noqa: E402
-from p1.log_streamer import LogStreamer, DEFAULT_ERROR_PATTERNS  # noqa: E402
+from p1.log_streamer import LogStreamer  # noqa: E402
 from p1.http_probe import HttpProbeManager  # noqa: E402
 from p1.event_manager import EventManager, ObserverEvent  # noqa: E402
 from p1.observer_api import create_observer_router  # noqa: E402
@@ -85,8 +86,8 @@ from p2.analyst_api import create_analyst_router  # noqa: E402
 from p3.patcher import CodePatcher, StructuredPatch  # noqa: E402
 from p3.sanity import SanityChecker  # noqa: E402
 from p3.git_manager import GitManager  # noqa: E402
-from p3.verifier import TargetVerifier  # noqa: E402
-from p3.loop import WisdomLoop  # noqa: E402
+from p3.verifier import TargetVerifier, incident_excerpt  # noqa: E402
+from p3.loop import HealCycleRecord, WisdomLoop  # noqa: E402
 from p3.safety import SafetyManager  # noqa: E402
 from p3.loop_api import create_loop_router  # noqa: E402
 
@@ -132,6 +133,7 @@ class InceptionOrchestrator:
         self.config_path = config_path
         self.auto_heal_enabled: bool = True
         self.running: bool = False
+        self._config_watch_stop = threading.Event()
 
         # 1. Safety Manager
         self.safety_manager = SafetyManager(config_path)
@@ -151,16 +153,13 @@ class InceptionOrchestrator:
             "TARGET_CONTAINER", target_cfg.get("container_name", "iow_demo_target")
         )
         target_url = os.environ.get("TARGET_URL", target_cfg.get("service_url", "http://demo_app:5000"))
-        probe_interval = float(target_cfg.get("probe_interval_seconds", 3.0))
-        probe_timeout = float(target_cfg.get("probe_timeout_seconds", 2.0))
-        probe_paths = list(target_cfg.get("probe_urls", ["/", "/healthz"]))
-        error_patterns = list(
-            target_cfg.get("error_patterns", DEFAULT_ERROR_PATTERNS)
-        )
-        incident_debounce = float(target_cfg.get("incident_debounce_seconds", 1.0))
-        crash_window = float(target_cfg.get("crash_dedup_window_seconds", 60.0))
-        suggestion_window = float(target_cfg.get("suggestion_dedup_window_seconds", 300.0))
-        watch_interval = float(analyst_cfg.get("watch_interval_seconds", 3.0))
+        # Validated, and re-applied whenever the file changes (refresh_live_settings).
+        self._live_settings = self.safety_manager.read_live_settings()
+        self._config_version = self.safety_manager.version
+        live = self._live_settings
+        probe_interval = live["probe_interval_seconds"]
+        incident_debounce = live["incident_debounce_seconds"]
+        self.incident_debounce = incident_debounce
 
         model_name = os.environ.get("OLLAMA_MODEL", analyst_cfg.get("model", "qwen2.5-coder:1.5b"))
         embedding_model = analyst_cfg.get("embedding_model", "all-MiniLM-L6-v2")
@@ -193,22 +192,22 @@ class InceptionOrchestrator:
 
         self.log_streamer = LogStreamer(
             docker_monitor=self.docker_monitor,
-            error_patterns=error_patterns,
+            error_patterns=live["error_patterns"],
             incident_debounce_seconds=incident_debounce,
         )
         self.http_probe = HttpProbeManager(
             service_url=target_url,
-            probe_paths=probe_paths,
+            probe_paths=live["probe_urls"],
             interval_seconds=probe_interval,
-            timeout_seconds=probe_timeout,
+            timeout_seconds=live["probe_timeout_seconds"],
         )
         self.event_manager = EventManager(
             docker_monitor=self.docker_monitor,
             log_streamer=self.log_streamer,
             http_probe=self.http_probe,
             docker_poll_seconds=probe_interval,
-            crash_window_seconds=crash_window,
-            suggestion_window_seconds=suggestion_window,
+            crash_window_seconds=live["crash_dedup_window_seconds"],
+            suggestion_window_seconds=live["suggestion_dedup_window_seconds"],
         )
 
         # 3. Analyst (Part 2)
@@ -219,7 +218,7 @@ class InceptionOrchestrator:
         )
         self.retriever = CodeRetriever(
             vector_db=self.vector_db,
-            default_top_k=int(analyst_cfg.get("top_k", 3))
+            default_top_k=live["top_k"],
         )
         self.diagnostician = CrashDiagnostician(
             retriever=self.retriever,
@@ -229,7 +228,11 @@ class InceptionOrchestrator:
 
         # 4. Wisdom Loop (Part 3)
         self.git_manager = GitManager(repo_dir=REPO_PATH)
-        self.sanity_checker = SanityChecker(base_dir=REPO_PATH)
+        # The gate refuses paths outside demo_app/ (and iow.config.yml) up front, so
+        # such a patch is reported as a sanity violation rather than a git error.
+        self.sanity_checker = SanityChecker(
+            base_dir=REPO_PATH, path_guard=self.git_manager._is_heal_path
+        )
         self.patcher = CodePatcher(
             base_dir=REPO_PATH,
             model_name=model_name,
@@ -239,7 +242,7 @@ class InceptionOrchestrator:
             chunker=self.chunker,
             vector_db=self.vector_db,
             target_dir=TARGET_DIR,
-            interval_seconds=watch_interval,
+            interval_seconds=live["watch_interval_seconds"],
         )
         self.verifier = TargetVerifier(
             docker_monitor=self.docker_monitor,
@@ -247,6 +250,7 @@ class InceptionOrchestrator:
             event_manager=self.event_manager,
             log_streamer=self.log_streamer,
             git_manager=self.git_manager,
+            boot_timeout_provider=self.safety_manager.get_boot_timeout,
         )
         self.wisdom_loop = WisdomLoop(
             git_manager=self.git_manager,
@@ -270,14 +274,69 @@ class InceptionOrchestrator:
         # Register event subscriber for autonomous healing
         self.event_manager.add_listener(self._on_observer_event)
 
-    def _on_pr_merged(self, pr_record) -> None:
-        """Restart target container after a HITL PR is approved and merged."""
-        logger.info(f"PR [{pr_record.pr_id}] merged - restarting target container...")
+    def land_pull_request(self, pr_id: str, comment: Optional[str] = None) -> Tuple[int, str]:
+        """Approve a PR: land it like a heal. Returns (http status, message).
+
+        Landing patches the target and restarts it: the kill switch and single-flight
+        apply (a human approval is not counted against the rate limit or hard cap), and
+        it holds the loop's cycle slot so no heal can write the same tree meanwhile.
+        """
+        allowed, reason = self.safety_manager.acquire_exclusive_slot(f"pr-merge:{pr_id}")
+        if not allowed:
+            return 409, f"Landing refused by the safety bounds: {reason}"
         try:
-            self.docker_monitor.restart_target()
-            logger.info("Target container restarted after PR merge.")
-        except Exception as e:
-            logger.error(f"Failed to restart target after PR merge: {e}")
+            if not self.wisdom_loop.claim():
+                return 409, "A heal cycle is running - approve the PR when it has finished."
+            try:
+                ok, message = self.pr_manager.merge_pr(
+                    pr_id, comment=comment, on_merged=self._land_merged_pr
+                )
+                return (200 if ok else 400), message
+            finally:
+                self.wisdom_loop.release()
+        finally:
+            self.safety_manager.release_heal_slot()
+
+    def _land_merged_pr(self, pr_record: Any) -> Dict[str, Any]:
+        """Deploy approved code the way the loop deploys a patch, and keep it only if the
+        target stays up for the grace period - otherwise roll back to the PR's base.
+
+        The redeploy goes through the Verifier: in GitOps mode that also pushes the heal
+        branch Argo CD tracks (a bare pod restart used to re-clone the old code).
+        """
+        grace = self.safety_manager.get_grace_period()
+        logger.info(f"PR [{pr_record.pr_id}] approved - deploying it (grace period {grace}s)...")
+        result = self.verifier.restart_and_verify(grace_period=grace)
+        outcome: Dict[str, Any] = {
+            "healed": result.is_healed,
+            "status": result.status,
+            "container_status": result.container_status,
+        }
+        if result.is_healed:
+            logger.info(f"PR [{pr_record.pr_id}] landed: the target stayed up for {grace}s.")
+            self.event_manager.close_incidents("crash")
+            return outcome
+        logger.warning(
+            f"PR [{pr_record.pr_id}] failed after landing ({result.status}) - rolling back "
+            f"to its base {pr_record.base_revision[:8]}."
+        )
+        restored = self.git_manager.rollback_to(pr_record.base_revision)
+        post = self.verifier.restart_and_verify(grace_period=0.0)
+        outcome.update({
+            "reverted": bool(restored),
+            "restored_revision": restored,
+            "target_up_after_revert": post.is_healed,
+            "error_log": (result.error_log or "")[:2000],
+        })
+        return outcome
+
+    def gate_review_patch(self, patch_files: List[Dict[str, Any]]) -> Optional[str]:
+        """The pre-disk sanity gate for a PR created through the API (None = passes)."""
+        patch = StructuredPatch.from_dict({"summary": "review", "files": patch_files})
+        if not patch.success:
+            return "the patch contains no usable file entry"
+        sanity = self.sanity_checker.check_patch(patch)
+        return None if sanity.passed else "; ".join(sanity.reasons)
 
     def _propose_hitl_patch(
         self,
@@ -297,11 +356,13 @@ class InceptionOrchestrator:
             f"Human-in-the-Loop gate active for [{cycle_id}] - opening Gitea PR."
         )
         try:
+            # Base the review on what the target actually runs (an uncommitted planted
+            # bug included), so the PR diff is exactly the proposed fix.
             pr = self.pr_manager.create_pull_request(
                 cycle_id=cycle_id,
                 diagnosis_summary=diagnosis_summary,
                 patch_files=patch_files,
-                base_revision=self.git_manager.get_current_head(),
+                base_revision=self.git_manager.working_tree_commit(),
             )
         except Exception as e:
             logger.error(f"Failed to create HITL PR for [{cycle_id}]: {e}")
@@ -330,6 +391,19 @@ class InceptionOrchestrator:
             logger.debug(f"Observer event [{event.type}] received; only 'crash' triggers auto-healing.")
             return
 
+        # A container that is gone (removed, daemon down) or a pod that never started
+        # the app (gitops: source fetch, image pull) is not a code failure: no patch can
+        # fix it, so do not spend a heal slot - or a commit - on it. The Observer keeps
+        # watching and picks the target up when it returns.
+        target_state = self.docker_monitor.inspect()
+        if target_state.status in ("not_found", "daemon_unavailable", "not_started"):
+            logger.warning(
+                "Crash signal [%s] while the target is '%s' (%s) - not something a code "
+                "patch can fix; waiting for the target to come back.",
+                event.signature[:8], target_state.status, target_state.error_reason or "-",
+            )
+            return
+
         # Check safety guardrails before starting background heal
         allowed, reason = self.safety_manager.acquire_heal_slot(event.signature)
         if not allowed:
@@ -344,16 +418,92 @@ class InceptionOrchestrator:
             daemon=True
         ).start()
 
-    def run_heal_cycle(self, event: ObserverEvent, grace_period: float) -> None:
-        """HITL-aware heal used by the observer thread and the Loop API trigger."""
-        sig = event.signature
-        log_excerpt = (
+    @staticmethod
+    def _diagnosis_from_consensus(report: Any) -> DiagnosticReport:
+        """A diagnosis only when the two opinions agree; a divergence is an explicit failure."""
+        chunks = list(report.opinion_a.get("candidate_chunks") or [])
+        if not report.consensus_reached:
+            return DiagnosticReport(
+                success=False,
+                summary="",
+                files=[],
+                candidate_chunks=chunks,
+                raw_response="second_opinion_consensus",
+                error_message=(
+                    f"{report.consensus_summary} Only an agreement triggers the patch."
+                ),
+                mode="diverged",
+                timestamp=time.time(),
+            )
+        # The root cause (opinion A), not the vote's bookkeeping: this summary becomes
+        # the heal commit's subject line.
+        root_cause = str(report.opinion_a.get("summary") or "").strip()
+        agreed = ", ".join(report.agreed_files)
+        return DiagnosticReport(
+            success=True,
+            summary=(
+                f"{root_cause} (Second opinion agreed on {agreed}.)"
+                if root_cause else report.consensus_summary
+            ),
+            files=list(report.agreed_files),
+            candidate_chunks=chunks,
+            raw_response="second_opinion_consensus",
+            timestamp=time.time(),
+        )
+
+    def _consensus_diagnosis(
+        self,
+        log_excerpt: str,
+        exit_code: Optional[int] = None,
+        status: str = "crashed",
+        exclude_files: Sequence[str] = (),
+    ) -> DiagnosticReport:
+        """The Analyst's diagnose_crash, but two prompts must agree on the suspect file."""
+        report = self.consensus_engine.evaluate_consensus(
+            log_excerpt, exclude_files=exclude_files
+        )
+        return self._diagnosis_from_consensus(report)
+
+    def _read_repo_file(self, rel_path: str) -> Optional[str]:
+        """Exact current text of a repository file (None when it does not exist)."""
+        full = os.path.join(REPO_PATH, rel_path)
+        if not os.path.isfile(full):
+            return None
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace", newline="") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    def _crash_context(self, event: ObserverEvent) -> str:
+        """The log text the Analyst should see for this crash: its latest error report.
+
+        A log-pattern event already carries its traceback. A container exit or a dead
+        probe usually fires first, before the traceback has even been streamed - so
+        let the log settle and read the target's recent output from the daemon.
+        Either way the excerpt is cut down to the most recent error report, so an
+        older traceback still in the buffer can never steer the diagnosis.
+        """
+        excerpt = (
             event.details.get("context_excerpt")
             or event.details.get("matched_line")
             or event.details.get("log_excerpt")
-            or event.summary
             or ""
         )
+        lines: List[str] = excerpt.splitlines()
+        if event.source in ("docker", "http_probe"):
+            time.sleep(self.incident_debounce + 1.0)
+            fetch = getattr(self.docker_monitor, "fetch_logs", None)
+            fresh = fetch(tail=120) if callable(fetch) else ""
+            lines = (fresh or "").splitlines() or self.log_streamer.get_recent_logs(200)
+        # Keeps the lines naming the request that raised it: the Verifier replays that
+        # request after every redeploy (it used to be trimmed away with the rest).
+        header = event.summary if event.source != "log" and event.summary else None
+        return incident_excerpt(lines, header=header) or excerpt or event.summary or ""
+
+    def run_heal_cycle(self, event: ObserverEvent, grace_period: float) -> None:
+        """HITL-aware heal used by the observer thread and the Loop API trigger."""
+        sig = event.signature
 
         if not LOOP_ENABLED:
             logger.info(
@@ -363,15 +513,22 @@ class InceptionOrchestrator:
             )
             return
 
+        log_excerpt = self._crash_context(event)
+        event.details["context_excerpt"] = log_excerpt
+
         # --- Bonus: tiny classifier fast path -------------------------------------
         # A known symptom reuses its verified patch and skips the LLM entirely.
         fast_path_patch = None
+        fast_path_symptom: Optional[str] = None
         if BONUS_ENABLED and bonus_flags.get("fast_path_classifier", True):
-            match = self.classifier.classify(log_excerpt, raw_signature=sig)
+            match = self.classifier.classify(
+                log_excerpt, raw_signature=sig, read_file=self._read_repo_file
+            )
             if match.matched and match.cached_patch:
                 candidate = StructuredPatch.from_dict(match.cached_patch)
                 if candidate.success and candidate.files:
                     fast_path_patch = candidate
+                    fast_path_symptom = match.symptom_id
                     logger.info(
                         "BONUS FAST PATH: symptom [%s] matched at confidence %.2f - "
                         "applying the cached patch and skipping the LLM entirely.",
@@ -393,17 +550,12 @@ class InceptionOrchestrator:
             and self.consensus_engine
         ):
             try:
-                report = self.consensus_engine.evaluate_consensus(log_excerpt, top_k=3)
+                report = self.consensus_engine.evaluate_consensus(
+                    log_excerpt, exclude_files=self.git_manager.protected_paths
+                )
                 if report.consensus_reached:
                     # Reuse the agreed answer instead of paying for it twice.
-                    preset_diagnosis = DiagnosticReport(
-                        success=True,
-                        summary=report.consensus_summary,
-                        files=list(report.agreed_files),
-                        candidate_chunks=[],
-                        raw_response="second_opinion_consensus",
-                        timestamp=time.time(),
-                    )
+                    preset_diagnosis = self._diagnosis_from_consensus(report)
                 else:
                     consensus_diverged = True
                     logger.warning(
@@ -418,68 +570,99 @@ class InceptionOrchestrator:
         )
 
         if hitl_required:
+            # A human must see this patch before it lands (HITL on), or the two opinions
+            # disagreed ("only an agreement triggers the patch"). Either way nothing is
+            # applied autonomously: the patch goes to review or it is withheld.
+            why = (
+                "human-in-the-loop review is on"
+                if bonus_flags.get("human_in_the_loop", False)
+                else "the second opinion diverged"
+            )
             cycle_id = (sig[:8] if sig else "manual") + "-" + str(int(time.time()))
             proposed = False
+            detail = ""
             try:
-                diagnosis = preset_diagnosis or self.diagnostician.diagnose_crash(log_excerpt)
-                if diagnosis.success:
-                    patch = self.patcher.generate_patch(diagnosis, log_excerpt)
-                    if patch.success and patch.files:
-                        patch_files = [
-                            {"path": f.path, "op": f.op, "content": f.content}
-                            for f in patch.files
-                        ]
-                        proposed = self._propose_hitl_patch(
-                            event, log_excerpt, diagnosis.summary, patch_files, cycle_id
-                        )
-                    else:
-                        logger.warning(
-                            f"HITL gate active but patch generation failed: {patch.error_message}"
-                        )
+                diagnosis = preset_diagnosis or self.diagnostician.diagnose_crash(
+                    log_excerpt,
+                    exit_code=event.details.get("exit_code"),
+                    status=event.details.get("status") or "crashed",
+                    exclude_files=self.git_manager.protected_paths,
+                )
+                if not diagnosis.success:
+                    detail = f"diagnosis failed: {diagnosis.error_message}"
                 else:
-                    logger.warning(
-                        f"HITL gate active but diagnosis failed: {diagnosis.error_message}"
-                    )
+                    patch = self.patcher.generate_patch(diagnosis, log_excerpt)
+                    if not (patch.success and patch.files):
+                        detail = f"patch generation failed: {patch.error_message}"
+                    else:
+                        # A review PR gets the same pre-disk gate as an applied patch.
+                        sanity = self.sanity_checker.check_patch(patch)
+                        if not sanity.passed:
+                            detail = "sanity check refused the patch: " + "; ".join(sanity.reasons)
+                        else:
+                            patch_files = [
+                                {"path": f.path, "op": f.op, "content": f.content}
+                                for f in patch.files
+                            ]
+                            proposed = self._propose_hitl_patch(
+                                event, log_excerpt, diagnosis.summary, patch_files, cycle_id
+                            )
+                            if not proposed:
+                                detail = (
+                                    "the Gitea review PR could not be opened "
+                                    "(is the forge up? `make pr-bonus`)"
+                                )
             except Exception as e:
                 logger.error(f"HITL patch proposal failed: {e}")
+                detail = f"unexpected error: {e}"
 
             if proposed:
-                return
-            # The review PR could not be opened (no forge, model failure, …). Falling
-            # through is the safe answer: the crash still gets a chance to be healed
-            # instead of disappearing silently.
-            logger.warning(
-                "Could not open a review PR for [%s]; running the Wisdom Loop instead.",
-                sig[:8],
-            )
+                self.wisdom_loop.record_refused_cycle(
+                    event,
+                    f"Patch sent for human review because {why}; it lands only when the "
+                    "PR is approved (Bonus tab / Gitea).",
+                    status="awaiting_review",
+                )
+            else:
+                logger.warning(
+                    "Heal [%s] withheld: %s, and %s. Nothing was applied.", sig[:8], why, detail
+                )
+                self.wisdom_loop.record_refused_cycle(
+                    event, f"Patch withheld because {why}; {detail}. Nothing was applied."
+                )
+            return
 
         logger.info(f"Starting autonomous Wisdom Loop for crash signature [{sig[:8]}]...")
+        # Second-opinion mode votes on every attempt, not only the first: a retry that
+        # patched on one opinion would break "only an agreement triggers the patch".
+        second_opinion = BONUS_ENABLED and bonus_flags.get("second_opinion_mandatory", False)
         result = self.wisdom_loop.execute_heal(
             event,
             grace_period=grace_period,
             preset_diagnosis=preset_diagnosis,
             fast_path_patch=fast_path_patch,
+            diagnose_fn=self._consensus_diagnosis if second_opinion else None,
         )
         logger.info(f"Wisdom Loop finished with status: {result.status.upper()}")
+        if result.status in ("healed", "not_needed"):
+            # The target was verified healthy: this incident is over, and the same crash
+            # coming back is a new one (the per-signature cooldown still applies).
+            self.event_manager.close_incidents("crash")
 
         if not result.attempts:
             return
         last_att = result.attempts[-1]
 
-        if result.status == "healed":
-            if last_att.patch:
-                self.classifier.record_successful_heal(
-                    log_excerpt, last_att.patch, raw_signature=sig
-                )
-            if BONUS_ENABLED:
-                self._open_verified_heal_pr(result, last_att)
-        elif last_att.source == "classifier_fast_path":
-            # The cached patch did not hold up - lower its confidence so the next
-            # crash of this shape goes back to the model.
-            match_id = self.classifier.extract_features(
-                log_excerpt, raw_signature=sig
-            ).raw_signature
-            self.classifier.record_failure(match_id)
+        # A cached patch that did not hold up loses trust; a verified heal is learned
+        # together with the code it was applied to (it may only replace that again).
+        pre_loop = result.pre_loop_hash
+        self.classifier.learn_from_cycle(
+            result, log_excerpt, raw_signature=sig, used_symptom=fast_path_symptom,
+            pre_loop_file=lambda path: self.git_manager.read_blob(pre_loop, path),
+        )
+
+        if result.status == "healed" and BONUS_ENABLED:
+            self._open_verified_heal_pr(result, last_att)
 
     def _open_verified_heal_pr(self, result: Any, last_att: Any) -> None:
         """Surface a real Gitea PR after a verified auto-heal."""
@@ -527,6 +710,17 @@ class InceptionOrchestrator:
         self.running = True
         logger.info("Initializing Inception-of-Wisdom orchestrator...")
 
+        # 0. A heal cycle the previous agent did not live to finish (stopped or crashed
+        # mid-cycle) left an unverified patch in the target's tree. Put the pre-loop
+        # state back first - before anything indexes, observes or heals that tree.
+        recovered = None
+        try:
+            recovered = self.wisdom_loop.recover_interrupted_cycle(redeploy=False)
+            if recovered is not None:
+                logger.warning("Interrupted heal cycle handled on start-up: %s", recovered.failure_reason)
+        except Exception as e:
+            logger.error(f"Could not recover an interrupted heal cycle: {e}")
+
         # 1. Reconcile the persistent index with the tree, then keep watching it.
         # The store is never wiped: unchanged chunks are skipped, changed symbols are
         # replaced in place, and symbols that disappeared are pruned.
@@ -548,16 +742,86 @@ class InceptionOrchestrator:
         except Exception as e:
             logger.warning(f"Could not start index watch mode: {e}")
 
-        # 3. Start Part 1 Observer (event_manager starts log_streamer + http_probe once)
+        # iow.config.yml is re-read on every change, with or without a dashboard open.
+        self._config_watch_stop.clear()
+        threading.Thread(
+            target=self._config_watch_loop, name="ConfigWatch", daemon=True
+        ).start()
+
+        # 3. Start Part 1 Observer (event_manager starts log_streamer + http_probe once).
+        # After a recovery the target is first restarted on the restored code - in the
+        # background, so the dashboard answers meanwhile; observing starts afterwards,
+        # or the recovered code's own crash would be refused as a concurrent heal and
+        # sent into cooldown.
+        if recovered is not None and recovered.rollback_check is not None:
+            threading.Thread(
+                target=self._redeploy_then_observe, args=(recovered,),
+                name="RecoveryRedeploy", daemon=True,
+            ).start()
+        else:
+            self._start_observer()
+
+    def refresh_live_settings(self) -> Dict[str, Any]:
+        """Re-apply iow.config.yml's target:/analyst: settings after an edit (no restart).
+
+        The file promises that its keys are live; only the safety bounds used to be -
+        a new probe URL, error pattern or dedup window waited for an agent restart.
+        Returns the settings that changed.
+        """
+        self.safety_manager.reload_config()
+        if self.safety_manager.version == self._config_version:
+            return {}
+        self._config_version = self.safety_manager.version
+        new = self.safety_manager.read_live_settings(previous=self._live_settings)
+        changed = {k: v for k, v in new.items() if self._live_settings.get(k) != v}
+        self._live_settings = new
+        if not changed:
+            return {}
+        self.http_probe.set_probe_paths(new["probe_urls"])
+        self.http_probe.interval_seconds = new["probe_interval_seconds"]
+        self.http_probe.timeout_seconds = new["probe_timeout_seconds"]
+        self.event_manager.docker_poll_seconds = new["probe_interval_seconds"]
+        self.event_manager.crash_window_seconds = new["crash_dedup_window_seconds"]
+        self.event_manager.suggestion_window_seconds = new["suggestion_dedup_window_seconds"]
+        self.log_streamer.incident_debounce_seconds = new["incident_debounce_seconds"]
+        self.incident_debounce = new["incident_debounce_seconds"]
+        self.log_streamer.set_error_patterns(new["error_patterns"])
+        self.index_watcher.interval_seconds = new["watch_interval_seconds"]
+        self.retriever.default_top_k = new["top_k"]
+        logger.info(
+            "Applied iow.config.yml without a restart: %s",
+            ", ".join(f"{k}={v}" for k, v in changed.items()),
+        )
+        return changed
+
+    def _config_watch_loop(self) -> None:
+        while not self._config_watch_stop.wait(2.0):
+            try:
+                self.refresh_live_settings()
+            except Exception as e:
+                logger.warning(f"Could not apply iow.config.yml changes: {e}")
+
+    def _start_observer(self) -> None:
         try:
             self.event_manager.start()
             logger.info("Part 1 Observer services started successfully.")
         except Exception as e:
             logger.error(f"Error starting observer background services: {e}")
 
+    def _redeploy_then_observe(self, recovered: HealCycleRecord) -> None:
+        try:
+            self.wisdom_loop.redeploy_recovered(recovered)
+            logger.info("Target restarted on the recovered pre-loop code: %s", recovered.post_rollback)
+        except Exception as e:
+            logger.error(f"Could not restart the target after the recovery: {e}")
+        finally:
+            if self.running:
+                self._start_observer()
+
     def shutdown(self) -> None:
         """Stops all background monitors and threads."""
         self.running = False
+        self._config_watch_stop.set()
         logger.info("Shutting down Inception-of-Wisdom orchestrator...")
         try:
             self.index_watcher.stop()
@@ -695,7 +959,10 @@ def create_app() -> FastAPI:
         consensus_engine=orchestrator.consensus_engine,
         pr_manager=orchestrator.pr_manager,
         flags=bonus_flags,
-        on_pr_merged=orchestrator._on_pr_merged,
+        merge_executor=orchestrator.land_pull_request,
+        patch_gate=orchestrator.gate_review_patch,
+        enabled=BONUS_ENABLED,
+        mode=IOW_MODE,
     )
     if bonus_router:
         app.include_router(bonus_router)
@@ -708,12 +975,22 @@ def create_app() -> FastAPI:
     # Toggle autonomous healing
     @app.post("/api/auto-heal/toggle")
     def toggle_auto_heal(enable: Optional[bool] = None) -> Dict[str, Any]:
-        if enable is not None:
-            orchestrator.auto_heal_enabled = enable
-        else:
-            orchestrator.auto_heal_enabled = not orchestrator.auto_heal_enabled
+        wanted = (not orchestrator.auto_heal_enabled) if enable is None else enable
+        if wanted and not LOOP_ENABLED:
+            # Part 3 is locked before `make p3`: switching auto-heal on here would only
+            # burn safety slots (rate limit / hard cap) on heals that never run.
+            raise HTTPException(
+                status_code=409,
+                detail=f"The Wisdom Loop is locked in mode '{IOW_MODE}' - start `make p3` or later.",
+            )
+        orchestrator.auto_heal_enabled = wanted
         logger.info(f"Auto-heal toggled to: {orchestrator.auto_heal_enabled}")
         return {"auto_heal_enabled": orchestrator.auto_heal_enabled}
+
+    # Browsers ask for it on every load; a 404 there was the only console error left.
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Any:
+        return Response(status_code=204)
 
     # Serve index.html template on root path
     @app.get("/", response_class=HTMLResponse)

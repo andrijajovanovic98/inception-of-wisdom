@@ -62,6 +62,7 @@ class CodeRetriever:
         error_type: Optional[str] = None
         error_msg: Optional[str] = None
 
+        frames: List[Tuple[str, int]] = []
         for line in log_text.splitlines():
             clean_line = line.strip()
 
@@ -76,6 +77,8 @@ class CodeRetriever:
 
                 line_num = int(tb_match.group(2))
                 lines_list.append(line_num)
+                if (norm_file, line_num) not in frames:
+                    frames.append((norm_file, line_num))
 
                 func_name = tb_match.group(3)
                 if func_name and func_name not in ["<module>", "<lambda>"] and func_name not in functions:
@@ -90,10 +93,55 @@ class CodeRetriever:
         return {
             "files": files,
             "lines": lines_list,
+            "frames": frames,
             "functions": functions,
             "error_type": error_type,
             "error_msg": error_msg
         }
+
+    def _lookup_traceback_chunks(
+        self,
+        extracted: Dict[str, Any],
+        query_embedding: Optional[List[List[float]]],
+        search_query: str,
+    ) -> List[Dict[str, Any]]:
+        """Look the traceback's identifiers up in the index itself.
+
+        Subject hint: "extract identifiers from the error log, look them up in the
+        symbol list of the index, and feed only the relevant chunks to the model".
+        Each hit keeps its real similarity score, so ranking stays comparable.
+        """
+        hits: List[Dict[str, Any]] = []
+        functions = list(extracted.get("functions") or [])
+        if functions:
+            hits.extend(
+                dict(c, match="symbol") for c in self.vector_db.query_similar(
+                    search_query, top_k=len(functions) * 2,
+                    where={"symbol_name": {"$in": functions}},
+                    query_embedding=query_embedding,
+                )
+            )
+
+        frames = list(extracted.get("frames") or [])
+        if frames:
+            indexed = self.vector_db.list_indexed_files()
+            # Only frames that point into the indexed tree (skip site-packages etc).
+            for base, line_no in frames[-6:]:
+                paths = [p for p in indexed if os.path.basename(p) == base]
+                if len(paths) != 1:
+                    continue
+                hits.extend(
+                    dict(c, match="line") for c in self.vector_db.query_similar(
+                        search_query, top_k=2,
+                        where={"$and": [
+                            {"file_path": paths[0]},
+                            {"start_line": {"$lte": line_no}},
+                            {"end_line": {"$gte": line_no}},
+                        ]},
+                        query_embedding=query_embedding,
+                    )
+                )
+        return hits
 
     def retrieve_for_crash(
         self,
@@ -125,18 +173,45 @@ class CodeRetriever:
         else:
             search_query = " ".join(query_parts)
 
-        # Semantic retrieval
-        semantic_results = self.retrieve_by_query(search_query, top_k=k * 2)
+        search_query = search_query.strip()
+        if not search_query:
+            return [], extracted
 
-        # Re-rank: prioritize chunks whose symbol_name or file_path was explicitly in the traceback
+        # Semantic retrieval + direct index lookups of the traceback identifiers,
+        # sharing one query embedding.
+        query_embedding = self.vector_db.compute_embeddings([search_query]) or None
+        semantic_results = self.vector_db.query_similar(
+            search_query, top_k=k * 2, query_embedding=query_embedding
+        )
+        merged: Dict[str, Dict[str, Any]] = {}
+        for chunk in semantic_results + self._lookup_traceback_chunks(
+            extracted, query_embedding, search_query
+        ):
+            cid = chunk.get("chunk_id", "")
+            previous = merged.get(cid)
+            if previous is None:
+                merged[cid] = chunk
+            elif chunk.get("match") and not previous.get("match"):
+                previous["match"] = chunk["match"]
+
+        # Re-rank: prioritize chunks whose symbol_name, line or file was explicitly in
+        # the traceback; similarity breaks ties.
         target_funcs = set(extracted.get("functions", []))
         target_files = set(extracted.get("files", []))
+        frames = list(extracted.get("frames") or [])
 
         def ranking_key(chunk: Dict[str, Any]) -> float:
-            score = chunk.get("similarity", 0.0)
+            score = float(chunk.get("similarity", 0.0) or 0.0)
             symbol = chunk.get("symbol_name", "")
             file_name = os.path.basename(chunk.get("file_path", ""))
 
+            # The exact line the traceback points at is the strongest evidence.
+            if any(
+                base == file_name
+                and int(chunk.get("start_line", 0)) <= line_no <= int(chunk.get("end_line", 0))
+                for base, line_no in frames
+            ):
+                score += 2.5
             # Huge boost if function was directly mentioned in traceback frame
             if symbol in target_funcs:
                 score += 2.0
@@ -146,7 +221,7 @@ class CodeRetriever:
 
             return score
 
-        ranked = sorted(semantic_results, key=ranking_key, reverse=True)
+        ranked = sorted(merged.values(), key=ranking_key, reverse=True)
         curated_chunks = ranked[:k]
 
         logger.info(

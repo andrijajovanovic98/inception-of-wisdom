@@ -6,7 +6,7 @@ Bonus API: Tiny Classifier, Second Opinion Consensus & Human-in-the-Loop PR Rout
 from __future__ import annotations
 
 import logging
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Tuple
 
 try:
     from fastapi import APIRouter, HTTPException, Query
@@ -47,14 +47,34 @@ def create_bonus_router(
     consensus_engine: Optional[SecondOpinionEngine] = None,
     pr_manager: Optional[PullRequestManager] = None,
     flags: Optional[Dict[str, bool]] = None,
-    on_pr_merged: Optional[Callable[[PullRequestRecord], None]] = None,
+    on_pr_merged: Optional[Callable[[PullRequestRecord], Any]] = None,
+    merge_executor: Optional[Callable[[str, Optional[str]], Tuple[int, str]]] = None,
+    patch_gate: Optional[Callable[[List[Dict[str, Any]]], Optional[str]]] = None,
+    enabled: bool = True,
+    mode: str = "full",
 ) -> Any:
-    """Factory function that creates and wires the FastAPI APIRouter for the Chapter VI Bonus Suite."""
+    """Factory function that creates and wires the FastAPI APIRouter for the Chapter VI Bonus Suite.
+
+    merge_executor(pr_id, comment) -> (http status, message) lands an approved PR (the
+    dashboard: under the heal bounds, verified, rolled back on failure). patch_gate
+    returns why a PR's files fail the pre-disk sanity gate, or None. With enabled
+    False (make p1 / p2 / p3) every action answers 409 - the Bonus tab is locked.
+    """
     if APIRouter is object:
         logger.warning("FastAPI is not installed in the current environment.")
         return None
 
     router = APIRouter(prefix="/api/bonus", tags=["Bonus"])
+
+    def _require_bonus_stage() -> None:
+        if not enabled:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"The Bonus suite is locked in mode '{mode}'. Start the agent with "
+                    "`make bonus`, `make pr-bonus`, `make argocd-bonus` or `make run`."
+                ),
+            )
 
     if flags is None:
         flags = {
@@ -95,6 +115,7 @@ def create_bonus_router(
     @router.post("/flags/toggle")
     def toggle_bonus_flag(flag_name: str) -> Dict[str, Any]:
         """Toggle bonus flags (human_in_the_loop, second_opinion_mandatory, fast_path_classifier)."""
+        _require_bonus_stage()
         if flag_name not in flags:
             available = list(flags.keys())
             raise HTTPException(
@@ -108,6 +129,7 @@ def create_bonus_router(
     @router.post("/flags/set")
     def set_bonus_flag(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Set one or more bonus flags explicitly from the UI."""
+        _require_bonus_stage()
         for key, value in payload.items():
             if key not in flags:
                 raise HTTPException(
@@ -132,12 +154,13 @@ def create_bonus_router(
     # ==========================================================================
     @router.post("/consensus/evaluate")
     def evaluate_second_opinion(payload: Dict[str, Any]) -> Dict[str, Any]:
+        _require_bonus_stage()
         if not consensus_engine:
             raise HTTPException(status_code=404, detail="Second Opinion consensus engine not initialized")
         log_excerpt = payload.get("log_excerpt", "")
         if not log_excerpt:
             raise HTTPException(status_code=400, detail="log_excerpt cannot be empty")
-        top_k = payload.get("top_k", 3)
+        top_k = payload.get("top_k")  # None = analyst.top_k
         report = consensus_engine.evaluate_consensus(log_excerpt, top_k=top_k)
         return report.to_dict()
 
@@ -162,6 +185,7 @@ def create_bonus_router(
     @router.post("/prs/create")
     def create_pull_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new Human-in-the-Loop PR (local branch + Gitea remote)."""
+        _require_bonus_stage()
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         cycle_id = payload.get("cycle_id", "")
@@ -169,6 +193,10 @@ def create_bonus_router(
         patch_files = payload.get("patch_files", [])
         if not cycle_id or not diagnosis or not patch_files:
             raise HTTPException(status_code=400, detail="cycle_id, diagnosis_summary, patch_files required")
+        # Approving lands these files on disk: they pass the same pre-disk gate as a heal.
+        refusal = patch_gate(patch_files) if patch_gate is not None else None
+        if refusal:
+            raise HTTPException(status_code=422, detail=f"Sanity check refused the patch: {refusal}")
         pr = pr_manager.create_pull_request(
             cycle_id=cycle_id,
             diagnosis_summary=diagnosis,
@@ -179,12 +207,18 @@ def create_bonus_router(
 
     @router.post("/prs/{pr_id}/merge")
     def merge_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        _require_bonus_stage()
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         comment = (payload or {}).get("comment")
-        success, message = pr_manager.merge_pr(pr_id, comment=comment, on_merged=on_pr_merged)
-        if not success:
-            raise HTTPException(status_code=400, detail=message)
+        if merge_executor is not None:
+            code, message = merge_executor(pr_id, comment)
+            if code != 200:
+                raise HTTPException(status_code=code, detail=message)
+        else:
+            success, message = pr_manager.merge_pr(pr_id, comment=comment, on_merged=on_pr_merged)
+            if not success:
+                raise HTTPException(status_code=400, detail=message)
         merged = pr_manager.get_pr(pr_id)
         return {"status": "merged", "message": message, "pr": merged.to_dict() if merged else {}}
 
@@ -195,6 +229,7 @@ def create_bonus_router(
 
     @router.post("/prs/{pr_id}/reject")
     def reject_pull_request(pr_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        _require_bonus_stage()
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         reason = (payload or {}).get("comment") or (payload or {}).get("reason")

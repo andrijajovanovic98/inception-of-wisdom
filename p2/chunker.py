@@ -91,16 +91,27 @@ class AstChunker:
             )
             return self._chunk_generic_file(rel_path, source_code)
 
-        # Track covered line ranges to extract module-level top preamble
-        covered_lines: set[int] = set()
+        # Top-level statements that are not defs (imports, constants, app = Flask(...),
+        # the __main__ block, ...) are grouped into contiguous module blocks, so every
+        # line of the file lives in some chunk. A crash in `if __name__ == "__main__":`
+        # (the classic bad environment variable) must be retrievable too.
+        module_blocks: List[List[ast.stmt]] = []
+        current_block: List[ast.stmt] = []
 
         for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if current_block:
+                    module_blocks.append(current_block)
+                    current_block = []
+            else:
+                current_block.append(node)
+                continue
+
             # Functions
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 chunk = self._extract_node_chunk(rel_path, lines, node, symbol_type="function")
                 if chunk:
                     chunks.append(chunk)
-                    covered_lines.update(range(chunk.start_line, chunk.end_line + 1))
 
             # Classes
             elif isinstance(node, ast.ClassDef):
@@ -114,42 +125,68 @@ class AstChunker:
                         )
                         if method_chunk:
                             chunks.append(method_chunk)
-                            covered_lines.update(range(method_chunk.start_line, method_chunk.end_line + 1))
 
                 # Extract the full class chunk
                 class_chunk = self._extract_node_chunk(rel_path, lines, node, symbol_type="class")
                 if class_chunk:
                     chunks.append(class_chunk)
-                    covered_lines.update(range(class_chunk.start_line, class_chunk.end_line + 1))
 
-        # Extract module-level preamble (imports, global constants)
-        preamble_lines = []
-        for i in range(1, total_lines + 1):
-            if i not in covered_lines:
-                preamble_lines.append(lines[i - 1])
+        if current_block:
+            module_blocks.append(current_block)
+
+        first_def_line = min(
+            (self._first_line(n) for n in tree.body
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))),
+            default=total_lines + 1,
+        )
+
+        for block in module_blocks:
+            start_line = self._first_line(block[0])
+            # The block that precedes every def also owns the file header
+            # (shebang, comments, module docstring).
+            if start_line < first_def_line:
+                start_line = 1
+            end_line = getattr(block[-1], "end_lineno", None) or total_lines
+            text = "".join(lines[start_line - 1:end_line]).strip()
+            if not text:
+                continue
+            if start_line == 1:
+                name = "module_preamble"
+            elif self._is_main_guard(block[0]):
+                name = "__main__"
             else:
-                break  # Stop at first function/class
-
-        preamble_text = "".join(preamble_lines).strip()
-        if preamble_text:
-            sha = hashlib.sha256(preamble_text.encode("utf-8")).hexdigest()
-            preamble_chunk = CodeChunk(
-                chunk_id=f"{rel_path}:module:module_preamble",
+                name = f"module_block_L{start_line}"
+            chunks.append(CodeChunk(
+                chunk_id=f"{rel_path}:module:{name}",
                 file_path=rel_path,
-                symbol_name="module_preamble",
+                symbol_name=name,
                 symbol_type="module",
-                start_line=1,
-                end_line=len(preamble_lines),
-                content=preamble_text,
-                sha256=sha
-            )
-            chunks.insert(0, preamble_chunk)
+                start_line=start_line,
+                end_line=end_line,
+                content=text,
+                sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            ))
 
         # Fallback if no functions or classes were found
         if not chunks:
             return self._chunk_generic_file(rel_path, source_code)
 
+        chunks.sort(key=lambda c: (c.start_line, c.symbol_type != "class"))
         return self._disambiguate_ids(chunks)
+
+    @staticmethod
+    def _first_line(node: ast.stmt) -> int:
+        decorators = getattr(node, "decorator_list", None) or []
+        lines = [getattr(d, "lineno", node.lineno) for d in decorators] + [node.lineno]
+        return min(lines)
+
+    @staticmethod
+    def _is_main_guard(node: ast.stmt) -> bool:
+        """`if __name__ == "__main__":`"""
+        if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+            return False
+        left = node.test.left
+        return isinstance(left, ast.Name) and left.id == "__name__"
 
     @staticmethod
     def _disambiguate_ids(chunks: List[CodeChunk]) -> List[CodeChunk]:

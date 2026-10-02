@@ -73,11 +73,13 @@ Thumbs.db
 # Logs and Runtime artifacts
 *.log
 
-# Lint / type-check caches
-.lint-venv/
-.mypy_cache/
+# Wisdom Loop atomic-write temp files (<file>.iow.tmp, renamed over the target)
+*.iow.tmp
+*.iow_tmp
 
 # Lint / type-check caches (campus: prefer /tmp/iow/mypy_cache via mypy.ini)
 .lint-venv/
 .mypy_cache/
 
+# Local documentation and subject files
+docu/

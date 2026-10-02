@@ -11,8 +11,11 @@ metadata:
   name: iow-demo-source
   namespace: iow-demo
 data:
-  # Patched by scripts/argocd_bonus_up.sh to the in-cluster Gitea URL + branch.
-  repo_url: "http://iow_gitea:3000/iow/inception-of-wisdom.git"
+  # Pods resolve names through the cluster DNS, which knows nothing of compose
+  # container names such as iow_gitea: scripts/argocd_bonus_up.sh publishes Gitea as
+  # the Service gitea.iow. Patching the URL here at bootstrap does not last - Argo CD
+  # (selfHeal) puts this manifest back as it is in git.
+  repo_url: "http://gitea.iow.svc.cluster.local:3000/iow/inception-of-wisdom.git"
   revision: "iow/auto-heal"
 ---
 apiVersion: apps/v1

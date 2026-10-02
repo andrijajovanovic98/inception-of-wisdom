@@ -12,10 +12,16 @@ NS_DEMO="iow-demo"
 NS_ARGO="argocd"
 API_PORT="${IOW_K3D_API_PORT:-6550}"
 NODE_PORT="${IOW_K3D_NODE_PORT:-30051}"
+# Local port of the Argo CD UI/API port-forward (8080 is often taken on a campus box).
+ARGOCD_PORT="${IOW_ARGOCD_PORT:-8080}"
 K3S_NAME="${IOW_K3S_CONTAINER:-iow-k3s}"
 K3S_IMAGE="${IOW_K3S_IMAGE:-rancher/k3s:v1.27.12-k3s1}"
 GIT_IMAGE="${IOW_GIT_IMAGE:-alpine/git:2.45.2}"
 HEAL_BRANCH="${IOW_GITOPS_BRANCH:-iow/auto-heal}"
+# Gitea as every pod sees it (Argo CD's repo-server and the demo's init container):
+# a Service in front of the iow_gitea container - see apply_gitea_service.
+NS_GITEA="iow"
+GITEA_SVC_URL="http://gitea.${NS_GITEA}.svc.cluster.local:3000/iow/inception-of-wisdom.git"
 
 mkdir -p "${IOW_DIR}/gitops" "${BIN_DIR}" "$(dirname "${IOW_DIR}/kube/config")"
 chmod +x "${ROOT}/scripts/ensure_gitops_tools.sh" 2>/dev/null || true
@@ -167,13 +173,47 @@ publish_manifests_to_gitea() {
   printf '%s\n' "${ip}"
 }
 
+# Pods resolve names through the cluster DNS, which cannot see compose container
+# names: `iow_gitea` does not resolve inside the cluster. A selector-less Service
+# with a hand-made Endpoints gives the Gitea container a stable in-cluster name,
+# gitea.iow.svc.cluster.local, so the URL committed in k8s/demo-app works whichever
+# branch Argo CD syncs. The IP is refreshed on every bootstrap.
+apply_gitea_service() {
+  local ip="$1"
+  kubectl create namespace "${NS_GITEA}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea
+  namespace: ${NS_GITEA}
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: gitea
+  namespace: ${NS_GITEA}
+subsets:
+  - addresses:
+      - ip: ${ip}
+    ports:
+      - name: http
+        port: 3000
+EOF
+  echo "[*] Gitea in the cluster: gitea.${NS_GITEA}.svc.cluster.local:3000 -> ${ip}:3000" >&2
+}
+
 # stdout = URL only (kubectl noise suppressed).
 register_argocd_repo() {
-  local ip="$1"
+  local url="$1"
   local creds="${IOW_DIR}/gitea/gitea.env"
   # shellcheck disable=SC1090
   set -a; source "${creds}"; set +a
-  local url="http://${ip}:3000/iow/inception-of-wisdom.git"
   kubectl -n "${NS_ARGO}" create secret generic iow-gitea-repo \
     --from-literal=type=git \
     --from-literal=url="${url}" \
@@ -337,10 +377,10 @@ import_demo_image
 GITEA_IP="$(publish_manifests_to_gitea | tail -n1)"
 REPO_URL="${IOW_GITOPS_REPO_URL:-}"
 if [ -z "${REPO_URL}" ]; then
+  apply_gitea_service "${GITEA_IP:-$(gitea_ip)}"
+  REPO_URL="${GITEA_SVC_URL}"
   if [ -n "${GITEA_IP}" ]; then
-    REPO_URL="$(register_argocd_repo "${GITEA_IP}" | tail -n1)"
-  else
-    REPO_URL="http://$(gitea_ip):3000/iow/inception-of-wisdom.git"
+    REPO_URL="$(register_argocd_repo "${REPO_URL}" | tail -n1)"
   fi
 fi
 # Strip any accidental whitespace/newlines from capture.
@@ -361,7 +401,19 @@ kubectl -n "${NS_DEMO}" get pods,svc || true
 
 # No demo port-forward: the k3s container already publishes 127.0.0.1:${NODE_PORT},
 # so a port-forward there can only ever fail with "address already in use".
-ensure_port_forward argocd "${NS_ARGO}" argocd-server 8080 80 || true
+# Never forward onto a port someone else holds: the agent logs in to Argo CD there,
+# and the admin password would go to that other service.
+ARGOCD_SERVER=""
+if ss -ltn 2>/dev/null | grep -qE "[:.]${ARGOCD_PORT}[[:space:]]" \
+    && ! [ -f "${IOW_DIR}/gitops/argocd-port-forward.pid" ]; then
+  echo "[!] Port ${ARGOCD_PORT} is taken by another program - no Argo CD port-forward." >&2
+  echo "    Re-run with a free one: IOW_ARGOCD_PORT=18080 make argocd-bonus" >&2
+else
+  ensure_port_forward argocd "${NS_ARGO}" argocd-server "${ARGOCD_PORT}" 80 || true
+  if kill -0 "$(cat "${IOW_DIR}/gitops/argocd-port-forward.pid" 2>/dev/null)" 2>/dev/null; then
+    ARGOCD_SERVER="127.0.0.1:${ARGOCD_PORT}"
+  fi
+fi
 
 ARGO_PASS="$(kubectl -n "${NS_ARGO}" get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)"
@@ -376,6 +428,7 @@ IOW_K3D_CLUSTER=${CLUSTER}
 IOW_K3S_CONTAINER=${K3S_NAME}
 IOW_GITOPS_BIN=${BIN_DIR}
 KUBECONFIG=${KUBECONFIG}
+IOW_ARGOCD_SERVER=${ARGOCD_SERVER}
 PATH=${BIN_DIR}:\$PATH
 EOF
 
@@ -384,7 +437,7 @@ echo "[+] argocd-bonus READY"
 echo "    kubectl:  source ${IOW_DIR}/gitops/path.env && kubectl get nodes"
 echo "    demo:     http://127.0.0.1:${NODE_PORT}  (same image as demo_app/)"
 echo "    compose:  http://127.0.0.1:5001          (iow_demo_target)"
-echo "    Argo CD:  http://127.0.0.1:8080  (user=admin pass=${ARGO_PASS:-<see secret>})"
+echo "    Argo CD:  http://${ARGOCD_SERVER:-<no port-forward>}  (user=admin pass=${ARGO_PASS:-<see secret>})"
 kubectl get nodes
 kubectl -n "${NS_DEMO}" get pods,svc || true
 kubectl -n "${NS_ARGO}" get pods 2>/dev/null | head -20 || true

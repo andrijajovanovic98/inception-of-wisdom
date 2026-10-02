@@ -155,20 +155,47 @@ def create_loop_router(
         log_excerpt = req.log_excerpt
         run_async = True if req.run_async is None else req.run_async
 
-        if not sig and event_manager:
-            latest_crash = event_manager.get_latest_crash()
-            if latest_crash:
-                sig = latest_crash.signature
-                summary = latest_crash.summary
-                # Observer events carry the traceback under context_excerpt /
-                # matched_line; reading a non-existent "log_excerpt" key used to
-                # hand the Analyst an empty log.
-                log_excerpt = (
-                    latest_crash.details.get("context_excerpt")
-                    or latest_crash.details.get("matched_line")
-                    or latest_crash.summary
-                    or ""
-                )
+        # Heal a picked crash (its signature) or, by default, the latest one. Either
+        # way the Analyst gets that event's own log context, never an empty string.
+        source_event: Optional[ObserverEvent] = None
+        if event_manager:
+            if sig:
+                source_event = event_manager.find_event(sig)
+            else:
+                source_event = event_manager.get_latest_crash()
+        if source_event is not None and source_event.type != "crash":
+            # Subject V.1: a 4xx is surfaced for a human and never patched.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Event {source_event.signature[:8]} is a {source_event.type}, not a "
+                    "crash: a functional gap is for a human to decide on, the loop never "
+                    "patches it."
+                ),
+            )
+        if source_event is None and not (log_excerpt or "").strip():
+            # With no crash and no log there is nothing to diagnose - and a model told
+            # that "returning the code unchanged is not a fix" would edit healthy code.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "No crash observed and no error log given - there is nothing to heal. "
+                    "Trigger a crash first (make break-import / break-env / break-syntax)."
+                ),
+            )
+        if source_event is not None:
+            sig = source_event.signature
+            summary = summary or source_event.summary
+            # Observer events carry the traceback under context_excerpt /
+            # matched_line; reading a non-existent "log_excerpt" key used to
+            # hand the Analyst an empty log.
+            log_excerpt = (
+                source_event.details.get("context_excerpt")
+                or source_event.details.get("matched_line")
+                or log_excerpt
+                or source_event.summary
+                or ""
+            )
 
         if not sig:
             sig = f"manual_trigger_{int(time.time())}"
@@ -185,18 +212,20 @@ def create_loop_router(
                 }
 
         now = time.time()
+        details: Dict[str, Any] = dict(source_event.details) if source_event else {}
+        details.update({
+            "log_excerpt": log_excerpt or "",
+            "context_excerpt": log_excerpt or "",
+            "status": details.get("status") or "crashed",
+            "triggered_by": "api",
+        })
         crash_event = ObserverEvent(
             id=str(uuid.uuid4())[:8],
             type="crash",
-            source="api",
+            source=source_event.source if source_event else "api",
             signature=sig,
             summary=summary or f"Crash event {sig[:8]}",
-            details={
-                "log_excerpt": log_excerpt or "",
-                "context_excerpt": log_excerpt or "",
-                "status": "crashed",
-                "triggered_by": "api"
-            },
+            details=details,
             first_seen=now,
             last_seen=now
         )
@@ -213,10 +242,16 @@ def create_loop_router(
             }
 
         try:
-            result = wisdom_loop.execute_heal(crash_event, grace_period=grace_period)
+            if heal_executor is not None:
+                # The same path as the background run (crash context, bonus gates).
+                heal_executor(crash_event, grace_period)
+                latest = wisdom_loop.get_latest_cycle()
+                result_dict = latest.to_dict() if latest is not None else {}
+            else:
+                result_dict = wisdom_loop.execute_heal(crash_event, grace_period=grace_period).to_dict()
             return {
                 "status": "completed",
-                "result": result.to_dict()
+                "result": result_dict,
             }
         finally:
             if safety_manager:
@@ -231,6 +266,18 @@ def create_loop_router(
         _require_loop_stage()
         if not wisdom_loop or not wisdom_loop.git_manager:
             raise HTTPException(status_code=500, detail="Git manager not configured on Wisdom Loop.")
+        if not wisdom_loop.claim():
+            # A heal cycle owns the working tree and the heal branch right now; a
+            # concurrent rollback would race its writes. It rolls back on its own
+            # if it fails. Holding the slot also keeps a heal from starting while this
+            # rollback restores and restarts the target.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A heal cycle is running - wait for it to finish "
+                    "(it rolls back on its own on failure)."
+                ),
+            )
 
         gm = wisdom_loop.git_manager
         target_revision = payload.target_revision if payload else None
@@ -251,25 +298,34 @@ def create_loop_router(
                 if not rollback_ok:
                     raise HTTPException(status_code=500, detail="Pre-loop rollback failed.")
 
+            # Redeploy through the verifier: in GitOps mode that also publishes the
+            # rewound heal branch, so the cluster really returns to the old revision.
             restart_success = False
-            if wisdom_loop.docker_monitor:
-                restart_fn = getattr(
-                    wisdom_loop.docker_monitor,
-                    "restart_target",
-                    getattr(wisdom_loop.docker_monitor, "restart_container", None),
+            target_up: Optional[bool] = None
+            if getattr(wisdom_loop, "verifier", None) is not None:
+                result = wisdom_loop.verifier.restart_and_verify(grace_period=0.0)
+                # "restart_failed" in the boot phase means the restart happened but the
+                # restored code did not come up - which is what a planted bug does.
+                restart_success = (
+                    result.status != "restart_failed" or result.details.get("phase") == "boot"
                 )
-                if callable(restart_fn):
-                    restart_success = bool(restart_fn())
+                target_up = result.is_healed
+            elif wisdom_loop.docker_monitor:
+                restart_success = bool(wisdom_loop.docker_monitor.restart_target())
 
             return {
                 "status": "rolled_back",
                 "target_revision": restored_hash,
-                "container_restarted": restart_success
+                "container_restarted": restart_success,
+                "target_up": target_up,
+                "rollback_check": gm.last_rollback_check if not target_revision else None,
             }
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Manual rollback failed: {e}")
             raise HTTPException(status_code=500, detail=f"Rollback failed: {str(e)}")
+        finally:
+            wisdom_loop.release()
 
     return router

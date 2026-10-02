@@ -101,11 +101,18 @@ class IndexWatcher:
             if changed:
                 chunks: List[CodeChunk] = []
                 for path in changed:
-                    chunks.extend(self.chunker.chunk_file(path))
+                    file_chunks = self.chunker.chunk_file(path)
+                    if not file_chunks:
+                        # Emptied on disk: nothing left to index, so nothing may stay.
+                        rel = os.path.relpath(path, self.chunker.base_dir)
+                        if self.vector_db.delete_by_file(rel):
+                            result["pruned"] += 1
+                    chunks.extend(file_chunks)
                 if chunks:
                     stats = self.vector_db.sync_chunks(chunks)
-                    for key in ("added", "skipped", "failed", "pruned"):
+                    for key in ("added", "skipped", "failed"):
                         result[key] = int(stats.get(key, 0))
+                    result["pruned"] += int(stats.get("pruned", 0))
 
             if removed or force_full:
                 known_rel = [

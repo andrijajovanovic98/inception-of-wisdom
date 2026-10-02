@@ -51,6 +51,8 @@ class PullRequestRecord:
     remote_html_url: Optional[str] = None
     remote_api_url: Optional[str] = None
     base_branch: str = "main"
+    # What happened when the approved code was deployed (redeploy + verification).
+    landing: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -310,15 +312,13 @@ class PullRequestManager:
         if os.path.isfile(full_path):
             try:
                 with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-                    old_lines = f.readlines()
+                    old_lines = f.read().splitlines()
             except Exception as e:
                 logger.warning(f"Could not read old file {full_path} for diff: {e}")
-        new_lines = [
-            line if line.endswith("\n") else line + "\n"
-            for line in new_content.splitlines(keepends=True)
-        ]
+        # Line endings stripped on both sides: lineterm="" plus kept "\n" used to
+        # double-space every line of the review diff.
         diff = difflib.unified_diff(
-            old_lines, new_lines,
+            old_lines, new_content.splitlines(),
             fromfile=f"a/{file_path}", tofile=f"b/{file_path}", lineterm="",
         )
         return "\n".join(diff)
@@ -343,12 +343,6 @@ class PullRequestManager:
         )
         return True
 
-    def _resolve_base_branch(self) -> str:
-        status = self.remote_status()
-        if status.get("reachable") and status.get("detail", {}).get("default_branch"):
-            return status["detail"]["default_branch"]
-        return "main"
-
     def create_pull_request(
         self,
         cycle_id: str,
@@ -360,7 +354,9 @@ class PullRequestManager:
         pr_id = f"pr-{cycle_id}"
         branch_name = f"iow/review/{cycle_id}"
         base_rev = base_revision or self.git_manager.get_current_head() or "HEAD"
-        base_branch = self._resolve_base_branch()
+        # Every PR gets its own base branch: they all used to force-push the mirror's
+        # `main`, so opening one PR rewrote the base - and the diff - of the others.
+        base_branch = f"iow/base/{cycle_id}"
 
         diff_chunks: List[str] = []
         files_changed: List[str] = []
@@ -496,8 +492,11 @@ class PullRequestManager:
         Unlike HITL review PRs (separate review branches), this exposes the already-committed
         heal branch so evaluators can see a real PR without turning HITL on.
         """
-        heal_branch = self.git_manager.heal_branch
-        base_branch = self._resolve_base_branch()
+        # Frozen head and base: iow/auto-heal keeps moving with later cycles, so a PR
+        # opened on it would change under the reviewer's feet.
+        heal_branch = f"iow/heal/{cycle_id}"
+        base_branch = f"iow/base/{cycle_id}"
+        head_sha = commit_sha or self.git_manager.get_branch_tip(self.git_manager.heal_branch)
         files = files_changed or []
         summary = (diagnosis_summary or "Verified auto-heal").strip()
         title = f"[IoW Verified Heal] {summary[:70]}"
@@ -529,8 +528,18 @@ Verified healthy after Wisdom Loop auto-heal.
 
         # Same reason as above: without a real base, the heal PR diffs the whole repo.
         pre_loop = self.git_manager.get_pre_loop_hash() or self.git_manager.get_current_head()
-        if pre_loop:
-            self.ensure_base_branch(pre_loop, base_branch)
+        if not head_sha or not pre_loop:
+            logger.warning("Cannot open verified heal PR: no heal commit / pre-loop revision.")
+            return None
+        self.git_manager._run_git(["update-ref", f"refs/heads/{heal_branch}", head_sha], check=False)
+        self.ensure_base_branch(pre_loop, base_branch)
+        rc, err = self._push(f"refs/heads/{heal_branch}:refs/heads/{heal_branch}", force=True)
+        if rc != 0:
+            logger.warning(f"Push of '{heal_branch}' failed: {err}")
+            return None
+        _, unified_diff, _ = self.git_manager._run_git(
+            ["diff", pre_loop, head_sha, "--", *self.git_manager.heal_paths_list()], check=False
+        )
 
         owner, repo = self._owner(), self._repo()
         existing = self._find_open_pr(heal_branch, base_branch)
@@ -574,12 +583,12 @@ Verified healthy after Wisdom Loop auto-heal.
             pr_id=pr_id,
             title=title,
             branch_name=heal_branch,
-            base_revision=commit_sha or self.git_manager.get_current_head() or "",
+            base_revision=pre_loop,
             base_branch=base_branch,
             status="pending_review",
             diagnosis_summary=summary,
             files_changed=files,
-            unified_diff="(see Gitea PR diff for verified heal branch)",
+            unified_diff=unified_diff or "(no textual change)",
             markdown_body=body,
             created_at=time.time(),
             remote_pr_number=remote_pr_number,
@@ -629,18 +638,42 @@ Verified healthy after Wisdom Loop auto-heal.
         if code not in (200, 201):
             logger.warning(f"Failed to close Gitea PR #{pr.remote_pr_number}: {data}")
 
+    def _tree_is_at(self, revision: str) -> bool:
+        """Whether demo_app/ on disk is exactly `revision` (operator-owned files aside)."""
+        same, differing = self.git_manager.verify_heal_paths_match(revision)
+        protected = set(self.git_manager.protected_paths)
+        return same or (bool(differing) and all(path in protected for path in differing))
+
     def merge_pr(
         self,
         pr_id: str,
         comment: Optional[str] = None,
-        on_merged: Optional[Callable[[PullRequestRecord], None]] = None,
+        on_merged: Optional[Callable[[PullRequestRecord], Optional[Dict[str, Any]]]] = None,
     ) -> Tuple[bool, str]:
-        """Human approval: merge via Gitea API (if remote) then locally into heal branch."""
+        """Human approval: merge via Gitea API (if remote) then locally into heal branch.
+
+        on_merged lands the approved code (redeploy + verification) and may return
+        the outcome; {"reverted": True} means it failed and was rolled back.
+        """
         pr = self.prs.get(pr_id)
         if not pr:
             return False, f"PR '{pr_id}' not found."
         if pr.status != "pending_review":
             return False, f"PR '{pr_id}' is already {pr.status}."
+
+        # A PR is a set of complete files built on base_revision. Landed on a tree that
+        # has moved since (a later heal, an operator edit), it would silently revert
+        # that change. A verified-heal PR is already on disk, which is fine too.
+        head = self.git_manager.get_branch_tip(pr.branch_name)
+        if not head:
+            return False, f"Review branch '{pr.branch_name}' no longer exists."
+        already_applied = self._tree_is_at(head)
+        if not already_applied and not self._tree_is_at(pr.base_revision):
+            return False, (
+                f"PR '{pr_id}' is stale: the target's code changed after it was opened "
+                f"(it was built on {pr.base_revision[:8]}). Landing it would revert that "
+                "change - reject it and let the loop propose a fresh one."
+            )
 
         if pr.remote_pr_number:
             owner, repo = self._owner(), self._repo()
@@ -655,32 +688,44 @@ Verified healthy after Wisdom Loop auto-heal.
         try:
             # Fast-forward the heal branch onto the review commit without checking
             # anything out, then bring demo_app/ in the working tree up to it so the
-            # restarted container actually runs the approved code.
-            merged_sha = self.git_manager.get_branch_tip(pr.branch_name)
-            if not merged_sha:
-                return False, f"Review branch '{pr.branch_name}' no longer exists."
+            # restarted container actually runs the approved code. The files come out
+            # of a throwaway index: the peer's real index is never rewritten.
+            merged_sha = head
             self.git_manager._run_git(
                 ["update-ref", f"refs/heads/{self.git_manager.heal_branch}", merged_sha],
                 check=False,
             )
-            self.git_manager._run_git(
-                ["checkout", merged_sha, "--", *self.git_manager.heal_paths_list()],
-                check=False,
-            )
-            self.git_manager._run_git(
-                ["reset", "--quiet", "--", *self.git_manager.heal_paths_list()],
-                check=False,
-            )
+            if not already_applied and not self.git_manager.materialize_heal_paths(merged_sha):
+                return False, f"Could not write the approved revision {merged_sha[:8]} to disk."
             pr.status = "merged"
             pr.resolved_at = time.time()
             pr.reviewer_comment = comment or "Approved and merged by human operator."
             self._save_store()
             logger.info(f"Pull Request [{pr_id}] successfully MERGED into {self.git_manager.heal_branch}")
-            if on_merged:
+            outcome: Optional[Dict[str, Any]] = None
+            # Only code this approval actually wrote needs deploying. A verified heal's
+            # record PR is already running - redeploying it risked a transient failure
+            # "rolling back" a verified heal to its broken base.
+            if on_merged and not already_applied:
                 try:
-                    on_merged(pr)
+                    outcome = on_merged(pr)
                 except Exception as cb_err:
                     logger.error(f"on_merged callback failed: {cb_err}")
+            if isinstance(outcome, dict):
+                pr.landing = outcome
+                if outcome.get("reverted"):
+                    pr.status = "reverted"
+                    pr.reviewer_comment = (
+                        f"{pr.reviewer_comment} - the approved code did not stay up "
+                        f"({outcome.get('status')}), so it was rolled back to "
+                        f"{pr.base_revision[:8]}."
+                    )
+                self._save_store()
+                if outcome.get("reverted"):
+                    return False, (
+                        f"PR [{pr_id}] was approved, but the target did not stay up on it "
+                        f"({outcome.get('status')}): rolled back to {pr.base_revision[:8]}."
+                    )
             return True, f"PR [{pr_id}] merged successfully."
         except Exception as e:
             logger.error(f"Failed to merge PR [{pr_id}]: {e}")
