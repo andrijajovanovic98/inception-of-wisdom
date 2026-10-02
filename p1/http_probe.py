@@ -57,6 +57,9 @@ class HttpProbeManager:
 
         self.on_crash = on_crash
         self.on_suggestion = on_suggestion
+        # Called with every complete round of results (the Observer: has the target
+        # recovered?), suppressed or not.
+        self.on_round: Optional[Callable[[List[ProbeResult]], Any]] = None
 
         # Latest results mapped by full url
         self._latest_results: Dict[str, ProbeResult] = {}
@@ -120,10 +123,24 @@ class HttpProbeManager:
                 except Exception as e:
                     logger.error(f"Error in on_suggestion callback: {e}")
 
+        if self.on_round:
+            try:
+                self.on_round(results)
+            except Exception as e:
+                logger.error(f"Error in on_round callback: {e}")
         return results
 
-    def _probe_single_url(self, url: str) -> ProbeResult:
-        """Executes a single HTTP GET request and classifies the outcome."""
+    def request_once(self, method: str, path: str) -> ProbeResult:
+        """One request against the target, classified like a probe (no events raised).
+
+        The Verifier uses it to re-issue the request that crashed the target: for a
+        soft crash that is the only way to see whether the symptom is really gone.
+        """
+        full_url = f"{self.service_url}{path if path.startswith('/') else '/' + path}"
+        return self._probe_single_url(full_url, method=method)
+
+    def _probe_single_url(self, url: str, method: str = "GET") -> ProbeResult:
+        """Executes a single HTTP request (GET by default) and classifies the outcome."""
         now = time.time()
         start_time = time.perf_counter()
 
@@ -138,7 +155,7 @@ class HttpProbeManager:
 
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
-                response = client.get(url)
+                response = client.request(method, url)
                 duration_ms = (time.perf_counter() - start_time) * 1000.0
                 status_code = response.status_code
 
@@ -243,6 +260,20 @@ class HttpProbeManager:
             while elapsed < self.interval_seconds and not self._stop_event.is_set():
                 time.sleep(step)
                 elapsed += step
+
+    def set_probe_paths(self, paths: List[str]) -> None:
+        """Swap the probe list at runtime (iow.config.yml edit).
+
+        Results of URLs no longer probed are dropped: a stale 5xx of a removed path
+        would otherwise keep the target "unhealthy" forever.
+        """
+        self.probe_paths = list(paths)
+        wanted = {
+            f"{self.service_url}{p if p.startswith('/') else '/' + p}" for p in self.probe_paths
+        }
+        with self._lock:
+            for url in [u for u in self._latest_results if u not in wanted]:
+                del self._latest_results[url]
 
     def get_latest_results(self) -> Dict[str, Dict[str, Any]]:
         """Returns a snapshot dictionary of the most recent probe for each path."""

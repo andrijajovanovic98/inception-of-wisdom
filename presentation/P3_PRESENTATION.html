@@ -93,7 +93,7 @@
             <li>Enforces complete file replacement or creation.</li>
             <li>No ambiguous patch hunk offsets.</li>
             <li>System prompts strictly mandate syntactically complete code.</li>
-            <li>If the generated patch fails, a surgical patcher can disarm the known intentional-crash marker.</li>
+            <li>No canned fixes: for a larger file the model rewrites only the chunk the traceback points at (plain code), and the patcher splices it into the complete file of the JSON patch. A failed attempt hands the new error log back; after 3 attempts everything rolls back.</li>
           </ul>
         </div>
       </div>

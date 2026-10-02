@@ -9,7 +9,8 @@ import json
 import time
 import asyncio
 import logging
-from typing import Optional, List, Dict, Any
+import threading
+from typing import Optional, List, Dict, Any, Tuple
 
 try:
     from fastapi import APIRouter, Request
@@ -40,28 +41,40 @@ def create_observer_router(
 
     router = APIRouter(prefix="/api/observer", tags=["Observer"])
 
-    # Track active SSE subscriber queues (woken on Ctrl+C so uvicorn can exit)
-    sse_queues: List[asyncio.Queue] = []
+    # Active SSE subscribers: (queue, the event loop that owns it). Producers are the
+    # log / probe / Docker worker threads, and asyncio.Queue is not thread-safe, so
+    # every hand-off goes through loop.call_soon_threadsafe.
+    sse_clients: List[Tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = []
+    sse_lock = threading.Lock()
     sse_closing = False
+
+    def _deliver(q: asyncio.Queue, payload: Dict[str, Any]) -> None:
+        """Runs on the client's loop. A slow client loses its oldest message."""
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()
+                q.put_nowait(payload)
+            except Exception:
+                pass
+
+    def _enqueue_sse(payload: Dict[str, Any]) -> None:
+        with sse_lock:
+            clients = list(sse_clients)
+        for q, loop in clients:
+            try:
+                loop.call_soon_threadsafe(_deliver, q, payload)
+            except RuntimeError:
+                pass  # that client's loop is already closed
 
     def shutdown_sse() -> None:
         """Wake / drop live SSE clients so one Ctrl+C can finish without force-cancel noise."""
         nonlocal sse_closing
         sse_closing = True
-        for q in list(sse_queues):
-            try:
-                q.put_nowait({"type": "shutdown", "data": {}})
-            except Exception:
-                pass
+        _enqueue_sse({"type": "shutdown", "data": {}})
 
     router.shutdown_sse = shutdown_sse  # type: ignore[attr-defined]
-
-    def _enqueue_sse(payload: Dict[str, Any]) -> None:
-        for q in list(sse_queues):
-            try:
-                q.put_nowait(payload)
-            except Exception:
-                pass
 
     def _on_event_broadcast(event: ObserverEvent) -> None:
         _enqueue_sse({
@@ -176,8 +189,10 @@ def create_observer_router(
                 status_code=500,
             )
 
-        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        sse_queues.append(queue)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+        client = (queue, asyncio.get_running_loop())
+        with sse_lock:
+            sse_clients.append(client)
 
         async def text_stream():
             try:
@@ -224,8 +239,9 @@ def create_observer_router(
                 # Normal on Ctrl+C while browser still holds /events open
                 pass
             finally:
-                if queue in sse_queues:
-                    sse_queues.remove(queue)
+                with sse_lock:
+                    if client in sse_clients:
+                        sse_clients.remove(client)
 
         return StreamingResponse(
             text_stream(),

@@ -13,11 +13,12 @@ from p2.chunker import CodeChunk
 
 logger = logging.getLogger("p2.db")
 
-# User constraint & 42 quota protection: Route model caches to /tmp
-CACHE_BASE_DIR = os.environ.get("IOW_CACHE_DIR", "/tmp/iow_cache")
-os.environ.setdefault("HF_HOME", os.path.join(CACHE_BASE_DIR, "hf"))
-os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", os.path.join(CACHE_BASE_DIR, "embeddings"))
-os.environ.setdefault("TORCH_HOME", os.path.join(CACHE_BASE_DIR, "torch"))
+# 42 quota protection: every model cache lives under /tmp/iow. The embedding model is
+# resolved through HF_HOME only - the same cache `make setup` prefetches into - so the
+# agent never downloads a second copy into some other directory.
+CACHE_BASE_DIR = os.environ.get("IOW_CACHE_DIR", "/tmp/iow")
+os.environ.setdefault("HF_HOME", os.path.join(CACHE_BASE_DIR, "hf-cache"))
+os.environ.setdefault("TORCH_HOME", os.path.join(CACHE_BASE_DIR, "hf-cache", "torch"))
 # Must be set before chromadb import / client init (IoC-style)
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
@@ -86,20 +87,31 @@ class ChromaVectorDB:
         # Load local embedding model
         if self._embedder is None and SentenceTransformer is not None:
             try:
-                emb_cache = os.path.join(CACHE_BASE_DIR, "embeddings")
-                os.makedirs(emb_cache, exist_ok=True)
-                logger.info(
-                    f"Loading local embedding model '{self.embedding_model_name}' (cache={emb_cache})..."
-                )
-                self._embedder = SentenceTransformer(
-                    self.embedding_model_name,
-                    cache_folder=emb_cache
-                )
+                self._embedder = self._load_embedder()
                 logger.info("Local embedding model loaded successfully.")
             except Exception as e:
                 logger.warning(f"Could not load SentenceTransformer model ({e}). Embedding will be delayed.")
 
         return True
+
+    def _load_embedder(self) -> Any:
+        """Load the embedding model, from the local cache first.
+
+        local_files_only keeps a cached model fully offline (no hub round-trip); only
+        a genuinely empty cache falls back to the one-time download.
+        """
+        logger.info(
+            f"Loading local embedding model '{self.embedding_model_name}' "
+            f"(HF_HOME={os.environ.get('HF_HOME')})..."
+        )
+        try:
+            return SentenceTransformer(self.embedding_model_name, local_files_only=True)
+        except Exception as cached_err:
+            logger.info(
+                f"Embedding model not in the local cache yet ({cached_err}); "
+                "downloading it once."
+            )
+            return SentenceTransformer(self.embedding_model_name)
 
     def compute_embeddings(self, texts: List[str]) -> Optional[List[List[float]]]:
         """Computes embeddings locally using all-MiniLM-L6-v2."""
@@ -109,11 +121,7 @@ class ChromaVectorDB:
         if self._embedder is None:
             if SentenceTransformer is not None:
                 try:
-                    emb_cache = os.path.join(CACHE_BASE_DIR, "embeddings")
-                    self._embedder = SentenceTransformer(
-                        self.embedding_model_name,
-                        cache_folder=emb_cache
-                    )
+                    self._embedder = self._load_embedder()
                 except Exception as e:
                     logger.error(f"Failed to load embedder on demand: {e}")
                     return None
@@ -127,6 +135,17 @@ class ChromaVectorDB:
         except Exception as e:
             logger.error(f"Error computing embeddings: {e}")
             return None
+
+    @staticmethod
+    def _metadata(chunk: CodeChunk) -> Dict[str, Any]:
+        return {
+            "file_path": chunk.file_path,
+            "symbol_name": chunk.symbol_name,
+            "symbol_type": chunk.symbol_type,
+            "start_line": chunk.start_line,
+            "end_line": chunk.end_line,
+            "sha256": chunk.sha256,
+        }
 
     def index_chunks(self, chunks: List[CodeChunk]) -> Dict[str, int]:
         """Incrementally indexes code chunks into ChromaDB.
@@ -143,23 +162,38 @@ class ChromaVectorDB:
         # Retrieve existing metadata to check for unchanged hashes
         try:
             existing = self._collection.get(ids=chunk_ids, include=["metadatas"])
-            existing_map = {}
+            existing_map: Dict[str, Dict[str, Any]] = {}
             for i, cid in enumerate(existing.get("ids", [])):
                 meta = existing.get("metadatas", [])[i] if existing.get("metadatas") else {}
-                existing_map[cid] = meta.get("sha256", "")
+                existing_map[cid] = dict(meta or {})
         except Exception as e:
             logger.warning(f"Could not check existing chunks: {e}. Proceeding with all chunks.")
             existing_map = {}
 
         to_embed_chunks: List[CodeChunk] = []
+        moved_chunks: List[CodeChunk] = []
         skipped_count = 0
 
         for chunk in chunks:
-            prev_hash = existing_map.get(chunk.chunk_id)
-            if prev_hash == chunk.sha256:
-                skipped_count += 1
-            else:
+            prev = existing_map.get(chunk.chunk_id)
+            if prev is None or prev.get("sha256") != chunk.sha256:
                 to_embed_chunks.append(chunk)
+                continue
+            skipped_count += 1
+            if (prev.get("start_line"), prev.get("end_line")) != (chunk.start_line, chunk.end_line):
+                # Same code, new position (lines inserted above it): the embedding is
+                # still right, but the line range drives traceback lookups.
+                moved_chunks.append(chunk)
+
+        if moved_chunks:
+            try:
+                self._collection.update(
+                    ids=[c.chunk_id for c in moved_chunks],
+                    metadatas=[self._metadata(c) for c in moved_chunks],
+                )
+                logger.info(f"Updated line ranges of {len(moved_chunks)} moved chunk(s) (no re-embedding).")
+            except Exception as e:
+                logger.warning(f"Could not update moved chunk metadata: {e}")
 
         if not to_embed_chunks:
             logger.info(
@@ -183,17 +217,7 @@ class ChromaVectorDB:
 
         ids = [c.chunk_id for c in to_embed_chunks]
         documents = [c.content for c in to_embed_chunks]
-        metadatas = [
-            {
-                "file_path": c.file_path,
-                "symbol_name": c.symbol_name,
-                "symbol_type": c.symbol_type,
-                "start_line": c.start_line,
-                "end_line": c.end_line,
-                "sha256": c.sha256
-            }
-            for c in to_embed_chunks
-        ]
+        metadatas = [self._metadata(c) for c in to_embed_chunks]
 
         try:
             if embeddings:
@@ -303,17 +327,26 @@ class ChromaVectorDB:
         self,
         query_text: str,
         top_k: int = 3,
-        file_path_filter: Optional[str] = None
+        file_path_filter: Optional[str] = None,
+        where: Optional[Dict[str, Any]] = None,
+        query_embedding: Optional[List[List[float]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Queries the vector index for the top-k chunks closest to query_text."""
+        """Queries the vector index for the top-k chunks closest to query_text.
+
+        `where` narrows the search to matching metadata (symbol / file / line range)
+        and `query_embedding` reuses an embedding the caller already computed.
+        """
         if not self._ensure_initialized() or self._collection is None:
             return []
+        if top_k <= 0:
+            return []
 
-        where_clause = None
+        where_clause = where
         if file_path_filter:
-            where_clause = {"file_path": file_path_filter}
+            file_clause = {"file_path": file_path_filter}
+            where_clause = {"$and": [where, file_clause]} if where else file_clause
 
-        query_emb = self.compute_embeddings([query_text])
+        query_emb = query_embedding or self.compute_embeddings([query_text])
 
         try:
             if query_emb:
@@ -359,6 +392,22 @@ class ChromaVectorDB:
         except Exception as e:
             logger.error(f"Error querying ChromaDB: {e}")
             return []
+
+    def list_indexed_files(self) -> List[str]:
+        """Every distinct file path currently in the index (the real citable paths)."""
+        if not self._ensure_initialized() or self._collection is None:
+            return []
+        try:
+            everything = self._collection.get(include=["metadatas"])
+        except Exception as e:
+            logger.warning(f"Could not list indexed files: {e}")
+            return []
+        paths = {
+            str((meta or {}).get("file_path"))
+            for meta in everything.get("metadatas", []) or []
+            if (meta or {}).get("file_path")
+        }
+        return sorted(paths)
 
     def count(self) -> int:
         """Returns the total number of indexed chunks in the collection."""

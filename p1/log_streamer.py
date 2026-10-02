@@ -43,6 +43,61 @@ DEFAULT_ERROR_PATTERNS = [
 _TS_LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[0-9:.]+Z?)\s?(.*)$", re.DOTALL)
 # The most specific line of a traceback is the final "SomeError: message" line.
 _EXC_LINE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)\b\s*:")
+_EXC_LINE_ANYWHERE_RE = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\b")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# How a Python process that was *stopped* ends its traceback. The target's stop signal
+# is SIGINT, so every `docker stop` / `docker restart` that catches it mid-import prints
+# one of these - including the restart the Wisdom Loop issues itself.
+_INTERRUPTED_RE = re.compile(r"^(?:KeyboardInterrupt|SystemExit)\b")
+
+
+def latest_traceback_was_interrupted(lines: List[str]) -> bool:
+    """Whether the latest traceback in `lines` ends in KeyboardInterrupt / SystemExit."""
+    for i in range(len(lines) - 1, -1, -1):
+        if "Traceback (most recent call last)" in lines[i]:
+            for line in lines[i + 1:]:
+                if line[:1].isspace():
+                    continue  # frame lines
+                return bool(_INTERRUPTED_RE.match(line))
+            return False
+    return False
+
+
+def latest_error_span(lines: List[str], max_lines: int = 40) -> Optional[Tuple[int, int]]:
+    """(start, end) of the most recent error report in `lines`, or None without one.
+
+    Anchored on the last "SomeError: ..." line, not on a "Traceback" header - a
+    SyntaxError in the main module is printed without one (just the File/line frame
+    and the error), and searching for the header picks up an *older* traceback.
+    """
+    exc_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if _EXC_LINE_ANYWHERE_RE.search(lines[i]):
+            exc_idx = i
+            break
+    if exc_idx is None:
+        return None
+    # Back to this report's "Traceback" header. A report without one (SyntaxError) is
+    # the indented frame lines right above the error, so stop at the first line that
+    # is not indented - which also keeps an older report out.
+    start = exc_idx
+    for j in range(exc_idx - 1, max(-1, exc_idx - max_lines), -1):
+        line = lines[j]
+        if "Traceback (most recent call last)" in line:
+            start = j
+            break
+        if not line[:1].isspace() or _EXC_LINE_ANYWHERE_RE.search(line):
+            break
+        start = j
+    return start, exc_idx + 1
+
+
+def latest_error_block(lines: List[str], max_lines: int = 40) -> List[str]:
+    """The most recent error report in a log: its traceback, up to the exception line."""
+    span = latest_error_span(lines, max_lines)
+    if span is None:
+        return lines[-max_lines:]
+    return lines[span[0]:span[1]]
 
 
 class LogSource(Protocol):
@@ -56,19 +111,22 @@ class LogSource(Protocol):
         ...
 
 
-def _parse_log_line(raw: str) -> Tuple[Optional[float], str]:
-    """Split a Docker log line into (epoch seconds, message)."""
+def _parse_log_line(raw: str) -> Tuple[Optional[int], str]:
+    """Split a Docker log line into (epoch nanoseconds, message).
+
+    Integer nanoseconds, exactly as Docker stamps them: consecutive lines of one
+    traceback are 1-4 µs apart, closer than a float epoch (or a microsecond cut) can
+    tell apart, and "at or before the last consumed line" must never swallow them.
+    """
     match = _TS_LINE_RE.match(raw)
     if not match:
         return None, raw
     stamp, message = match.group(1), match.group(2)
     try:
-        normalised = stamp.rstrip("Z")
-        if "." in normalised:
-            head, frac = normalised.split(".", 1)
-            normalised = f"{head}.{frac[:6]}"
-        parsed = datetime.fromisoformat(normalised).replace(tzinfo=timezone.utc)
-        return parsed.timestamp(), message
+        head, _, frac = stamp.rstrip("Z").partition(".")
+        whole = datetime.fromisoformat(head).replace(tzinfo=timezone.utc)
+        nanos = int((frac + "000000000")[:9]) if frac else 0
+        return int(whole.timestamp()) * 1_000_000_000 + nanos, message
     except ValueError:
         return None, message
 
@@ -103,10 +161,14 @@ class LogStreamer:
         self.log_buffer: Deque[str] = deque(maxlen=max_buffer_lines)
         self._lock = threading.Lock()
 
-        # Newest log timestamp already consumed. Lines at or before it are replays.
-        self._last_log_ts: Optional[float] = None
+        # Newest log timestamp already consumed (epoch ns). Lines at or before it are replays.
+        self._last_log_ns: Optional[int] = None
         # Lines written before the agent started are history, never fresh crashes.
         self._agent_start_ts: float = time.time()
+        # Lines *logged* before this moment are history too (set on a deliberate
+        # restart): a crash-looping target keeps writing tracebacks while the stream is
+        # detached, and that backlog arrives after the restart looking brand new.
+        self._not_before_ts: float = 0.0
 
         # Incident debouncing
         self._incident_lock = threading.Lock()
@@ -118,6 +180,8 @@ class LogStreamer:
 
         self._stop_event = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
+        # The stream the worker is blocked on; stop() closes it to unblock the worker.
+        self._stream: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Patterns
@@ -159,18 +223,37 @@ class LogStreamer:
             logger.debug("LogStreamer worker thread is already running.")
             return
 
-        self._stop_event.clear()
+        # A fresh event per worker. Clearing a shared one revived a previous worker that
+        # was still blocked on its stream when stop() gave up waiting: after one
+        # "Restart Stream" two workers read the target and every line arrived twice.
+        self._stop_event = threading.Event()
         self._worker_thread = threading.Thread(
             target=self._stream_loop,
+            args=(self._stop_event,),
             name="LogStreamerWorker",
             daemon=True
         )
         self._worker_thread.start()
         logger.info(f"LogStreamer started for target '{self.docker_monitor.container_name}'.")
 
+    @staticmethod
+    def _close(stream: Any) -> None:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    def _close_stream(self) -> None:
+        stream, self._stream = self._stream, None
+        self._close(stream)
+
     def stop(self, timeout: float = 2.0) -> None:
         """Stops the streaming thread cleanly."""
         self._stop_event.set()
+        # The worker is usually blocked reading the stream: closing it wakes it up.
+        self._close_stream()
         with self._incident_lock:
             if self._incident_timer is not None:
                 self._incident_timer.cancel()
@@ -194,46 +277,70 @@ class LogStreamer:
         """End any active suppression window immediately."""
         self._suppress_until = 0.0
 
+    def ignore_lines_logged_before(self, timestamp: float) -> None:
+        """Treat every line the target logged before `timestamp` as history.
+
+        Judged by the log's own timestamps, so a backlog delivered late (the stream
+        re-attaching after a restart) can never be mistaken for a fresh crash.
+        """
+        self._not_before_ts = max(self._not_before_ts, timestamp)
+        # An incident still waiting out its debounce was logged before that moment too.
+        # Flushed after the Verifier cleared the buffer, it arrived without context and
+        # was raised as a second, context-less event for the crash being healed.
+        with self._incident_lock:
+            if self._incident_timer is not None:
+                self._incident_timer.cancel()
+                self._incident_timer = None
+            self._pending_error_lines.clear()
+
     # ------------------------------------------------------------------
     # Streaming
     # ------------------------------------------------------------------
-    def _stream_loop(self) -> None:
+    def _stream_loop(self, stop_event: threading.Event) -> None:
         """Continuous loop that follows the target's logs across restarts."""
         backoff = 1.0
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
             attached_at = time.time()
             try:
-                if self._last_log_ts is None:
+                if self._last_log_ns is None:
                     stream = self.docker_monitor.get_log_stream(tail=self.initial_tail)
                 else:
                     # int() truncates downward, so the boundary second is re-sent;
                     # the per-line timestamp check below drops those duplicates.
                     stream = self.docker_monitor.get_log_stream(
-                        since=int(self._last_log_ts)
+                        since=self._last_log_ns // 1_000_000_000
                     )
 
                 if stream is None:
-                    self._stop_event.wait(1.0)
+                    stop_event.wait(1.0)
                     continue
 
+                self._stream = stream
+                if stop_event.is_set():  # stopped while the stream was opening
+                    self._close(stream)
+                    break
                 logger.info(f"Streaming logs from '{self.docker_monitor.container_name}'...")
                 for chunk in stream:
-                    if self._stop_event.is_set():
+                    if stop_event.is_set():
                         break
                     self._process_chunk(chunk.decode("utf-8", errors="replace"))
 
             except Exception as e:
+                if stop_event.is_set():
+                    break
                 logger.warning(f"Log streaming interrupted ({e}).")
 
             # A stream that ends the moment it opens means the target is not ready
             # (no pod yet, container restarting). Back off instead of hot-looping
             # reattach attempts and flooding the log.
             if time.time() - attached_at < 1.0:
-                self._stop_event.wait(backoff)
-                backoff = min(backoff * 2.0, 15.0)
+                stop_event.wait(backoff)
+                # Capped low: a crash-looping target re-opens its stream every few
+                # seconds and its log should still show up promptly.
+                backoff = min(backoff * 2.0, 5.0)
             else:
                 backoff = 1.0
-                self._stop_event.wait(0.5)
+                stop_event.wait(0.5)
 
     def _process_chunk(self, chunk: str) -> None:
         """Splits incoming log chunks by newline and processes each line."""
@@ -241,22 +348,32 @@ class LogStreamer:
             if not raw_line.strip():
                 continue
 
-            line_ts, message = _parse_log_line(raw_line)
-            cleaned = message.strip()
-            if not cleaned:
+            line_ns, message = _parse_log_line(raw_line)
+            # rstrip only: a traceback's indentation is what tells its frame lines
+            # apart from ordinary log lines (latest_error_block, the dashboard view).
+            # Colour codes (werkzeug paints 4xx/5xx access lines) are dropped.
+            cleaned = _ANSI_RE.sub("", message).rstrip()
+            if not cleaned.strip():
                 continue
 
             # A line we have already consumed is a replay of history.
             is_replay = (
-                line_ts is not None
-                and self._last_log_ts is not None
-                and line_ts <= self._last_log_ts
+                line_ns is not None
+                and self._last_log_ns is not None
+                and line_ns <= self._last_log_ns
             )
-            # Anything written before the agent came up is pre-existing history.
-            is_history = line_ts is not None and line_ts < self._agent_start_ts
+            # Anything written before the agent came up (or before the last deliberate
+            # restart) is pre-existing history.
+            is_history = line_ns is not None and line_ns / 1e9 < max(
+                self._agent_start_ts, self._not_before_ts
+            )
 
-            if line_ts is not None:
-                self._last_log_ts = max(self._last_log_ts or 0.0, line_ts)
+            if line_ns is not None:
+                self._last_log_ns = max(self._last_log_ns or 0, line_ns)
+            if is_replay:
+                # Buffered and shown when it first arrived: a re-attach re-sends the
+                # boundary second (since= is whole seconds), which doubled the line.
+                continue
 
             with self._lock:
                 self.log_buffer.append(cleaned)
@@ -319,6 +436,13 @@ class LogStreamer:
             return
         headline = self._pick_headline(lines)
         context_excerpt = self.get_recent_logs_as_text(tail=40)
+        if not _EXC_LINE_RE.search(headline) and latest_traceback_was_interrupted(
+            context_excerpt.splitlines()
+        ):
+            # Stopped by a signal, not crashed (seen live: the old process, interrupted
+            # by the Wisdom Loop's own restart, failed a correct patch's verification).
+            logger.info("A traceback ended in KeyboardInterrupt/SystemExit: a stop, not a crash.")
+            return
         try:
             self.on_error_detected(headline, context_excerpt)
         except Exception as err:

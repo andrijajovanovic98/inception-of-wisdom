@@ -26,7 +26,8 @@ logger = logging.getLogger("p2.analyst_api")
 
 class RetrieveRequest(BaseModel):
     query: str
-    top_k: Optional[int] = 3
+    # None = analyst.top_k from iow.config.yml
+    top_k: Optional[int] = None
     file_path: Optional[str] = None
 
 
@@ -34,7 +35,7 @@ class DiagnoseRequest(BaseModel):
     log_excerpt: str
     exit_code: Optional[int] = None
     status: Optional[str] = "crashed"
-    top_k: Optional[int] = 3
+    top_k: Optional[int] = None
 
 
 def create_analyst_router(
@@ -144,7 +145,7 @@ def create_analyst_router(
             log_excerpt=req.log_excerpt,
             exit_code=req.exit_code,
             status=req.status or "crashed",
-            top_k=req.top_k or 3
+            top_k=req.top_k or None,
         )
 
         return report.to_dict()

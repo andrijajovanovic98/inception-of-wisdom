@@ -93,7 +93,7 @@
             <li>A modell teljes fájlt ír felül vagy hoz létre.</li>
             <li>Nincsenek pontatlan eltolási (offset) anomáliák.</li>
             <li>A system prompt szintaktikailag zárt, teljes kódot követel meg.</li>
-            <li>Ha a generált patch elbukik, a sebészi fallback célzottan hatástalaníthatja az ismert szándékos crash markert.</li>
+            <li>Nincs előre megírt javítás: nagyobb fájlnál a modell csak a traceback által mutatott chunkot írja újra (sima kódként), a patcher pedig ezt illeszti be a JSON patch teljes fájltartalmába. Sikertelen kísérlet után az új hibanapló megy vissza az Analystnek; 3 kísérlet után minden visszaáll.</li>
           </ul>
         </div>
       </div>

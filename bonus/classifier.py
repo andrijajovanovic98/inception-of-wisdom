@@ -11,7 +11,7 @@ import json
 import time
 import hashlib
 import logging
-from typing import Optional, Dict, Any
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger("bonus.classifier")
@@ -121,8 +121,15 @@ class TinySymptomClassifier:
         offending_line = None
         offending_func = None
 
-        # 1. Traceback frames (last frame is most specific to the error)
+        # 1. Traceback frames: the deepest frame in the application's own code. The very
+        # last frame is often the stdlib ('<frozen os>' for os.environ[...]), which would
+        # make every KeyError on any environment variable look like the same symptom.
         frames = TRACEBACK_FRAME_REGEX.findall(log_excerpt)
+        app_frames = [
+            f for f in frames
+            if not f[0].startswith("<") and "site-packages" not in f[0] and "/lib/python" not in f[0]
+        ]
+        frames = app_frames or frames
         if frames:
             last_frame = frames[-1]
             offending_file = last_frame[0]
@@ -156,17 +163,74 @@ class TinySymptomClassifier:
             raw_signature=sig
         )
 
-    def classify(self, log_excerpt: str, raw_signature: Optional[str] = None) -> ClassifierMatch:
+    @staticmethod
+    def _digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _patch_files(patch: Optional[Dict[str, Any]]) -> List[Tuple[str, str, str]]:
+        return [
+            (str(f.get("path")), str(f.get("op", "modify")), str(f.get("content", "")))
+            for f in (patch or {}).get("files") or []
+            if isinstance(f, dict) and f.get("path")
+        ]
+
+    def _fits_code(self, entry: Dict[str, Any], read_file: Callable[[str], Optional[str]]) -> bool:
+        """Whether the files the cached patch replaces are exactly the ones it was learned on.
+
+        A cached patch is complete post-change files. Replayed onto a file that has
+        changed since, it would silently revert every unrelated change - and the sanity
+        gate cannot tell that apart from a fix. An entry without that record cannot
+        show that it fits, so it never skips the model.
+        """
+        pre_images = entry.get("pre_images")
+        paths = {path for path, _, _ in self._patch_files(entry.get("patch"))}
+        if not isinstance(pre_images, dict) or not paths or set(pre_images) != paths:
+            return False
+        for path, digest in pre_images.items():
+            current = read_file(path)
+            if (None if current is None else self._digest(current)) != digest:
+                return False
+        return True
+
+    def classify(
+        self,
+        log_excerpt: str,
+        raw_signature: Optional[str] = None,
+        read_file: Optional[Callable[[str], Optional[str]]] = None,
+    ) -> ClassifierMatch:
         """Evaluates incoming crash against the learned knowledge base.
         Returns a ClassifierMatch with cached_patch if a known fix is found with high confidence.
+
+        read_file(path) returns the current text of a repository file (None when it
+        does not exist). With it, a known symptom only skips the model when its cached
+        patch was learned on exactly the code that is there now.
         """
         features = self.extract_features(log_excerpt, raw_signature)
         symptom_key = features.raw_signature
+
+        def learned_elsewhere(key: str, confidence: float) -> ClassifierMatch:
+            logger.info(
+                f"Classifier knows symptom [{key}], but its cached patch was learned on "
+                "different code - routing to the LLM instead of overwriting the file."
+            )
+            return ClassifierMatch(
+                matched=False,
+                confidence=confidence,
+                symptom_id=key,
+                explanation=(
+                    "Known symptom, but the file differs from the one its cached patch "
+                    "was learned on; routing to the LLM."
+                ),
+            )
 
         # Exact match check
         if symptom_key in self.entries:
             entry = self.entries[symptom_key]
             confidence = entry.get("confidence", 1.0)
+            if confidence >= self.confidence_threshold and read_file is not None \
+                    and not self._fits_code(entry, read_file):
+                return learned_elsewhere(symptom_key, confidence)
             if confidence >= self.confidence_threshold:
                 self.total_bypasses += 1
                 entry["times_applied"] = entry.get("times_applied", 0) + 1
@@ -224,6 +288,11 @@ class TinySymptomClassifier:
                 best_match_key = k
                 best_entry = entry
 
+        if best_score >= self.confidence_threshold and best_entry is not None \
+                and best_match_key is not None and read_file is not None \
+                and not self._fits_code(best_entry, read_file):
+            return learned_elsewhere(best_match_key, best_score)
+
         if best_score >= self.confidence_threshold and best_entry is not None:
             self.total_bypasses += 1
             best_entry["times_applied"] = best_entry.get("times_applied", 0) + 1
@@ -258,23 +327,39 @@ class TinySymptomClassifier:
         self,
         log_excerpt: str,
         patch_dict: Dict[str, Any],
-        raw_signature: Optional[str] = None
+        raw_signature: Optional[str] = None,
+        pre_contents: Optional[Dict[str, Optional[str]]] = None,
     ) -> str:
-        """Reinforcement: stores or updates a verified patch for this symptom."""
+        """Reinforcement: stores or updates a verified patch for this symptom.
+
+        pre_contents: each patched file as it was before the heal (None = it did not
+        exist). The patch is only ever replayed onto exactly that code (see classify).
+        """
         features = self.extract_features(log_excerpt, raw_signature)
         symptom_key = features.raw_signature
+        pre_images = (
+            {path: (None if text is None else self._digest(text)) for path, text in pre_contents.items()}
+            if pre_contents is not None else None
+        )
 
         existing = self.entries.get(symptom_key)
         if existing:
-            existing["confidence"] = min(1.0, existing.get("confidence", 0.9) + 0.05)
+            if self._patch_files(existing.get("patch")) != self._patch_files(patch_dict):
+                # A different verified fix replaces the cached one: it starts with the
+                # trust of a fresh verification, not with what the old patch had left.
+                existing["confidence"] = 1.0
+            else:
+                existing["confidence"] = min(1.0, existing.get("confidence", 0.9) + 0.05)
             existing["success_count"] = existing.get("success_count", 0) + 1
             existing["patch"] = patch_dict
+            existing["pre_images"] = pre_images
             existing["last_success_at"] = time.time()
         else:
             self.entries[symptom_key] = {
                 "symptom_id": symptom_key,
                 "features": features.to_dict(),
                 "patch": patch_dict,
+                "pre_images": pre_images,
                 "confidence": 1.0,
                 "success_count": 1,
                 "failure_count": 0,
@@ -289,6 +374,35 @@ class TinySymptomClassifier:
             f"{features.error_type} in {features.offending_file}"
         )
         return symptom_key
+
+    def learn_from_cycle(
+        self,
+        cycle: Any,
+        log_excerpt: str,
+        raw_signature: Optional[str],
+        used_symptom: Optional[str],
+        pre_loop_file: Callable[[str], Optional[str]],
+    ) -> None:
+        """Learn from a finished Wisdom Loop cycle (a HealCycleRecord).
+
+        The entry whose cached patch was used (used_symptom) loses trust when that
+        attempt did not hold up - refused by the sanity gate or failed verification.
+        It is attempt 1, not the last of three: only checking the last attempt meant
+        no cached patch was ever penalised. A verified heal is stored together with
+        what each patched file was before the cycle (pre_loop_file).
+        """
+        attempts = list(getattr(cycle, "attempts", None) or [])
+        fast = next(
+            (a for a in attempts if getattr(a, "source", "") == "classifier_fast_path"), None
+        )
+        if used_symptom and fast is not None and not (fast.verification or {}).get("is_healed"):
+            self.record_failure(used_symptom)
+        if getattr(cycle, "status", "") == "healed" and attempts and attempts[-1].patch:
+            patch = attempts[-1].patch
+            pre_contents = {path: pre_loop_file(path) for path, _, _ in self._patch_files(patch)}
+            self.record_successful_heal(
+                log_excerpt, patch, raw_signature=raw_signature, pre_contents=pre_contents
+            )
 
     def record_failure(self, symptom_id: str) -> None:
         """Penalizes a symptom pattern if its cached patch failed verification."""

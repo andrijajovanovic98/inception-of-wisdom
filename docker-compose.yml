@@ -103,18 +103,21 @@ services:
         wait $$srv
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_KEEP_ALIVE=30m
       - IOW_LLM_MODEL=${IOW_LLM_MODEL:-qwen2.5-coder:1.5b}
     volumes:
       - ollama-models:/root/.ollama
-    ports:
-      - "11436:11434"
+    # No host port: the agent talks to it over iow-net (http://ollama:11434). Publishing
+    # :11436 collided with the host Ollama `make setup` runs there, and on rootless
+    # Docker that port is held by rootlesskit (see `make stop`).
     networks:
       - iow-net
     healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      # Healthy once the model is actually pulled, not merely once the server is up.
+      test: ["CMD-SHELL", "ollama show \"$${IOW_LLM_MODEL}\" >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 30
+      retries: 60
       start_period: 20s
 
   agent:
@@ -124,7 +127,7 @@ services:
     container_name: iow_agent
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${IOW_PORT:-8000}:8000"
     volumes:
       # Rootless Docker (42 campus) serves $XDG_RUNTIME_DIR/docker.sock, not
       # /var/run/docker.sock - mounting the latter hands the agent a socket it
@@ -132,10 +135,14 @@ services:
       # `make up` exports DOCKER_SOCK; for a bare `docker compose up` set it with:
       #   export DOCKER_SOCK=$XDG_RUNTIME_DIR/docker.sock
       - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      # Read-write access to the target's source tree (and its git repository).
       - .:/workspace
-      - /tmp/iow_cache:/tmp/iow_cache
-      - /tmp/iow/gitea:/tmp/iow/gitea
+      # One runtime dir for host and container runs: the persistent ChromaDB index,
+      # the embedding model cache and the Gitea credentials survive restarts and are
+      # shared, so nobody pays the indexing (or download) cost twice.
+      - /tmp/iow:/tmp/iow
     environment:
+      - IOW_MODE=${IOW_MODE:-full}
       - TARGET_CONTAINER=iow_demo_target
       - TARGET_URL=http://demo_app:5000
       - IOW_CONFIG_PATH=/workspace/demo_app/iow.config.yml
@@ -143,10 +150,6 @@ services:
       - IOW_REPO_PATH=/workspace
       - OLLAMA_HOST=${IOW_AGENT_OLLAMA_HOST:-http://ollama:11434}
       - OLLAMA_MODEL=${IOW_LLM_MODEL:-qwen2.5-coder:1.5b}
-      - HF_HOME=/tmp/iow_cache/huggingface
-      - SENTENCE_TRANSFORMERS_HOME=/tmp/iow_cache/sentence_transformers
-      - CHROMA_CACHE_DIR=/tmp/iow_cache/chroma
-      - TORCH_HOME=/tmp/iow_cache/torch
       - GITEA_URL=http://gitea:3000
       - GITEA_PUBLIC_URL=http://localhost:3000
       - GITEA_OWNER=iow
@@ -157,11 +160,18 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - iow-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/overview"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    # The mandatory loop must not wait on the bonus forge's health.
     depends_on:
       demo_app:
         condition: service_started
       gitea:
-        condition: service_healthy
+        condition: service_started
       ollama:
         condition: service_started
 

@@ -180,8 +180,8 @@ target:
             <li>SHA-256 ujjlenyomat: <code>SHA256(forras + tipus + kulcs)</code>.</li>
             <li>Csúszóablakos időbélyeg cache:
               <ul>
-                <li><strong>Crash ablak:</strong> 10 másodperc</li>
-                <li><strong>Szuggesztió ablak:</strong> 60 másodperc</li>
+                <li><strong>Crash ablak:</strong> 60 másodperc (csúszó, <code>crash_dedup_window_seconds</code>)</li>
+                <li><strong>Szuggesztió ablak:</strong> 300 másodperc (<code>suggestion_dedup_window_seconds</code>)</li>
               </ul>
             </li>
             <li>Az ablakon belül érkező duplikátumok egy számlálót léptetnek (<code>x3</code>) új esemény dobása helyett.</li>
@@ -221,7 +221,7 @@ target:
           <li><strong>K: Miért nem javítja automatikusan a 4xx hibákat?</strong><br>
               V: Subject előírás: a 4xx funkcionális hiányosságot vagy klienshibát jelent, nem pedig rendszerszintű összeomlást. Csak a hard hibák aktiválják az öngyógyítást.</li>
           <li><strong>K: Hogyan akadályozod meg az eseményáradatot?</strong><br>
-              V: Az <code>event_manager.py</code> csúszóablakos deduplikációja SHA-256 ujjlenyomat alapján 10 másodpercig egyetlen incidenssé vonja össze az ismétlődő hibákat.</li>
+              V: Az <code>event_manager.py</code> csúszóablakos deduplikációja SHA-256 ujjlenyomat alapján a csúszó ablakon (alapból 60 másodperc) belül egyetlen incidenssé vonja össze az ismétlődő hibákat.</li>
         </ul>
       </div>
     </div>

@@ -7,6 +7,7 @@ diagnoses, and automatically repairs when failures occur.
 import os
 import sys
 import logging
+import threading
 from flask import Flask, jsonify
 
 # Configure standard logging to stderr/stdout for the Observer to stream
@@ -75,6 +76,16 @@ def trigger_crash():
     """
     logger.error("CRITICAL: Intentional crash triggered via /api/crash!")
     raise RuntimeError("Intentional target service crash for IoW verification")
+
+
+@app.route("/api/crash-hard", methods=["POST"])
+def trigger_hard_crash():
+    """Manual hard crash: the process exits with status 1 right after replying.
+    Deliberately quiet in the log, so the Observer has to catch the exit code itself.
+    """
+    logger.info("Hard crash requested via /api/crash-hard - exiting with status 1")
+    threading.Timer(0.2, os._exit, args=(1,)).start()
+    return jsonify({"status": "exiting", "exit_code": 1}), 202
 
 
 if __name__ == "__main__":

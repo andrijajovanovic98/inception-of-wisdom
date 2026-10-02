@@ -16,4 +16,9 @@ COPY . .
 
 EXPOSE 5000
 
+# Python as PID 1 ignores SIGTERM (no handler installed), so every `docker restart`
+# used to wait the full 10 s timeout and end in SIGKILL. SIGINT is handled: the Flask
+# server stops cleanly and a restart takes well under a second.
+STOPSIGNAL SIGINT
+
 CMD ["python", "app.py"]

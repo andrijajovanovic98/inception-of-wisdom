@@ -180,8 +180,8 @@ target:
             <li>Computes SHA-256 fingerprint: <code>SHA256(source + type + raw_key)</code>.</li>
             <li>Maintains sliding-window timestamp cache:
               <ul>
-                <li><strong>Crash window:</strong> 10 seconds</li>
-                <li><strong>Suggestion window:</strong> 60 seconds</li>
+                <li><strong>Crash window:</strong> 60 seconds (sliding, <code>crash_dedup_window_seconds</code>)</li>
+                <li><strong>Suggestion window:</strong> 300 seconds (<code>suggestion_dedup_window_seconds</code>)</li>
               </ul>
             </li>
             <li>Duplicate events within the window increment a counter (<code>x3</code>) instead of generating new notifications.</li>
@@ -221,7 +221,7 @@ target:
           <li><strong>Q: Why are 4xx errors not automatically patched?</strong><br>
               A: Subject specification: 4xx indicates a missing feature or client error (soft suggestion), not a service crash. Only hard failures trigger automated code repair.</li>
           <li><strong>Q: How is log flooding prevented?</strong><br>
-              A: Sliding-window deduplication in <code>event_manager.py</code> groups recurring signatures over a 10s window.</li>
+              A: Sliding-window deduplication in <code>event_manager.py</code> groups recurring signatures over a sliding window (60 s by default, <code>iow.config.yml</code>).</li>
         </ul>
       </div>
     </div>
