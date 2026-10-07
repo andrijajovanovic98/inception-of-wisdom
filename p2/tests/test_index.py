@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import unittest
 from typing import List
+from unittest import mock
 
 from p2.tests import APP_PY
 from p2.chunker import AstChunker
@@ -98,6 +99,24 @@ class IndexTests(unittest.TestCase):
         watcher.sync_once()
         ids = db._collection.get(include=[])["ids"]
         self.assertNotIn("demo_app/app.py:function:index", ids)
+
+    def test_an_emptied_file_keeps_no_chunks(self) -> None:
+        """A9: its chunks used to survive and be served back to the Analyst."""
+        db, watcher = self._open()
+        watcher.sync_once(force_full=True)
+        with open(self.app, "w", encoding="utf-8") as f:
+            f.write("")
+        watcher.sync_once()
+        self.assertEqual(db._collection.get(where={"file_path": "demo_app/app.py"}, include=[])["ids"], [])
+
+    def test_the_embedding_model_is_loaded_from_the_local_cache_first(self) -> None:
+        """A2: the agent downloaded a second copy into a directory nobody prefetched."""
+        from p2 import db as db_module
+        answers = [OSError("not cached"), "model"]
+        with mock.patch.object(db_module, "SentenceTransformer", side_effect=answers) as st:
+            self.assertEqual(ChromaVectorDB(persist_dir=self.db_dir)._load_embedder(), "model")
+        self.assertEqual(st.call_args_list[0].kwargs, {"local_files_only": True})
+        self.assertEqual(st.call_args_list[1].kwargs, {})              # the one-time download
 
     def test_traceback_line_is_looked_up_in_the_index(self) -> None:
         db, watcher = self._open()

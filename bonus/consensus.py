@@ -160,7 +160,7 @@ class SecondOpinionEngine:
         exclude_files: indexed files the caller may never patch (the operator-owned
         iow.config.yml) - two opinions agreeing on one would only waste an attempt.
         """
-        logger.info("⚖️ Running Second Opinion dual-prompt consensus evaluation...")
+        logger.info("Running Second Opinion dual-prompt consensus evaluation...")
 
         # 1. Retrieve candidate context
         context_chunks, _ = self.retriever.retrieve_for_crash(log_excerpt, top_k=top_k)

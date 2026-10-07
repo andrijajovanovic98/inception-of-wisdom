@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Part 3: Wisdom Loop - Inception of Wisdom</title>
+  <title>Part 3: Wisdom Loop &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -26,6 +26,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-purple); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -50,7 +51,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Part 3</span>
-      <span>Wisdom Loop Deep-Dive - Inception of Wisdom</span>
+      <span>Wisdom Loop Deep-Dive &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
   </header>
@@ -60,12 +61,12 @@
     <!-- Slide 1 -->
     <div class="slide active">
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">ACT & VERIFY PHASE</span>
-      <h1>Part 3: Wisdom Loop - Autonomous Remediation</h1>
+      <h1>Part 3: Wisdom Loop &mdash; Autonomous Remediation</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
         The Wisdom Loop turns diagnostic insights into verified source code repairs. It coordinates diff-free JSON patching, multi-stage sanity checks, atomic Git branch management, Docker container lifecycle restarts, active verification polling, and automatic multi-attempt rollback.
       </p>
       <div class="highlight-box">
-        <strong>Subject Requirement:</strong> "Act on diagnosis: generate patch, apply changes, verify container recovery. Enforce safety bounds, rate limits, cooldown, hard caps, and kill-switch. Roll back automatically if verification fails after up to 3 attempts."
+        <strong>Subject (V.3):</strong> "Given a diagnosis, the loop generates a patch, applies it, commits, restarts the target, and decides whether the symptom is gone." &mdash; "After three failed attempts, the Wisdom Loop rewinds the auto-heal branch to the pre-loop revision (the agent's commits become unreachable), restarts the target on the original code, and surfaces a clean failure to the dashboard."
       </div>
     </div>
 
@@ -80,20 +81,19 @@
         <div class="card">
           <h3>Structured JSON File Replacement</h3>
           <pre>{
-  "summary": "Fix ZeroDivisionError with guard",
+  "summary": "Restore the Flask import the startup code needs",
   "files": [
     {
       "path": "demo_app/app.py",
-      "op": "replace",
-      "content": "... entire valid python code ..."
+      "op": "modify",
+      "content": "... the complete post-change file ..."
     }
   ]
 }</pre>
           <ul>
-            <li>Enforces complete file replacement or creation.</li>
-            <li>No ambiguous patch hunk offsets.</li>
-            <li>System prompts strictly mandate syntactically complete code.</li>
-            <li>No canned fixes: for a larger file the model rewrites only the chunk the traceback points at (plain code), and the patcher splices it into the complete file of the JSON patch. A failed attempt hands the new error log back; after 3 attempts everything rolls back.</li>
+            <li><code>content</code> is the complete post-change file; <code>op</code> is <code>create</code>, <code>modify</code> or <code>delete</code>. A diff is refused.</li>
+            <li>No canned fixes: in a larger file the model rewrites only the chunk the traceback points at (plain code), and the patcher splices it into the complete file of the JSON patch. <code>analyst.patch_strategy: full_file</code> has the model write the whole JSON patch itself (a 1.5B model cuts the file short &mdash; measured 0 of 9).</li>
+            <li>An answer handed back unchanged, or one that only moves the failure (a new <code>raise</code> / <code>exit()</code>, the server started under a condition), is asked for again inside the attempt &mdash; before it costs a redeploy.</li>
           </ul>
         </div>
       </div>
@@ -104,12 +104,16 @@
       <h2>Sanity Bounds & Guardrails (p3/sanity.py)</h2>
       <div class="card">
         <h3>Pre-Disk Safety Screening</h3>
-        <p>Before any generated patch touches the filesystem or Git tree, it must pass 4 strict validation filters:</p>
+        <p>Before any patch touches the filesystem or Git tree it must pass the subject's four rules, and four more:</p>
         <ul>
-          <li><strong>File Count Bound:</strong> Max 3 files modified in a single remediation flight (prevents wholesale repo disruption).</li>
-          <li><strong>Shrinkage Guard:</strong> Max 60% byte size reduction compared to the original file (protects against accidental code deletion).</li>
-          <li><strong>Anti-Placeholder Heuristic:</strong> Blocks patches containing lazy AI tokens like <code># TODO</code>, <code># rest of code here</code>, or <code># implement here</code>.</li>
-          <li><strong>Syntax Validation:</strong> For Python targets, runs <code>ast.parse(content)</code> to reject syntax errors before disk write.</li>
+          <li><strong>File Count Bound:</strong> max 3 files per patch.</li>
+          <li><strong>Trivial Placeholder:</strong> a non-empty file may not become a stub (<code>pass</code>, <code>...</code>, a docstring); no new <code># TODO</code> or <code>rest of code unchanged</code>.</li>
+          <li><strong>Shrinkage Guard:</strong> max 60% smaller than the original, whatever the <code>op</code> says (a <code>create</code> over an existing file counts, deleting a non-empty file is a 100% shrink) and whatever its size.</li>
+          <li><strong>Retrieval Markers:</strong> prompt scaffolding (<code>--- File: ... ---</code>, <code>--- Code Snippet #n ---</code>, region fences) may not leak into the code.</li>
+          <li><strong>Scope:</strong> only paths inside <code>demo_app/</code>, never the operator's <code>iow.config.yml</code>.</li>
+          <li><strong>Parses and changes something:</strong> <code>ast.parse</code> must succeed, and a patch identical to the file is refused.</li>
+          <li><strong>No lost definitions:</strong> a rewrite may not drop an import or constant the file still uses.</li>
+          <li><strong>No value read before it is set:</strong> <code>port</code> set only inside an <code>if</code>, or a <code>try</code> whose <code>except</code> falls through, is refused (a NameError after the redeploy).</li>
         </ul>
       </div>
     </div>
@@ -122,15 +126,15 @@
           <h3>Dedicated Healing Branch</h3>
           <ul>
             <li>All self-healing work occurs on isolated branch: <code>iow/auto-heal</code>.</li>
-            <li>Captures <code>pre-loop revision</code> (base commit SHA) before any modification.</li>
-            <li>Atomic file writing: writes to temp files before renaming to avoid partial writes.</li>
-            <li>Creates explicit Git commit with diagnostic summary and attempt counter.</li>
+            <li>Records the exact state <code>demo_app/</code> runs as the pre-loop revision: HEAD when the tree matches it, else a snapshot commit (an uncommitted planted bug included), kept in <code>refs/iow/pre-loop</code> until the cycle ends.</li>
+            <li>Atomic file writing: <code>*.iow.tmp</code> + fsync + <code>os.replace</code>, file mode kept.</li>
+            <li>Commits with git plumbing, the subject line generated from the diagnosis: HEAD, the index and the checked-out branch never move.</li>
           </ul>
         </div>
         <div class="card">
-          <h3>Scoped Mixed Rollback</h3>
+          <h3>Byte-for-Byte Rollback</h3>
           <div class="highlight-box">
-            <strong>Protected Working State:</strong> If verification fails after 3 attempts, GitManager uses mixed reset and targeted restore for <code>demo_app/</code> only. It does not wipe unrelated uncommitted agent or dashboard work.
+            <strong>Proven, not assumed:</strong> after 3 failed attempts <code>iow/auto-heal</code> is rewound to the pre-loop revision and <code>demo_app/</code> is restored from it through a throwaway index (<code>read-tree</code> + <code>checkout-index</code>). The tree is re-hashed and compared: the dashboard shows <em>identical</em>. The operator's <code>iow.config.yml</code> is kept, and an edit made during the cycle is saved under <code>refs/iow/overwritten/&lt;time&gt;</code> first.
           </div>
         </div>
       </div>
@@ -145,17 +149,16 @@
           <ul>
             <li>Interacts with host Docker daemon via <code>/var/run/docker.sock</code>.</li>
             <li>Restarts the target via Docker Engine API by default.</li>
-            <li>With <code>IOW_REDEPLOY_MODE=gitops</code>, waits for Argo CD/kubectl rollout instead.</li>
+            <li>With <code>IOW_REDEPLOY_MODE=gitops</code>, pushes the commit instead and waits for the pod Argo CD rolls from it (the commit stamps its code's hash into the pod template).</li>
             <li>Captures new container state and exit status.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Active Grace Period (20s)</h3>
           <ul>
-            <li>Does not immediately assume success upon container up.</li>
-            <li>Polls <code>/</code> and <code>/healthz</code> across the grace window.</li>
-            <li><code>/api/crash</code> is only the intentional <code>make break</code> trigger; it is not a health probe.</li>
-            <li>Continuously monitors container logs for immediate re-crash loops or unhandled exceptions.</li>
+            <li>Waits until the target answers once (<code>boot_timeout</code>), then starts the grace period.</li>
+            <li>Replays the request that crashed the target, read from its own log (Flask's <code>Exception on /api/crash [POST]</code>, the 5xx access line): a soft crash on a route no probe calls cannot pass as healed.</li>
+            <li>Any crash event, a non-zero exit of the new process, or failing probes during the grace period fail the attempt.</li>
           </ul>
         </div>
       </div>
@@ -172,10 +175,10 @@
                  ▼ (Feedback: Container exited with status 1, Traceback included)
 Attempt 2: Augmented Prompt with Failure Context -> Refined Patch -> Pass!
                  │
-                 └─ If Attempt 3 fails: scoped demo_app/ mixed rollback</pre>
+                 └─ If Attempt 3 fails: rollback to the pre-loop revision (verified identical)</pre>
         <ul>
-          <li>Error output from Attempt 1 is injected into the Attempt 2 prompt as explicit feedback.</li>
-          <li>Enables the 1.5B LLM to correct its own previous mistakes iteratively.</li>
+          <li>The new error log &mdash; read from the daemon since the restart &mdash; goes back to the Analyst.</li>
+          <li>The next patch prompt hears what failed (and whether its own change caused it), samples more freely (temperature 0.1 / 0.4 / 0.7) and, for environment problems, is told the target's port and environment as read from its container.</li>
         </ul>
       </div>
     </div>
@@ -211,9 +214,9 @@ Attempt 2: Augmented Prompt with Failure Context -> Refined Patch -> Pass!
           <li><strong>Q: Why did you not use <code>git apply</code> with unified diff?</strong><br>
               A: LLMs < 3B hallucinate line offsets in diff headers. Full-file replacement eliminates syntax patch corruption while staying within sanity limits.</li>
           <li><strong>Q: What prevents the AI from deleting the whole codebase to 'fix' a bug?</strong><br>
-              A: Sanity checks enforce a max 3 file limit, 60% shrinkage guard, and AST syntax validation before any disk write.</li>
+              A: The sanity gate, before any disk write: max 3 files, no trivial placeholder, a 60% shrinkage guard, no lost definitions, no value read before it is set, and the code must still parse.</li>
           <li><strong>Q: How do you prove rollback works during the defense?</strong><br>
-              A: Trigger an unfixable syntax or configuration error; observe 3 failed attempts, then verify that only <code>demo_app/</code> returns to its pre-loop state while unrelated work remains intact.</li>
+              A: Stop the model (<code>make stop</code> for the host Ollama, <code>docker stop iow_ollama</code> in Docker), plant a crash and watch 3 failed attempts, then the rollback: <code>demo_app/</code> hashes back to the pre-loop tree (<em>identical</em>) and unrelated work is untouched.</li>
         </ul>
       </div>
     </div>

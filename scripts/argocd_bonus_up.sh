@@ -28,7 +28,8 @@ chmod +x "${ROOT}/scripts/ensure_gitops_tools.sh" 2>/dev/null || true
 
 # Prefer campus rootless socket.
 if [ -z "${DOCKER_HOST:-}" ] && [ -S "/run/user/$(id -u)/docker.sock" ]; then
-  export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+  DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+  export DOCKER_HOST
 fi
 
 echo "[*] Ensuring GitOps tools under ${BIN_DIR} (no sudo)..."
@@ -141,8 +142,10 @@ publish_manifests_to_gitea() {
     echo "[!] Missing ${creds} - skip git publish" >&2
     return 1
   fi
+  set -a
   # shellcheck disable=SC1090
-  set -a; source "${creds}"; set +a
+  source "${creds}"
+  set +a
   local ip
   ip="$(gitea_ip)"
   if [ -z "${ip}" ]; then
@@ -212,8 +215,10 @@ EOF
 register_argocd_repo() {
   local url="$1"
   local creds="${IOW_DIR}/gitea/gitea.env"
+  set -a
   # shellcheck disable=SC1090
-  set -a; source "${creds}"; set +a
+  source "${creds}"
+  set +a
   kubectl -n "${NS_ARGO}" create secret generic iow-gitea-repo \
     --from-literal=type=git \
     --from-literal=url="${url}" \
@@ -256,17 +261,23 @@ import_demo_image() {
     echo "[!] ${img} missing after build"
     return 1
   fi
+  # This machine's platform only: a multi-platform image in Docker's containerd image
+  # store lists every platform's blobs but holds one, and a plain import stops at the
+  # first missing one ("content digest ... not found") - seen with alpine/git on Docker 29.
+  local platform
+  platform="linux/$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')"
   echo "[*] Importing ${img} into k3s containerd..."
-  docker save "${img}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import - || {
+  docker save "${img}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import --platform "${platform}" - || {
     echo "[!] ctr import failed - trying k3s ctr"
-    docker save "${img}" | docker exec -i "${K3S_NAME}" k3s ctr images import -
+    docker save "${img}" | docker exec -i "${K3S_NAME}" k3s ctr images import --platform "${platform}" -
   }
 
-  # The init container clones the heal branch, so its image must be present too.
+  # The init container clones the heal branch, so its image must be present too -
+  # imported, the cluster needs no registry for it (offline / Docker Hub blocked).
   echo "[*] Importing ${GIT_IMAGE} (init container) into k3s containerd..."
   docker pull "${GIT_IMAGE}" >/dev/null 2>&1 || true
-  docker save "${GIT_IMAGE}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import - \
-    || docker save "${GIT_IMAGE}" | docker exec -i "${K3S_NAME}" k3s ctr images import - \
+  docker save "${GIT_IMAGE}" | docker exec -i "${K3S_NAME}" ctr -n k8s.io images import --platform "${platform}" - \
+    || docker save "${GIT_IMAGE}" | docker exec -i "${K3S_NAME}" k3s ctr images import --platform "${platform}" - \
     || echo "[!] Could not import ${GIT_IMAGE} - the cluster will try to pull it"
 }
 
@@ -364,6 +375,16 @@ if ! kubectl apply -n "${NS_ARGO}" -f https://raw.githubusercontent.com/argoproj
 fi
 echo "[*] Waiting for argocd-server (up to 3 min)..."
 kubectl -n "${NS_ARGO}" rollout status deployment/argocd-server --timeout=180s || true
+
+# The commit alone is the redeploy: Argo CD polls git and syncs it by itself. Its default
+# poll is 3 minutes (plus jitter) - a heal would wait that long for its pod.
+echo "[*] Argo CD polls the repository every 15 s..."
+kubectl -n "${NS_ARGO}" patch configmap argocd-cm --type merge \
+  -p '{"data":{"timeout.reconciliation":"15s","timeout.reconciliation.jitter":"0s"}}' >/dev/null
+kubectl -n "${NS_ARGO}" rollout restart statefulset/argocd-application-controller \
+  deployment/argocd-repo-server >/dev/null
+kubectl -n "${NS_ARGO}" rollout status statefulset/argocd-application-controller --timeout=180s || true
+kubectl -n "${NS_ARGO}" rollout status deployment/argocd-repo-server --timeout=180s || true
 
 kubectl create namespace "${NS_DEMO}" --dry-run=client -o yaml | kubectl apply -f -
 

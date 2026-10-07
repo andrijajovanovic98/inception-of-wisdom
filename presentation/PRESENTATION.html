@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Inception of Wisdom (IoW) - Complete Architecture Presentation</title>
+  <title>Inception of Wisdom (IoW) &mdash; Complete Architecture Presentation</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -67,6 +67,7 @@
       display: flex;
       opacity: 1;
     }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.5rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); display: flex; align-items: center; gap: 10px; }
     p { font-size: 1.1rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 1000px; }
@@ -153,7 +154,7 @@
   <header>
     <div class="header-title">
       <span class="badge">42 Project</span>
-      <span>Inception-of-Wisdom (IoW) - Full Architecture & Defense Deck</span>
+      <span>Inception-of-Wisdom (IoW) &mdash; Full Architecture & Defense Deck</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 10</div>
   </header>
@@ -162,14 +163,14 @@
 
     <!-- Slide 1: Title -->
     <div class="slide active">
-      <span class="badge" style="width: fit-content; margin-bottom: 16px;">42 VIENNA - AUTONOMOUS DEV-OPS AGENT</span>
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">42 VIENNA &mdash; AUTONOMOUS DEV-OPS AGENT</span>
       <h1>Inception of Wisdom (IoW)</h1>
       <p style="font-size: 1.3rem; color: #94a3b8; max-width: 800px;">
         An autonomous, 100% local self-healing agent loop that continuously observes a containerized service,
         detects crashes, retrieves context via RAG, synthesizes full-file JSON patches, verifies fixes, and rewinds through Git upon failure.
       </p>
       <div class="highlight-box" style="max-width: 750px;">
-        <strong>Subject Cardinal Rule:</strong> Everything runs locally. Remote LLM API calls (OpenAI, Anthropic, Gemini) are strictly forbidden (instant 0 XP).
+        <strong>Subject Cardinal Rule:</strong> Everything runs locally. Any call to a remote LLM service (OpenAI, Anthropic, Gemini) is forbidden and results in a grade of zero.
       </div>
       <div style="margin-top: 24px; color: var(--text-muted); font-size: 0.85rem;">
         Press <strong>Right Arrow</strong> or click <strong>Next</strong> to begin the walkthrough.
@@ -208,29 +209,29 @@
 
     <!-- Slide 3: Multi-Container Architecture -->
     <div class="slide">
-      <h2>Containerized Deployment & Host LLM Bridge</h2>
+      <h2>Containerized Deployment & Local LLM</h2>
       <div class="grid-2">
         <div class="card">
-          <h3>Multi-Service Docker Stack</h3>
+          <h3>One <code>docker compose up</code></h3>
           <ul>
-            <li><strong>demo_app:</strong> Containerized target Flask service (port 5001:5000) with bind-mount <code>./demo_app:/app</code>.</li>
-            <li><strong>agent:</strong> IoW orchestrator and web dashboard (port 8000:8000).</li>
-            <li><strong>/var/run/docker.sock:</strong> Bound directly into the agent container for container lifecycle control.</li>
-            <li><strong>Campus-Safe Writes:</strong> The agent image has no fixed <code>USER</code> or host-specific chown requirement; host execution remains the preferred campus workflow.</li>
+            <li><strong>make up</strong> = <code>docker compose up --build -d</code>: the agent, the LLM runtime, the target and the Gitea forge.</li>
+            <li><strong>demo_app:</strong> Flask target (port 5001:5000), bind-mount <code>./demo_app:/app</code>, <code>STOPSIGNAL SIGINT</code> so a restart takes well under a second.</li>
+            <li><strong>agent:</strong> dashboard on :8000, with the Docker socket (<code>$DOCKER_SOCK</code>, the rootless socket on campus), the checkout at <code>/workspace</code> and <code>/tmp/iow</code> mounted.</li>
+            <li><strong>File ownership:</strong> <code>scripts/agent_entrypoint.sh</code> runs the agent as the owner of the checkout &mdash; on rootful Docker it drops to that uid, on rootless Docker the host user already is uid 0 inside.</li>
           </ul>
         </div>
         <div class="card">
-          <h3>Offline Host LLM Connection</h3>
+          <h3>Local Model Runtime</h3>
           <ul>
-            <li><strong>Ollama on Host:</strong> The model runtime runs locally on the host to avoid nested virtualization.</li>
-            <li><strong>Bridge Mapping:</strong> <code>host.docker.internal:host-gateway</code> maps container network to host bridge gateway (172.17.0.1).</li>
-            <li><strong>Model:</strong> <code>qwen2.5-coder:1.5b</code> (< 3B parameters).</li>
-            <li><strong>Embedding:</strong> <code>all-MiniLM-L6-v2</code> cached offline in <code>/tmp/iow/</code>.</li>
+            <li><strong>ollama service:</strong> <code>ollama/ollama</code> pulls the model into a volume on first start and reports healthy once it is there; the agent reaches it as <code>http://ollama:11434</code> (no host port).</li>
+            <li><strong>Host runs</strong> (<code>make p1</code> ... <code>make bonus</code>) use the Ollama <code>make setup</code> starts on :11436.</li>
+            <li><strong>Model:</strong> <code>qwen2.5-coder:1.5b</code> (1.54 B parameters, under the 3 B limit).</li>
+            <li><strong>Embedding:</strong> <code>all-MiniLM-L6-v2</code>, cached in <code>/tmp/iow/hf-cache</code> and loaded offline.</li>
           </ul>
         </div>
       </div>
       <div class="defense-tip">
-        <strong>Defense Tip:</strong> Evaluators will check if any cloud APIs are used. Show them <code>docker-compose.yml</code> extra_hosts and the local Ollama bridge at <code>host.docker.internal:11436</code>.
+        <strong>Defense Tip:</strong> Evaluators check that no cloud API is called. Every endpoint the agent talks to is local: Ollama, the target and Gitea &mdash; see <code>OLLAMA_HOST</code> in <code>docker-compose.yml</code>.
       </div>
     </div>
 
@@ -239,13 +240,13 @@
       <h2>Part 1: Observer (The Nervous System)</h2>
       <div class="grid-3">
         <div class="card">
-          <h3>Docker Socket Monitor</h3>
-          <p>Inspects the target container directly via Docker SDK:</p>
+          <h3>Docker Monitor</h3>
+          <p>State and events of the target, from the Docker daemon:</p>
           <ul>
-            <li>Exit code != 0 detection</li>
-            <li>Restart loop detection</li>
-            <li>Dead / OOMKilled state</li>
-            <li>Container restart trigger</li>
+            <li>Non-zero exit, from the event stream (the restart policy hides it from polling)</li>
+            <li>Restart loop (counter climbing, or stuck restarting)</li>
+            <li>Dead / OOM-killed state</li>
+            <li>Survives a daemon outage and reconnects</li>
           </ul>
         </div>
         <div class="card">
@@ -253,22 +254,23 @@
           <p>Streams stdout / stderr in near real time:</p>
           <ul>
             <li>500-line thread-safe ring buffer</li>
-            <li>Regex error matcher (Traceback, CRITICAL, Error, Exception)</li>
-            <li>Emits real-time SSE stream to dashboard</li>
+            <li>Configurable regex error patterns (<code>target.error_patterns</code>)</li>
+            <li>One traceback = one incident; replayed history never re-fires</li>
+            <li>Live SSE stream to the dashboard</li>
           </ul>
         </div>
         <div class="card">
           <h3>HTTP Probing & Signal Separation</h3>
-          <p>Probes <code>/</code> and <code>/healthz</code> every 3s:</p>
+          <p>Probes <code>target.probe_urls</code> every 3 s (<code>/</code>, <code>/healthz</code>, <code>/api/missing-route</code>):</p>
           <ul>
             <li><strong>2xx:</strong> Healthy baseline</li>
             <li><strong>4xx:</strong> Soft functional suggestion (NOT patched automatically)</li>
-            <li><strong>5xx / Timeout:</strong> Hard crash signal</li>
+            <li><strong>5xx / refused / timeout:</strong> Hard crash signal</li>
           </ul>
         </div>
       </div>
       <div class="highlight-box">
-        <strong>Sliding-Window Deduplication:</strong> Generates SHA-256 signatures. A single bad restart produces 1 crash event with an incremented counter, not a flood of 100 events per minute.
+        <strong>Sliding-Window Deduplication:</strong> one incident = one event with a counter (90 s window, longer than Docker's 60 s maximum restart backoff; 300 s for suggestions). The incident ends once the target serves again or a heal is verified.
       </div>
     </div>
 
@@ -280,23 +282,23 @@
           <h3>AST Logical Chunking (chunker.py)</h3>
           <ul>
             <li>Subject forbids fixed-size chunking (e.g. 500 characters).</li>
-            <li>Uses Python <code>ast</code> module to split along logical function and class boundaries.</li>
-            <li>Calculates SHA-256 hash per chunk for incremental indexing.</li>
-            <li>ChromaDB <code>PersistentClient</code> in <code>/tmp/iow/chroma_db</code> skips unchanged chunks across restarts.</li>
+            <li>Uses Python <code>ast</code>: one chunk per function, class and method, plus module blocks and the <code>__main__</code> block &mdash; every line is in a chunk.</li>
+            <li>SHA-256 per chunk: unchanged chunks are never re-embedded.</li>
+            <li>ChromaDB <code>PersistentClient</code> in <code>/tmp/iow/chroma_db</code>; watch mode re-indexes changed files every 3 s and prunes what disappeared.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Traceback Guided Top-k Retrieval</h3>
           <ul>
-            <li>Extracts exact stack frame symbols, line numbers, and exception names from crash logs.</li>
-            <li>Runs cosine similarity search using local <code>all-MiniLM-L6-v2</code> embeddings.</li>
-            <li>Passes candidate code slices into local Ollama coder prompt.</li>
+            <li>Looks the traceback's functions and <code>file:line</code> frames up in the index itself.</li>
+            <li>Merges them with a cosine top-k search over local <code>all-MiniLM-L6-v2</code> embeddings.</li>
+            <li>Only those chunks go into the prompt &mdash; the model chooses, it does not invent.</li>
           </ul>
         </div>
       </div>
       <div class="card" style="margin-top: 16px;">
         <h3>Structured Diagnosis JSON & Anti-Hallucination</h3>
-        <p>Enforces strict JSON schema: <code>{"summary": "...", "files": ["relative/file/path"]}</code>. Cross-validates cited files against real indexed files - the pipeline refuses to guess or touch imaginary paths.</p>
+        <p>Enforces strict JSON schema: <code>{"summary": "...", "files": ["relative/file/path"]}</code>. Cross-validates cited files against real indexed files &mdash; the pipeline refuses to guess or touch imaginary paths.</p>
       </div>
     </div>
 
@@ -306,25 +308,26 @@
       <div class="grid-3">
         <div class="card">
           <h3>Diff-Free JSON Patcher</h3>
-          <p>Diffs are strictly forbidden by subject. Emits complete post-change file contents: <code>{summary, files: [{path, op, content}]}</code>.</p>
+          <p>The patch is <code>{summary, files: [{path, op, content}]}</code> with the complete post-change file, <code>op</code> one of create / modify / delete; diffs are refused. In a larger file the model rewrites only the chunk the crash points at and the patcher builds the full-file patch (<code>analyst.patch_strategy: full_file</code> has the model write it whole).</p>
         </div>
         <div class="card">
           <h3>Sanity Bounds (Pre-Disk)</h3>
           <ul>
             <li>Touches at most 3 files</li>
+            <li>No trivial placeholder</li>
             <li>Max 60% file shrinkage</li>
-            <li>No empty or placeholder files</li>
             <li>No leaked retrieval markers</li>
-            <li>Python syntax compilation check</li>
+            <li>Only <code>demo_app/</code>, never <code>iow.config.yml</code></li>
+            <li>Must parse, must change something, may not drop a definition</li>
           </ul>
         </div>
         <div class="card">
           <h3>GitManager & Branching</h3>
-          <p>Snapshots the pre-loop revision. Applies files atomically via <code>os.replace</code>, scopes writes to <code>demo_app/</code>, and commits to <code>iow/auto-heal</code>.</p>
+          <p>Records the exact state <code>demo_app/</code> runs as the pre-loop revision (a snapshot commit when it differs from HEAD), writes atomically (<code>*.iow.tmp</code> + fsync + <code>os.replace</code>) and commits on <code>iow/auto-heal</code> with git plumbing &mdash; HEAD, the index and the checked-out branch never move.</p>
         </div>
       </div>
       <div class="defense-tip">
-        <strong>The 3-Attempt Guarantee:</strong> If all 3 attempts fail, GitManager uses a mixed reset plus targeted restore for <code>demo_app/</code>. Agent and dashboard work elsewhere in the repository is preserved.
+        <strong>The 3-Attempt Guarantee:</strong> after 3 failed attempts <code>iow/auto-heal</code> is rewound to the pre-loop revision, <code>demo_app/</code> is restored from it through a throwaway index, re-hashed and shown as <em>identical</em>, and the target restarts on it. A cycle cut short by an agent stop is rolled back on the next start.
       </div>
     </div>
 
@@ -352,6 +355,7 @@ grace_period: 20
 cooldown: 300
 rate_limit_per_hour: 5
 hard_cap: 20
+boot_timeout: 45
 kill_switch: false
           </pre>
         </div>
@@ -364,19 +368,19 @@ kill_switch: false
       <div class="grid-3">
         <div class="card">
           <h3>Tiny Symptom Classifier</h3>
-          <p>Caches verified fixes for crash symptoms. When a known symptom occurs, it bypasses the LLM entirely (Fast Path), reducing repair time from 20s to <strong>0.01s</strong>.</p>
+          <p>Learns every verified heal together with the code it was applied to. The same crash on the same code is healed from the cached patch without calling the LLM: the restart plus the grace period (24 s with the default 20 s) instead of 45-80 s. A cached patch that fails loses trust.</p>
         </div>
         <div class="card">
           <h3>Second Opinion Consensus</h3>
-          <p>Prompts two independent diagnostic angles (Conservative Stack vs Architectural Contracts). A patch is only triggered if both opinions agree on the suspect file.</p>
+          <p>Two prompts (conservative stack frame vs caller contract) must agree on the suspect file &mdash; on every attempt, retries included. A divergence is never patched autonomously. Off by default, toggled in the Bonus tab.</p>
         </div>
         <div class="card">
           <h3>Human-in-the-Loop PRs</h3>
-          <p>Instead of unattended commit, creates review branch <code>iow/review/*</code>, unified diff preview, and dashboard button for human review and merge.</p>
+          <p>With HITL on nothing lands before a human approves: a review PR (<code>iow/review/&lt;cycle&gt;</code>) on the local Gitea with its diff. Approving deploys it under the heal bounds and keeps it only if the target stays up.</p>
         </div>
       </div>
       <div class="highlight-box">
-        Gitea HITL runs with <code>make pr-bonus</code> on <code>:3000</code>. GitOps runs with <code>make argocd-bonus</code> using campus-safe <code>iow-k3s</code> (not nested k3d), Argo UI <code>:8080</code>, and demo NodePort <code>:30051</code>.
+        Gitea runs with <code>make up</code> (or the host run <code>make pr-bonus</code>) on <code>:3000</code>. GitOps: <code>make argocd-bonus</code> (campus-safe <code>iow-k3s</code>, Argo UI <code>:8080</code> or <code>IOW_ARGOCD_PORT</code>, demo NodePort <code>:30051</code>); plant a bug in the cluster with <code>make break-import gitops-publish</code>. There the heal commit alone redeploys: it stamps its code's hash into the pod template, and Argo CD syncs it and rolls the pod.
       </div>
     </div>
 
@@ -387,32 +391,33 @@ kill_switch: false
         <div class="card">
           <h3>Step 1: Launch & Show Health</h3>
           <pre>
-# Start demo_app + Gitea infrastructure
+# Agent + LLM runtime + target + Gitea
 make up
 
-# Start the host dashboard and bonus services
-make bonus
-
-# Open Dashboard in browser:
+# Open the dashboard:
 http://localhost:8000
+
+# Defense speed-up (live, no restart):
+# grace_period: 5 in demo_app/iow.config.yml
           </pre>
-          <p>Show the evaluators: Target status is 200 OK (green badge), live logs streaming, 0 crashes recorded.</p>
+          <p>Show the evaluators: target running and healthy (green badge), live logs streaming, no crash event yet.</p>
         </div>
         <div class="card">
-          <h3>Step 2: Trigger Intentional Crash</h3>
+          <h3>Step 2: Plant a Startup Crash</h3>
           <pre>
-# Inject ZeroDivisionError
-make break
+# missing import (or: make break-env / break-syntax)
+make break-import
           </pre>
           <p>Observe live on the Dashboard:</p>
           <ol style="margin-left: 20px; font-size: 0.9rem; color: #cbd5e1;">
-            <li>Observer catches 500 error & ZeroDivisionError.</li>
+            <li>The Observer raises one crash event (exit code, restart loop, traceback).</li>
             <li>Status ribbon turns yellow ("HEALING IN PROGRESS").</li>
-            <li>Analyst identifies <code>demo_app/app.py</code>.</li>
-            <li>Patcher generates full-file JSON fix.</li>
-            <li>Target restarts & grace period counts down 20s.</li>
-            <li>Status ribbon turns green ("VERIFIED HEALED").</li>
+            <li>The Analyst names <code>demo_app/app.py</code>.</li>
+            <li>The patch passes the sanity gate and is committed on <code>iow/auto-heal</code>.</li>
+            <li>The target restarts and must stay up for the grace period.</li>
+            <li>The attempt reads "VERIFIED HEALED", with its diff, in the Wisdom Loop tab.</li>
           </ol>
+          <p style="font-size: 0.85rem;"><code>make break</code> / <code>break-hard</code> hit routes whose purpose is to crash: the model either rewrites the route until the replayed request answers 2xx, or declines to change it &mdash; then the loop rolls back, shown as <em>identical</em>.</p>
         </div>
       </div>
     </div>
@@ -423,18 +428,18 @@ make break
       <div class="grid-3">
         <div class="card">
           <h3>Mandatory Requirements</h3>
-          <p> * Observe $\to$ Think $\to$ Act $\to$ Verify loop<br>
+          <p> * Observe &rarr; Think &rarr; Act &rarr; Verify loop<br>
              * Diff-free structured JSON patches<br>
-             * Max 3 attempts + scoped mixed rollback<br>
-             * 5 dynamic safety guardrails<br>
+             * Max 3 attempts + byte-for-byte rollback<br>
+             * 5 safety bounds, live from <code>iow.config.yml</code><br>
              * Local models only (no cloud API)</p>
         </div>
         <div class="card">
           <h3>Container & 42 Quota</h3>
-          <p> * <code>make up</code> + host <code>make bonus</code><br>
-             * Docker socket control<br>
-             * No fixed container UID/GID requirement<br>
-             * All caches redirected to <code>/tmp/</code></p>
+          <p> * <code>make up</code> = one <code>docker compose up</code><br>
+             * Docker socket control from the agent container<br>
+             * Agent writes as the owner of the checkout<br>
+             * All caches under <code>/tmp/iow</code></p>
         </div>
         <div class="card">
           <h3>Bonus Suite (Chapter VI)</h3>

@@ -34,6 +34,11 @@ spec:
     metadata:
       labels:
         app: iow-demo
+      annotations:
+        # Set by every Wisdom Loop commit (and `make gitops-publish`) to the git tree hash
+        # of demo_app/: a code change changes the pod template, so Argo CD's sync of the
+        # commit alone rolls the pod - nobody restarts it by hand.
+        iow.42/source: "unstamped"
     spec:
       volumes:
         - name: source

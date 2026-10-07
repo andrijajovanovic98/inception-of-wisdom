@@ -35,6 +35,8 @@ target:
   # window has to outlast Docker's exponential restart backoff, which tops out at 60 s
   # between crashes (a 60 s window raised the same crash loop again every minute).
   # An incident also ends once the target serves again or a heal is verified.
+  # In GitOps mode (make argocd-bonus) the crash window is at least 330 s: Kubernetes
+  # backs a crash-looping pod off up to 300 s between restarts.
   # Suggestions use the longer window the subject asks for.
   crash_dedup_window_seconds: 90
   suggestion_dedup_window_seconds: 300
@@ -64,3 +66,12 @@ analyst:
   top_k: 3
   # Watch mode: how often the index reconciles with the target source tree.
   watch_interval_seconds: 3
+  # How the model writes a patch. Either way the loop checks, applies and commits the
+  # subject's JSON patch {summary, files: [{path, op, content}]} with complete files.
+  #   region    - in a file of 30+ lines the model rewrites only the chunk the crash
+  #               points at, and the loop builds the full-file JSON patch from it
+  #   full_file - the model writes that complete JSON patch itself, every time
+  # Measured with qwen2.5-coder:1.5b on demo_app/app.py: region 4 of 9 usable answers on
+  # the first ask, full_file 0 of 9 (each cut to a few lines and refused). A larger
+  # model may handle full_file.
+  patch_strategy: region

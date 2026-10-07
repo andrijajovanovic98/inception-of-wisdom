@@ -7,7 +7,9 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
+from p3 import safety
 from p3.safety import SafetyManager
 
 BASE = """grace_period: 5
@@ -110,6 +112,17 @@ class SafetyTests(unittest.TestCase):
         self._write("")
         self.assertTrue(self.sm.reload_config()["kill_switch"])
 
+    def test_a_deleted_file_keeps_the_values_and_is_reported_once(self) -> None:
+        """It used to log a warning on every status poll - every 2-3 s."""
+        self._write(BASE.replace("kill_switch: false", "kill_switch: true"))
+        self.sm.reload_config()
+        os.remove(self.path)
+        with mock.patch.object(safety.logger, "warning") as warning:
+            for _ in range(20):
+                self.sm.get_status()
+        self.assertEqual(warning.call_count, 1)
+        self.assertTrue(self.sm.get_status()["config"]["kill_switch"])   # still armed
+
     def test_a_deleted_key_goes_back_to_its_default(self) -> None:
         self._write(BASE.replace("cooldown: 300\n", ""))
         self.assertEqual(self.sm.reload_config()["cooldown"], 300.0)
@@ -158,6 +171,18 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(second["top_k"], 5)                         # applied
         self.assertEqual(second["probe_interval_seconds"], 3.0)      # a typo keeps the last value
         self.assertEqual(second["probe_urls"], ["/", "/healthz"])    # so does a non-list
+
+    def test_the_patch_strategy_is_a_live_choice(self) -> None:
+        """J1: a peer can have the model write the whole JSON patch, mid-defense."""
+        self._write(BASE + "analyst:\n  patch_strategy: full_file\n")
+        first = self.sm.read_live_settings()
+        self.assertEqual(first["patch_strategy"], "full_file")
+        self._write(BASE + "analyst:\n  patch_strategy: fullfile\n")   # a typo
+        self.sm.reload_config()
+        self.assertEqual(self.sm.read_live_settings(previous=first)["patch_strategy"], "full_file")
+        self._write(BASE)                                               # removed: the default
+        self.sm.reload_config()
+        self.assertEqual(self.sm.read_live_settings(previous=first)["patch_strategy"], "region")
 
 
 if __name__ == "__main__":

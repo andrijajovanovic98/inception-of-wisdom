@@ -15,6 +15,7 @@ commit. Rollback restores exactly that revision, byte for byte, through git.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +35,9 @@ CYCLE_REF = "refs/iow/pre-loop"
 # Edits made to the heal paths outside the loop while a cycle ran, kept before the
 # rollback restores the pre-loop bytes (one ref per rollback).
 OVERWRITTEN_REF_PREFIX = "refs/iow/overwritten"
+# GitOps: the pod-template annotation every agent commit sets to the git tree hash of the
+# heal paths, so a code change is a manifest change and Argo CD's sync alone rolls the pod.
+SOURCE_STAMP_RE = re.compile(r'^([ \t]*iow\.42/source:[ \t]*)"[^"\n]*"', re.MULTILINE)
 COMMIT_NAME = "IoW Auto-Heal Agent"
 COMMIT_EMAIL = "auto-heal@iow.local"
 # Only these paths may be rewritten / rolled back by the Wisdom Loop.
@@ -86,6 +90,8 @@ class GitManager:
         self._created_paths: List[str] = []
         # Outcome of the last rollback's byte-for-byte check (dashboard / history).
         self.last_rollback_check: Optional[Dict[str, Any]] = None
+        # GitOps mode: the manifest whose pod template carries the code's tree hash.
+        self.manifest_stamp: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Path safety
@@ -290,6 +296,7 @@ class GitManager:
             raise RuntimeError("Cannot snapshot the working tree of the heal paths.")
         if tree == self._tree_of(base):
             return base
+        tree = self._stamped_tree(tree)
         code, commit, err = self._run_git(
             ["commit-tree", tree, "-p", base, "-m",
              f"iow: pre-loop snapshot of {', '.join(self.heal_paths)}/\n\n"
@@ -331,6 +338,81 @@ class GitManager:
             f"(HEAD stays on '{self._initial_branch}', heal branch '{self.heal_branch}')."
         )
         return pre_loop
+
+    # ------------------------------------------------------------------
+    # GitOps: the commit alone redeploys
+    # ------------------------------------------------------------------
+    def _stamp_manifest(self, env: Dict[str, str]) -> None:
+        """Set the manifest's source stamp to the heal paths' tree hash, in this index.
+
+        The init container clones the code at pod start, so a heal changed no manifest:
+        Argo CD had nothing to roll, and the agent restarted the rollout itself. With
+        the stamp the pod template changes with the code - the commit alone is the
+        redeploy, Argo CD's own sync rolls the pod. Only commits are stamped, never the
+        working tree.
+        """
+        if not self.manifest_stamp:
+            return
+        code, source, _ = self._run_git(
+            ["write-tree", f"--prefix={self.heal_paths[0]}/"], check=False, env=env
+        )
+        code2, entry, _ = self._run_git(
+            ["ls-files", "-s", "--", self.manifest_stamp], check=False, env=env
+        )
+        if code != 0 or code2 != 0 or not source or not entry:
+            return
+        mode, blob = entry.split()[:2]
+        text = self._cat_blob(blob)
+        if text is None:
+            return
+        stamped, count = SOURCE_STAMP_RE.subn(lambda m: f'{m.group(1)}"{source}"', text)
+        if not count or stamped == text:
+            return
+        code, sha, err = self._run_git(
+            ["hash-object", "-w", "--stdin", "--path", self.manifest_stamp],
+            check=False, stdin_data=stamped,
+        )
+        if code == 0 and sha:
+            self._run_git(
+                ["update-index", "--cacheinfo", f"{mode},{sha},{self.manifest_stamp}"],
+                check=False, env=env,
+            )
+        else:
+            logger.warning(f"Could not stamp {self.manifest_stamp}: {err}")
+
+    def _stamped_tree(self, tree: str) -> str:
+        """`tree` with the manifest stamped (unchanged when there is nothing to stamp)."""
+        if not self.manifest_stamp:
+            return tree
+        tmp_dir = tempfile.mkdtemp(prefix="iow-stamp-")
+        env = self._git_env(index_file=os.path.join(tmp_dir, "index"))
+        try:
+            if self._run_git(["read-tree", tree], check=False, env=env)[0] != 0:
+                return tree
+            self._stamp_manifest(env)
+            code, stamped, _ = self._run_git(["write-tree"], check=False, env=env)
+            return stamped if code == 0 and stamped else tree
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _cat_blob(self, blob: str) -> Optional[str]:
+        """A blob's exact text (not through _run_git, which strips the trailing newline)."""
+        try:
+            res = subprocess.run(
+                ["git", "cat-file", "blob", blob], cwd=self.repo_dir,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, env=self._git_env(),
+            )
+        except Exception:
+            return None
+        return res.stdout.decode("utf-8", errors="replace") if res.returncode == 0 else None
+
+    def source_stamp(self, revision: str) -> Optional[str]:
+        """The manifest's source stamp at `revision` (None without a manifest or stamp)."""
+        if not self.manifest_stamp:
+            return None
+        text = self.read_blob(revision, self.manifest_stamp)
+        match = SOURCE_STAMP_RE.search(text or "")
+        return match.group(0).split('"')[1] if match else None
 
     # ------------------------------------------------------------------
     # Plumbing commit (never moves HEAD or the working tree)
@@ -395,6 +477,7 @@ class GitManager:
                     logger.error(f"update-index failed for {rel_path}: {err}")
                     return None
 
+            self._stamp_manifest(env)
             code, tree, err = self._run_git(["write-tree"], check=False, env=env)
             if code != 0 or not tree:
                 logger.error(f"write-tree failed: {err}")

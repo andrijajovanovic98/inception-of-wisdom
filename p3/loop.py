@@ -72,6 +72,8 @@ class HealCycleRecord:
     # did the target come back on it?
     rollback_check: Optional[Dict[str, Any]] = None
     post_rollback: Optional[Dict[str, Any]] = None
+    # The review PR a human decides on (bonus, human in the loop).
+    review_pr: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -88,6 +90,7 @@ class HealCycleRecord:
             "symptom_check": list(self.symptom_check),
             "rollback_check": self.rollback_check,
             "post_rollback": self.post_rollback,
+            "review_pr": self.review_pr,
         }
 
 
@@ -290,6 +293,16 @@ class WisdomLoop:
         # is replayed after each redeploy (see TargetVerifier).
         probe_paths = getattr(getattr(self.verifier, "http_probe", None), "probe_paths", None) or []
         replay = failing_requests_from_log(current_error_log or "", ignore_paths=probe_paths)
+
+        # A target someone stopped or paused is down, but its code is not broken: told to
+        # fix it anyway, the model rewrote working routes and "healed" (seen live after a
+        # `docker stop`). Nothing is patched, committed or restarted.
+        inspect = getattr(self.docker_monitor, "inspect", None)
+        state = inspect() if callable(inspect) else None
+        if state is not None and getattr(state, "stopped", False):
+            logger.info(f"Nothing to patch: {state.error_reason}")
+            self._release_cycle()
+            return self.record_refused_cycle(crash_event, f"Nothing to patch: {state.error_reason}.")
 
         # A crash that is already gone has nothing left to heal: patching now could only
         # change working code (a transient blip, an old event picked by hand, a sibling
@@ -525,7 +538,19 @@ class WisdomLoop:
             )
             self.git_manager.rollback_to_pre_loop()
             cycle_record.rollback_check = self.git_manager.last_rollback_check
-            self.docker_monitor.restart_target(timeout=10)
+            # Redeployed like every other rollback: in GitOps mode the Verifier publishes
+            # the rewound branch, and a bare pod restart would re-clone the unverified patch.
+            try:
+                post = self.verifier.restart_and_verify(grace_period=0.0)
+                cycle_record.post_rollback = {
+                    "restarted_on": pre_loop_hash,
+                    "target_up": post.is_healed,
+                    "status": post.status,
+                    "container_status": post.container_status,
+                }
+            except Exception as redeploy_err:
+                logger.error(f"Redeploy after the emergency rollback failed: {redeploy_err}")
+                self.docker_monitor.restart_target(timeout=10)
             cycle_record.status = "rolled_back"
             cycle_record.final_commit_hash = pre_loop_hash
             cycle_record.failure_reason = f"Unexpected error: {err}"
@@ -622,26 +647,47 @@ class WisdomLoop:
         return text if len(text) <= max_chars else text[:max_chars] + "\n... (diff truncated)\n"
 
     def record_refused_cycle(
-        self, crash_event: ObserverEvent, reason: str, status: str = "refused"
+        self,
+        crash_event: ObserverEvent,
+        reason: str,
+        status: str = "refused",
+        review_pr: Optional[str] = None,
+        pre_loop_hash: Optional[str] = None,
     ) -> HealCycleRecord:
         """Put a heal that was deliberately not run into the history, with its reason.
 
         The dashboard is where a peer looks for "why did nothing happen?" - a heal that
         was held back for a human (HITL / second-opinion divergence) belongs there.
+        review_pr links a cycle awaiting review to its PR (see resolve_review).
         """
         now = time.time()
         record = HealCycleRecord(
             cycle_id=str(uuid.uuid4())[:8],
-            pre_loop_hash=self.git_manager.get_current_head() or "unknown",
+            pre_loop_hash=pre_loop_hash or self.git_manager.get_current_head() or "unknown",
             status=status,
             initial_crash=crash_event.to_dict(),
             failure_reason=reason,
             start_time=now,
             end_time=now,
             heal_branch=self.git_manager.heal_branch,
+            review_pr=review_pr,
         )
         self._record(record)
         return record
+
+    def resolve_review(self, pr_id: str, status: str, reason: str) -> Optional[HealCycleRecord]:
+        """A human decided on a review PR: the cycle that proposed it shows the outcome.
+
+        It used to read "awaiting_review" for good - the approved and verified landing,
+        or the rejection, was visible only in the Bonus tab (seen live).
+        """
+        for record in reversed(self.history):
+            if record.review_pr == pr_id and record.status == "awaiting_review":
+                record.status = status
+                record.failure_reason = reason
+                record.end_time = time.time()
+                return record
+        return None
 
     def get_history(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Returns the history of heal cycles formatted for the Dashboard."""

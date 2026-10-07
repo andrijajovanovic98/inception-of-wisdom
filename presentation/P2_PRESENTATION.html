@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Part 2: Analyst - Inception of Wisdom</title>
+  <title>Part 2: Analyst &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -25,6 +25,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -49,7 +50,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Part 2</span>
-      <span>Analyst Deep-Dive - Inception of Wisdom</span>
+      <span>Analyst Deep-Dive &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
   </header>
@@ -59,12 +60,12 @@
     <!-- Slide 1 -->
     <div class="slide active">
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">THINK PHASE</span>
-      <h1>Part 2: Analyst - Semantic Code Intelligence</h1>
+      <h1>Part 2: Analyst &mdash; Semantic Code Intelligence</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
         The Analyst bridges runtime crash symptoms with source code semantics. It decomposes the target codebase into logical AST chunks, indexes them into a local vector database, retrieves relevant code slices, and synthesizes a structured diagnosis using an offline LLM (< 3B).
       </p>
       <div class="highlight-box">
-        <strong>Subject Requirement:</strong> "Index target code in ChromaDB with logical chunking (preserve functions and classes, not fixed-size). Retrieve relevant chunks with similarity score. Output structured diagnosis JSON with summary and suspect files."
+        <strong>Subject (V.2):</strong> "The diagnosis output is structured (JSON, with at least a summary field and a files list of suspect paths)." &mdash; "The diagnosis must cite real files from the index. It must not invent paths."
       </div>
     </div>
 
@@ -82,7 +83,7 @@
             <li>Parses Python files with the built-in <code>ast</code> module.</li>
             <li>Identifies <code>ast.FunctionDef</code>, <code>ast.AsyncFunctionDef</code>, and <code>ast.ClassDef</code>.</li>
             <li>Preserves leading decorators and exact start/end line bounds.</li>
-            <li>Extracts module preambles (imports, global constants) as discrete chunks.</li>
+            <li>Every top-level statement belongs to a chunk: the module preamble (imports, globals), module blocks between definitions, and the <code>if __name__ == "__main__":</code> block &mdash; where a bad environment variable crashes.</li>
             <li>Assigns a deterministic SHA-256 hash to each chunk.</li>
           </ul>
         </div>
@@ -99,6 +100,7 @@
             <li>Uses <code>chromadb.PersistentClient(path="/tmp/iow/chroma_db")</code> via <code>CHROMA_CACHE_DIR</code>.</li>
             <li><strong>Incremental updates:</strong> Compares chunk SHA-256 against stored metadata. Only newly modified functions are re-embedded.</li>
             <li>Subject rule: The index must survive restarts and <strong>never rebuild from scratch</strong> on boot.</li>
+            <li><strong>Watch mode</strong> (<code>p2/watcher.py</code>): every 3 s (<code>analyst.watch_interval_seconds</code>) changed files are re-chunked; moved code gets its new line numbers without re-embedding, removed symbols and files are pruned.</li>
           </ul>
         </div>
         <div class="card">
@@ -120,17 +122,18 @@
           <h3>Identifier & Stack Frame Extraction</h3>
           <p>Scans the crash log with compiled regular expressions:</p>
           <pre>
-# Extracts: file, line, function, exception type
-File "demo_app/app.py", line 45, in crash_me
-ZeroDivisionError: division by zero
+# make break-env - file, line, exception type
+File "/app/app.py", line 92, in &lt;module&gt;
+KeyError: 'IOW_DEMO_PORT'
           </pre>
-          <p>Identifies exact file targets and symbol names before querying the vector store.</p>
+          <p>Looks them up in the index itself (the subject's hint): functions by symbol name, <code>file:line</code> frames by the chunk's line range.</p>
         </div>
         <div class="card">
           <h3>Hybrid Ranking (Symbol + Semantic)</h3>
           <ul>
-            <li>Priority 1: Code chunks matching cited traceback file and symbol.</li>
-            <li>Priority 2: Top-k semantic vector similarity using cosine distance.</li>
+            <li>Priority 1: the chunk that contains the traceback's line.</li>
+            <li>Priority 2: a function the traceback names, then the file.</li>
+            <li>Cosine similarity breaks ties; top-k is <code>analyst.top_k</code>.</li>
             <li>Returns chunks with metadata: <code>{file_path, symbol_name, start_line, end_line, score}</code>.</li>
           </ul>
         </div>
@@ -144,15 +147,15 @@ ZeroDivisionError: division by zero
         <div class="card">
           <h3>Ollama Coder Prompt (< 3B)</h3>
           <ul>
-            <li>Model: <code>qwen2.5-coder:1.5b</code> running on the host.</li>
-            <li>Enforces JSON schema: <code>{"summary": "...", "files": ["demo_app/app.py"]}</code>.</li>
-            <li>Feeds only the top retrieved context chunks into the prompt window.</li>
+            <li>Model: <code>qwen2.5-coder:1.5b</code>, run locally (the compose <code>ollama</code> service, or the host Ollama for host runs).</li>
+            <li>Enforces JSON schema: <code>{"files": ["demo_app/app.py"], "summary": "..."}</code>.</li>
+            <li>Feeds only the retrieved chunks into the prompt, with the allowed files: the model chooses, it does not invent.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Anti-Hallucination Validation</h3>
           <div class="highlight-box">
-            <strong>The Pipeline Does Not Guess:</strong> Small 1.5B models can hallucinate non-existent files. The diagnostician strictly validates cited files against the real indexed repository files. Unknown paths are pruned!
+            <strong>The Pipeline Does Not Guess:</strong> Small 1.5B models can hallucinate non-existent files. Every cited file is checked against the indexed files; unknown or ambiguous paths are dropped. No usable file or summary &mdash; or no model at all &mdash; is reported as an explicit failure, never filled in.
           </div>
         </div>
       </div>
@@ -171,7 +174,7 @@ ZeroDivisionError: division by zero
         </ul>
       </div>
       <div class="defense-tip">
-        <strong>Defense Tip:</strong> In the dashboard's 2nd tab, demonstrate free-text search (e.g. "division by zero route") to show the evaluator the instant cosine similarity scores!
+        <strong>Defense Tip:</strong> In the dashboard's 2nd tab, run a free-text search (e.g. "the startup configuration and port") and show the evaluator the top-k chunks with their similarity scores.
       </div>
     </div>
 

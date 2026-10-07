@@ -17,6 +17,7 @@ from typing import Callable, List, Dict, Optional, Any
 from dataclasses import dataclass, field, asdict
 
 from p3.names import undefined_names
+from p3.unbound import unset_in_a_new_way
 from p3.patcher import StructuredPatch
 
 logger = logging.getLogger("p3.sanity")
@@ -265,6 +266,15 @@ class SanityChecker:
                             f"The patch leaves {lost} undefined although the file still uses "
                             "it: it removed a definition or an import (NameError at run time)."
                         )
+
+                # Rule 8: no name read where it may not be set yet. A value set on one path
+                # only (inside an if without else, or a try whose except falls through)
+                # passes every rule above and fails with a NameError after the redeploy
+                # (seen live on make break-env).
+                if rel_path.endswith(".py") and original is not None and op != "delete":
+                    unset = unset_in_a_new_way(original, content)
+                    if unset:
+                        f_reasons.append(f"The patch {unset}.")
 
             file_checks[rel_path] = {
                 "op": op,

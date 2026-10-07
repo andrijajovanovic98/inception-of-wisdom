@@ -238,7 +238,7 @@ class TinySymptomClassifier:
                 self._save_store()
 
                 logger.info(
-                    f"🎯 Classifier MATCH (Exact)! Key=[{symptom_key}], "
+                    f"Classifier MATCH (Exact)! Key=[{symptom_key}], "
                     f"Error=[{features.error_type} in {features.offending_file}], "
                     f"Confidence={confidence:.2f} -> Bypassing LLM generation"
                 )
@@ -300,7 +300,7 @@ class TinySymptomClassifier:
             self._save_store()
 
             logger.info(
-                f"🎯 Classifier MATCH (Fuzzy {best_score:.2f})! Key=[{best_match_key}], "
+                f"Classifier MATCH (Fuzzy {best_score:.2f})! Key=[{best_match_key}], "
                 f"Error=[{features.error_type}] -> Bypassing LLM generation"
             )
             fuzzy_expl = (
@@ -370,7 +370,7 @@ class TinySymptomClassifier:
 
         self._save_store()
         logger.info(
-            f"✨ Learned verified crash symptom [{symptom_key}]: "
+            f"Learned verified crash symptom [{symptom_key}]: "
             f"{features.error_type} in {features.offending_file}"
         )
         return symptom_key

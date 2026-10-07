@@ -1,16 +1,17 @@
 """
 Inception-of-Wisdom (IoW) - Bonus: GitOps redeploy (Argo CD + iow-k3s).
 
-When IOW_REDEPLOY_MODE=gitops the heal commit is what drives the deployment:
+When IOW_REDEPLOY_MODE=gitops the heal commit alone drives the deployment:
 
-1. the heal branch is pushed to the Gitea repository Argo CD watches,
-2. Argo CD is synced to that revision (logging in with the cluster's admin secret),
-3. the workload is rolled so its init container re-clones the new revision,
-4. the rollout is only accepted once a *new* pod is actually serving.
+1. every commit the agent makes stamps the pod template with the git tree hash of the
+   code (GitManager.manifest_stamp), so a code change is a manifest change;
+2. the heal branch is pushed to the Gitea repository Argo CD watches;
+3. Argo CD's own polling (15 s, set by the bootstrap) syncs the commit, and Kubernetes
+   rolls the pod, whose init container clones that revision;
+4. the redeploy is only accepted once a pod carrying the pushed stamp is Ready.
 
-Step 4 matters: `kubectl rollout status` on an untouched Deployment returns success
-immediately, which would report a heal as verified while the cluster still ran the
-old code.
+The agent restarts nothing itself unless the pushed code is what already runs (nothing
+for Argo CD to roll), and it asks Argo CD to sync only when it has not moved in time.
 """
 
 from __future__ import annotations
@@ -31,11 +32,31 @@ DEFAULT_NAMESPACE = os.environ.get("IOW_GITOPS_NAMESPACE", "iow-demo")
 DEFAULT_DEPLOYMENT = os.environ.get("IOW_GITOPS_DEPLOYMENT", "iow-demo")
 DEFAULT_ARGOCD_SERVER = os.environ.get("IOW_ARGOCD_SERVER", "127.0.0.1:8080")
 DEFAULT_BRANCH = os.environ.get("IOW_GITOPS_BRANCH", "iow/auto-heal")
+# The manifest whose pod template carries the code's tree hash, and that annotation.
+DEFAULT_MANIFEST = os.environ.get("IOW_GITOPS_MANIFEST", "k8s/demo-app/deployment.yaml")
+STAMP_KEY = "iow.42/source"
+# How long Argo CD gets to pick a pushed commit up by itself and roll a pod for it,
+# before the agent asks it to sync (it polls the repository every 15 s).
+SELF_SYNC_S = float(os.environ.get("IOW_GITOPS_SELF_SYNC_S", "75"))
 
 
 def redeploy_mode() -> str:
     """Return 'gitops' or 'docker' (default)."""
     return (os.environ.get("IOW_REDEPLOY_MODE") or "docker").strip().lower()
+
+
+# Kubernetes backs a crash-looping pod off up to 300 s between restarts (Docker: 60 s).
+CRASH_WINDOW_FLOOR_S = 330.0
+
+
+def crash_dedup_window(configured: float) -> float:
+    """The crash dedup window that keeps one crash loop one event on Kubernetes.
+
+    iow.config.yml's 90 s outlasts Docker's restart backoff, not the cluster's: once the
+    pod's backoff passed 90 s every restart raised the same crash again, and the loop was
+    retriggered by the same symptom whenever the cooldown had run out (seen live).
+    """
+    return max(float(configured), CRASH_WINDOW_FLOOR_S)
 
 
 def _run(cmd: List[str], timeout: float = 60.0) -> Tuple[int, str, str]:
@@ -124,8 +145,8 @@ def _pod_identities(namespace: str, selector: str) -> List[Tuple[str, str]]:
     return identities
 
 
-def _ready_pod_identities(namespace: str, selector: str) -> List[Tuple[str, str]]:
-    """Only pods that are Ready."""
+def _ready_pods(namespace: str, selector: str) -> List[Tuple[str, str, Optional[str]]]:
+    """(name, uid, source stamp) of every Ready pod that is not being deleted."""
     code, out, _ = _run(
         [_kubectl(), "-n", namespace, "get", "pods", "-l", selector, "-o", "json"],
         timeout=20.0,
@@ -140,9 +161,44 @@ def _ready_pod_identities(namespace: str, selector: str) -> List[Tuple[str, str]
     for item in payload.get("items", []):
         meta = item.get("metadata", {})
         conditions = item.get("status", {}).get("conditions", [])
+        if meta.get("deletionTimestamp"):
+            continue
         if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
-            ready.append((meta.get("name", ""), meta.get("uid", "")))
+            stamp = (meta.get("annotations") or {}).get(STAMP_KEY)
+            ready.append((meta.get("name", ""), meta.get("uid", ""), stamp))
     return ready
+
+
+def _deployed_stamp(namespace: str, deployment: str) -> Optional[str]:
+    """The source stamp of the pod template the cluster runs now."""
+    code, out, _ = _run(
+        [_kubectl(), "-n", namespace, "get", "deployment", deployment, "-o", "json"],
+        timeout=20.0,
+    )
+    if code != 0 or not out:
+        return None
+    try:
+        template = json.loads(out)["spec"]["template"]["metadata"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return (template.get("annotations") or {}).get(STAMP_KEY)
+
+
+def _wait_for_ready_pod(
+    namespace: str, selector: str, timeout: float,
+    stamp: Optional[str] = None, not_uids: Iterable[str] = (),
+) -> int:
+    """How many pods became Ready - of `stamp`, or none of `not_uids` - within timeout."""
+    excluded = set(not_uids)
+    deadline = time.time() + timeout
+    while True:
+        fresh = [
+            uid for _, uid, pod_stamp in _ready_pods(namespace, selector)
+            if uid not in excluded and (stamp is None or pod_stamp == stamp)
+        ]
+        if fresh or time.time() >= deadline:
+            return len(fresh)
+        time.sleep(1.0)
 
 
 # ----------------------------------------------------------------------------------
@@ -270,7 +326,13 @@ def wait_for_gitops_redeploy(
     app_name: Optional[str] = None,
     git_manager: Any = None,
 ) -> Tuple[bool, str]:
-    """Publish the commit, sync Argo CD, roll the workload, confirm a new pod serves."""
+    """Publish the commit and confirm that a pod serving it is Ready.
+
+    The commit alone is the redeploy: it changed the pod template's source stamp, so
+    Argo CD's own sync rolls the pod and the agent only watches. Argo CD is asked to sync
+    when it has not moved in time; the pod is restarted by hand only when the pushed code
+    is what already runs (a rollback onto deployed code) - then there is nothing to roll.
+    """
     app = app_name or DEFAULT_APP_NAME
     namespace = DEFAULT_NAMESPACE
     deployment = DEFAULT_DEPLOYMENT
@@ -281,23 +343,41 @@ def wait_for_gitops_redeploy(
         return False, msg
 
     timeout_s = int(max(60.0, grace_period * 2))
+    before = {uid for _, uid in _pod_identities(namespace, selector)}
+    wanted: Optional[str] = None
 
     if git_manager is not None:
         pushed, push_detail = push_heal_commit(git_manager)
         if not pushed:
             return False, f"GitOps publish failed: {push_detail}"
         logger.info("GitOps: %s", push_detail)
+        stamp_of = getattr(git_manager, "source_stamp", None)
+        if callable(stamp_of):
+            wanted = stamp_of(getattr(git_manager, "heal_branch", DEFAULT_BRANCH))
 
-    before = {uid for _, uid in _pod_identities(namespace, selector)}
+    if wanted and wanted != _deployed_stamp(namespace, deployment):
+        started = time.time()
+        if _wait_for_ready_pod(namespace, selector, SELF_SYNC_S, stamp=wanted):
+            return True, (
+                f"Argo CD synced the commit by itself: a pod of source {wanted[:8]} is Ready "
+                f"after {time.time() - started:.0f}s (nothing restarted by the agent)"
+            )
+        logger.warning(
+            "GitOps: no pod of source %s after %.0fs - asking Argo CD to sync.", wanted[:8], SELF_SYNC_S
+        )
+        synced, sync_detail = _argocd_sync(app, timeout_s)
+        if _wait_for_ready_pod(namespace, selector, max(30.0, grace_period) + timeout_s, stamp=wanted):
+            return True, f"a pod of source {wanted[:8]} is Ready after an explicit Argo CD sync"
+        return False, (
+            f"no pod of source {wanted[:8]} became Ready ({sync_detail}) - "
+            "the cluster is still running the previous revision"
+        )
 
-    synced, sync_detail = _argocd_sync(app, timeout_s)
+    # Nothing in the manifests changed (the pushed code already runs, or the manifest has
+    # no stamp): only a restart re-clones the code.
+    synced, sync_detail = (False, "same source as deployed") if wanted else _argocd_sync(app, timeout_s)
     if synced:
         logger.info("GitOps: %s", sync_detail)
-    else:
-        # Not fatal on its own: the rollout below is what actually proves the
-        # new revision is serving, and it is verified rather than assumed.
-        logger.warning("GitOps: %s - falling back to a direct rollout.", sync_detail)
-
     kubectl = _kubectl()
     code, _, err = _run(
         [kubectl, "-n", namespace, "rollout", "restart", f"deployment/{deployment}"],
@@ -316,17 +396,12 @@ def wait_for_gitops_redeploy(
 
     # Prove a *different* pod is now Ready. Without this check an unchanged
     # deployment reports success instantly and a heal looks verified for free.
-    deadline = time.time() + max(30.0, grace_period)
-    while time.time() < deadline:
-        ready_now = {uid for _, uid in _ready_pod_identities(namespace, selector)}
-        fresh = ready_now - before
-        if fresh:
-            return True, (
-                f"{deployment} rolled out: {len(fresh)} new pod(s) Ready "
-                f"({'argocd sync + ' if synced else ''}rollout verified)"
-            )
-        time.sleep(1.0)
-
+    fresh = _wait_for_ready_pod(namespace, selector, max(30.0, grace_period), not_uids=before)
+    if fresh:
+        return True, (
+            f"{deployment} rolled out: {fresh} new pod(s) Ready "
+            f"({'argocd sync + ' if synced else ''}rollout restart verified)"
+        )
     return False, (
         f"{deployment} reported a rollout but no new pod became Ready - "
         "the cluster is still running the previous revision"

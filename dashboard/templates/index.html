@@ -1407,7 +1407,10 @@
 
         // Tab 1 stats
         document.getElementById('obsContainerName').textContent = data.target.container_name;
-        document.getElementById('obsContainerState').textContent = tStatus;
+        const stateEl = document.getElementById('obsContainerState');
+        // Stopped on purpose (docker stop / kill / pause) is an outage, not a crash.
+        stateEl.textContent = data.target.stopped && tStatus === 'exited' ? 'stopped' : tStatus;
+        stateEl.title = data.target.reason || '';
         document.getElementById('obsHttpState').textContent = data.target.http_healthy ? "200 OK" : "Degraded";
         document.getElementById('obsRestartCount').textContent = data.target.restart_count || 0;
 
@@ -1820,7 +1823,8 @@
                 <div class="kv-line"><strong>Initial crash:</strong> ${escapeHtml((c.initial_crash || {}).summary || 'Unknown')} <span class="muted">(${escapeHtml((c.initial_crash || {}).source || '')})</span></div>
                 ${c.heal_branch ? `<div class="kv-line"><strong>Branch:</strong> <code>${escapeHtml(c.heal_branch)}</code></div>` : ''}
                 ${(c.symptom_check || []).length ? `<div class="kv-line"><strong>Symptom re-check:</strong> after every redeploy the failing request is replayed: ${(c.symptom_check || []).map(r => `<code>${escapeHtml(r)}</code>`).join(', ')}</div>` : ''}
-                ${c.failure_reason ? `<div class="kv-line" style="color: ${c.status === 'awaiting_review' ? '#38bdf8' : '#f87171'};"><strong>${c.status === 'rolled_back' ? 'Clean failure' : 'Outcome'}:</strong> ${escapeHtml(c.failure_reason)}</div>` : ''}
+                ${c.failure_reason ? `<div class="kv-line" style="color: ${c.status === 'awaiting_review' ? '#38bdf8' : (c.status === 'healed' || c.status === 'not_needed') ? '#34d399' : '#f87171'};"><strong>${c.status === 'rolled_back' ? 'Clean failure' : 'Outcome'}:</strong> ${escapeHtml(c.failure_reason)}</div>` : ''}
+                ${c.review_pr ? `<div class="kv-line"><strong>Review PR:</strong> ${escapeHtml(c.review_pr)} (Bonus tab)</div>` : ''}
                 ${rb ? `<div class="kv-line"><strong>Rollback:</strong> branch rewound to <code>${escapeHtml((rb.revision || '').slice(0, 8))}</code>; working tree ${rb.identical ? '<span style="color:#34d399;">identical to it (git tree hash)</span>' : 'differs in ' + escapeHtml((rb.differing_paths || []).join(', '))}</div>` : ''}
                 ${rb && rb.outside_edits ? `<div class="kv-line" style="color: #fbbf24;"><strong>Edited during the cycle:</strong> ${escapeHtml((rb.outside_edits.paths || []).join(', '))} changed outside the loop; restored to the pre-loop bytes, and the edits were saved as <code>${escapeHtml(rb.outside_edits.saved_as || 'nothing (saving failed)')}</code></div>` : ''}
                 ${post ? `<div class="kv-line"><strong>Target after rollback:</strong> restarted on <code>${escapeHtml((post.restarted_on || '').slice(0, 8))}</code> - ${post.target_up ? 'up' : 'not answering (the original code still fails)'}</div>` : ''}
