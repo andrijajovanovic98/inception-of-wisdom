@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bonus Suite - Inception of Wisdom</title>
+  <title>Bonus Suite &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -26,6 +26,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-emerald); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -50,7 +51,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Chapter VI</span>
-      <span>Bonus Suite Deep-Dive - Inception of Wisdom</span>
+      <span>Bonus Suite Deep-Dive &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
   </header>
@@ -62,10 +63,10 @@
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">CHAPTER VI BONUS</span>
       <h1>Bonus Suite: Beyond Autonomous Healing</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
-        Chapter VI introduces enterprise-grade extensions to the self-healing architecture: a sub-millisecond Symptom Classifier with fast-path bypass, a dual-prompt "Second Opinion" consensus engine to combat AI hallucination, and a Human-in-the-Loop Pull Request Manager with real-time diff preview.
+        Chapter VI extends the self-healing loop: a symptom classifier that heals a known crash from its verified patch without the LLM, a dual-prompt "Second Opinion" that only patches on agreement, Human-in-the-Loop pull requests on a local Gitea, and a GitOps redeploy through Argo CD.
       </p>
       <div class="highlight-box">
-        <strong>Subject Context:</strong> "Chapter VI - Bonus part: Additional features to improve reliability, speed, and governance without breaking local-only and sub-3B constraints."
+        <strong>Subject (VI):</strong> "Train a tiny classifier on past events to skip the LLM entirely on known-symptom crashes." &mdash; "Add a "second opinion" mode where two prompts vote on the same diagnosis and only an agreement triggers the patch."
       </div>
     </div>
 
@@ -75,15 +76,15 @@
       <div class="grid-2">
         <div class="card">
           <h3>The Problem with LLM Latency</h3>
-          <p>Running full RAG embedding retrieval and LLM inference takes 3–8 seconds. For deterministic errors with clear stack traces (e.g. <code>ZeroDivisionError</code> or missing modules), this latency is unnecessary.</p>
+          <p>On CPU, <code>qwen2.5-coder:1.5b</code> takes 13-16 s for a diagnosis and another 10-20 s for a patch: a heal through the model takes 45-80 s end to end. A crash the agent has already healed does not need the model again.</p>
         </div>
         <div class="card">
-          <h3>Fast-Path Remediation (0.01s)</h3>
+          <h3>Fast Path (no model call)</h3>
           <ul>
-            <li>Extracts deterministic error patterns, exception signatures, and traceback files via compiled regex.</li>
-            <li>Calculates confidence score (0.0 to 1.0).</li>
-            <li>When confidence &gt; 0.85: triggers instant fast-path diagnosis without invoking ChromaDB or Ollama.</li>
-            <li>Falls back gracefully to standard Part 2 Analyst pipeline when uncertain.</li>
+            <li>A symptom key from the traceback: exception type, the deepest frame in the app's own code (not the stdlib's <code>&lt;frozen os&gt;</code>), function and normalised message.</li>
+            <li>Exact or nearest-neighbour match; at confidence &ge; 0.85 attempt 1 replays the cached verified patch &mdash; no retrieval, no LLM. What is left is the restart and the grace period: 24 s end to end with the default 20 s grace period (about 13 s with <code>grace_period: 8</code>).</li>
+            <li>Only onto exactly the code it was learned on (the pre-heal hash of every file it replaces); on changed code the model is asked instead of reverting unrelated edits.</li>
+            <li>Still passes the sanity gate and verification; a cached patch that fails loses trust (&minus;0.25) and is evicted below 0.40.</li>
           </ul>
         </div>
       </div>
@@ -106,7 +107,7 @@
           </div>
         </div>
         <div class="highlight-box" style="margin-top: 14px;">
-          <strong>Consensus Scoring:</strong> Compares suspect files and proposed root causes. If both perspectives agree (Consensus = 1.0), the patch proceed autonomously. If they diverge, it flags the issue for Human-in-the-Loop review.
+          <strong>Only an agreement patches:</strong> both opinions must cite the same suspect file &mdash; on every attempt (a divergence on a retry is a failed attempt). A divergence before the first attempt goes to a review PR, or is withheld when no forge is reachable; it is never applied autonomously. Off by default (<code>second_opinion_mandatory</code>, Bonus tab).
         </div>
       </div>
     </div>
@@ -119,15 +120,18 @@
           <h3>Enterprise Safe Mode</h3>
           <p>In production environments, fully autonomous code writes to production branches can be prohibited by governance policy.</p>
           <ul>
-            <li>Creates isolated review branches: <code>iow/review/pr-&lt;timestamp&gt;</code>.</li>
-            <li>Generates standard unified diff comparing base vs staged repair.</li>
-            <li>Suspends container restart until human operator review.</li>
+            <li>The sanity-checked patch becomes a review branch <code>iow/review/&lt;cycle&gt;</code>, built from the patch files only with git plumbing &mdash; the working tree is untouched.</li>
+            <li>Its own base branch <code>iow/base/&lt;cycle&gt;</code> (what the target runs): the PR diff is exactly the patch.</li>
+            <li>Nothing is written or restarted before approval.</li>
           </ul>
         </div>
         <div class="card">
           <h3>One-Click Review via Web UI</h3>
-          <pre>POST /api/bonus/prs/{pr_id}/merge    --> Merges into iow/auto-heal & Restarts
-POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
+          <pre>POST /api/bonus/prs/{pr_id}/merge   --> kill switch + single-flight,
+    redeploy, grace period; rolled back to the
+    PR's base if the target does not stay up
+POST /api/bonus/prs/{pr_id}/reject  --> closes the Gitea PR,
+    deletes the review branch</pre>
           <div class="highlight-box">
             The dashboard displays color-coded diffs directly inside the 4th tab with instant Approve / Reject controls.
           </div>
@@ -158,9 +162,10 @@ POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
         <h3>Tab 4: "Bonus Suite"</h3>
         <p>Integrated seamlessly into the central FastAPI dashboard:</p>
         <ul>
-          <li><strong>Real-time Classifier Test Bench:</strong> Paste any log trace to see instant regex triage vs RAG latency comparison.</li>
-          <li><strong>Consensus Gauge:</strong> Visual agreement meter between Perspective A and Perspective B.</li>
-          <li><strong>Pending PR List:</strong> Review diffs line-by-line with syntax highlighting before approving disk changes.</li>
+          <li><strong>Bonus Gates:</strong> toggles for Human-in-the-Loop, the second opinion and the fast-path classifier.</li>
+          <li><strong>Classifier Knowledge Base:</strong> the learned symptoms with their confidence and how often they were applied.</li>
+          <li><strong>Second Opinion Consensus Tester:</strong> paste a trace (or insert the latest crash) and see both opinions and the verdict.</li>
+          <li><strong>Pull Requests:</strong> verified-heal and review PRs with coloured diffs, Approve / Reject, and the link to Gitea.</li>
         </ul>
       </div>
       <div class="defense-tip">
@@ -175,17 +180,18 @@ POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
         <div class="card">
           <h3>Auditable Gitea Review</h3>
           <ul>
-            <li>Run <code>make up</code>, then host <code>make pr-bonus</code>.</li>
+            <li><code>make up</code> starts Gitea with the rest of the system (host run: <code>make pr-bonus</code>).</li>
             <li>Review local pull requests in Gitea at <code>http://127.0.0.1:3000</code>.</li>
-            <li>Merge or reject from the dashboard/API with an auditable operator decision.</li>
+            <li>Merge or reject from the dashboard/API with an auditable operator decision; an approval merges the PR on Gitea too (waiting while Gitea still checks it).</li>
           </ul>
         </div>
         <div class="card">
           <h3>Campus-Safe GitOps Redeploy</h3>
           <ul>
             <li><code>make argocd-bonus</code> creates privileged <code>iow-k3s</code>, not nested k3d.</li>
-            <li>Argo CD syncs <code>k8s/demo-app</code> from local Gitea.</li>
-            <li>Argo UI: <code>:8080</code>; demo NodePort: <code>:30051</code>.</li>
+            <li>Argo CD syncs <code>k8s/demo-app</code> from local Gitea; the pod clones the heal branch at start.</li>
+            <li><code>make break-import gitops-publish</code> plants a bug in the cluster. Every commit stamps its code's git tree hash into the pod template (<code>iow.42/source</code>), so the commit alone redeploys: Argo CD (reconciling every 15 s) syncs it and rolls the pod. The agent pushes and waits &mdash; it asks for a sync only if nothing moved in 75 s &mdash; and keeps the fix once a pod of that code is Ready and stays up for the grace period.</li>
+            <li>Argo UI: <code>:8080</code> (<code>IOW_ARGOCD_PORT</code> moves it); demo NodePort: <code>:30051</code>.</li>
           </ul>
         </div>
       </div>
@@ -201,11 +207,11 @@ POST /api/bonus/prs/{pr_id}/reject   --> Discards review branch & Aborts</pre>
         <h3>Key Questions Evaluators Will Ask:</h3>
         <ul>
           <li><strong>Q: Does the bonus part violate the local-only constraint?</strong><br>
-              A: Absolutely not. Both prompts in the consensus engine use the local host Ollama model (<code>qwen2.5-coder:1.5b</code>), and the classifier uses 100% local compiled regex.</li>
+              A: No. Both prompts of the second opinion use the same local model (<code>qwen2.5-coder:1.5b</code>), the classifier is local code over a local store, and Gitea and Argo CD run on this machine.</li>
           <li><strong>Q: Why is the Fast-Path Classifier useful if we already have RAG?</strong><br>
-              A: It provides instant (0.01s) diagnosis for standard deterministic crashes, saving LLM compute and enabling instantaneous self-healing.</li>
+              A: A crash it has healed before is healed again from the verified patch in the restart plus the grace period (24 s with the defaults) instead of 45-80 s, without calling the model &mdash; even with Ollama stopped. It only replays onto the exact code it was learned on.</li>
           <li><strong>Q: What happens if an operator rejects a pending PR?</strong><br>
-              A: The PR branch <code>iow/review/*</code> is cleanly purged, no files are modified on the running branch, and the event log records the manual rejection.</li>
+              A: The Gitea PR is closed and the review branch deleted; nothing was ever written to the target, and the PR is recorded as rejected with the reviewer's reason.</li>
         </ul>
       </div>
     </div>

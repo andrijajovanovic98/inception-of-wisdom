@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bonus Suite - Inception of Wisdom</title>
+  <title>Bonus Suite &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -26,6 +26,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-emerald); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -50,7 +51,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Chapter VI</span>
-      <span>Bónusz Rendszer Részletes Bemutató - Inception of Wisdom</span>
+      <span>Bónusz Rendszer Részletes Bemutató &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
   </header>
@@ -62,10 +63,10 @@
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">CHAPTER VI BÓNUSZ</span>
       <h1>Bonus Rendszer: Vállalati Megbízhatóság és Felügyelet</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
-        A Chapter VI bónusz moduljai vállalati szintű kiegészítésekkel látják el az öngyógyító architektúrát: egy ezredmásodperces tünetosztályozóval (Fast-Path bypass), egy kettős promptú "Second Opinion" konszenzus motorral az AI hallucinációk kiszűrésére, valamint egy valós idejű diff előnézetet biztosító emberi felügyeleti (Human-in-the-Loop) Pull Request menedzserrel.
+        A Chapter VI kibővíti az öngyógyító hurkot: egy tünetosztályozóval, amely egy ismert hibát LLM nélkül, a verifikált patchéből gyógyít; egy kettős promptú "Second Opinion"-nel, amely csak egyezés esetén javít; emberi felügyeletű (Human-in-the-Loop) pull requestekkel egy helyi Giteán; és Argo CD-s GitOps újratelepítéssel.
       </p>
       <div class="highlight-box">
-        <strong>Subject háttér:</strong> "Chapter VI - Bónusz rész: További képességek a megbízhatóság, sebesség és felügyelet növelésére a 100% lokális és 3B alatti szabályok szigorú betartása mellett."
+        <strong>Subject (VI, fordítás):</strong> "Taníts egy apró osztályozót a korábbi eseményeken, hogy ismert tünetű összeomlásoknál teljesen kihagyd az LLM-et." &mdash; "Egy "second opinion" mód, amelyben két prompt szavaz ugyanarról a diagnózisról, és csak az egyezés indítja el a patchet."
       </div>
     </div>
 
@@ -75,15 +76,15 @@
       <div class="grid-2">
         <div class="card">
           <h3>Az LLM Késleltetés Kihívása</h3>
-          <p>A teljes RAG embedding keresés és az LLM generálás 3–8 másodpercet igényel. Determinisztikus, egyértelmű stack trace-szel rendelkező hibák esetén (pl. <code>ZeroDivisionError</code> vagy hiányzó import) ez felesleges várakozás.</p>
+          <p>CPU-n a <code>qwen2.5-coder:1.5b</code>-nek egy diagnózis 13-16 mp, egy patch további 10-20 mp: egy modellen át futó javítás elejétől végéig 45-80 mp. Egy már egyszer meggyógyított hibához nem kell újra a modell.</p>
         </div>
         <div class="card">
-          <h3>Fast-Path Bypass (0.01 mp)</h3>
+          <h3>Fast Path (modellhívás nélkül)</h3>
           <ul>
-            <li>Fordított reguláris kifejezésekkel kinyeri a hibamintát, az exception típusát és az érintett forrásfájlt.</li>
-            <li>Megbízhatósági pontszámot (confidence score, 0.0 - 1.0) számít.</li>
-            <li>Ha a confidence &gt; 0.85: azonnali diagnózist ad ChromaDB vagy Ollama hívása nélkül!</li>
-            <li>Bizonytalan esetben észrevétlenül visszalép a Part 2 Analyst RAG folyamatához.</li>
+            <li>Tünetkulcs a tracebackből: kivételtípus, az alkalmazás saját kódjának legmélyebb kerete (nem a stdlib <code>&lt;frozen os&gt;</code>-ja), függvény és normalizált üzenet.</li>
+            <li>Pontos vagy legközelebbi-szomszéd egyezés; &ge; 0.85 megbízhatóságnál az 1. kísérlet a tárolt, verifikált patchet játssza vissza &mdash; nincs keresés, nincs LLM. Ami marad, az újraindítás és a grace period: az alapértelmezett 20 mp-es grace perioddal 24 mp az elejétől a végéig (<code>grace_period: 8</code> mellett kb. 13 mp).</li>
+            <li>Csak pontosan arra a kódra, amelyen tanulta (minden lecserélt fájl javítás előtti hash-e); megváltozott kódnál a modellt kérdezi, ahelyett hogy más szerkesztéseket visszaírna.</li>
+            <li>A sanity kapun és a verifikáción így is át kell mennie; a sikertelen tárolt patch bizalmat veszít (&minus;0.25), 0.40 alatt kikerül.</li>
           </ul>
         </div>
       </div>
@@ -106,7 +107,7 @@
           </div>
         </div>
         <div class="highlight-box" style="margin-top: 14px;">
-          <strong>Konszenzus Pontozás:</strong> Összeveti az érintett fájlokat és a gyökérokot. Ha mindkét nézőpont megegyezik (Score = 1.0), a javítás automatikusan jóváhagyásra kerül. Eltérés esetén emberi felülvizsgálatra küldi.
+          <strong>Csak egyezés esetén javít:</strong> mindkét véleménynek ugyanazt a gyanús fájlt kell megneveznie &mdash; minden kísérletnél (egy újrapróbálkozásnál az eltérés sikertelen kísérlet). Az első kísérlet előtti eltérés review PR-be kerül, vagy &mdash; elérhető forge híján &mdash; visszatartják; önállóan soha nem kerül alkalmazásra. Alapból kikapcsolva (<code>second_opinion_mandatory</code>, Bónusz fül).
         </div>
       </div>
     </div>
@@ -119,15 +120,18 @@
           <h3>Vállalati Biztonsági Üzemmód</h3>
           <p>Éles környezetben a szabályzatok gyakran tiltják a forráskód autonóm, emberi jóváhagyás nélküli átírását a fő ágon.</p>
           <ul>
-            <li>Elkülönített felülvizsgálati ágat nyit: <code>iow/review/pr-&lt;timestamp&gt;</code>.</li>
-            <li>Standard unified diff formátumot generál az eredeti és a javasolt kód között.</li>
-            <li>Felfüggeszti a konténer újraindítását az emberi döntésig.</li>
+            <li>A sanity kapun átment patch egy <code>iow/review/&lt;ciklus&gt;</code> review ág lesz, csak a patch fájljaiból, git plumbinggal &mdash; a munkakönyvtár érintetlen.</li>
+            <li>Saját alapága van (<code>iow/base/&lt;ciklus&gt;</code>, amit a cél futtat): a PR diffje pontosan a patch.</li>
+            <li>Jóváhagyás előtt semmi nem íródik ki és semmi nem indul újra.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Egykattintásos Döntéshozatal a Weben</h3>
-          <pre>POST /api/bonus/prs/{pr_id}/merge    --> Merge az iow/auto-heal-re & Újraindítás
-POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre>
+          <pre>POST /api/bonus/prs/{pr_id}/merge   --> kill switch + single-flight,
+    újratelepítés, grace period; ha a cél nem
+    marad fenn, vissza a PR alapjára
+POST /api/bonus/prs/{pr_id}/reject  --> lezárja a Gitea PR-t,
+    törli a review ágat</pre>
           <div class="highlight-box">
             A Dashboard 4. fülén azonnal látható a színes diff és a Jóváhagyás / Elutasítás gombok.
           </div>
@@ -158,9 +162,10 @@ POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre
         <h3>4. Fül: "Bonus Suite"</h3>
         <p>Szervesen beépül a központi FastAPI webes irányítópultba:</p>
         <ul>
-          <li><strong>Valós idejű Osztályozó Tesztpad:</strong> Bármilyen logot bemásolva azonnal látható a mikromásodperces regex triage és a RAG közötti különbség.</li>
-          <li><strong>Konszenzus Mérő:</strong> Grafikus megegyezési indikátor az "A" és "B" modell-szemszögek között.</li>
-          <li><strong>Függő PR Lista:</strong> Sorról-sorra ellenőrizhető diff előnézet jóváhagyás vagy elutasítás előtt.</li>
+          <li><strong>Bonus Gates:</strong> kapcsolók a Human-in-the-Loophoz, a second opinionhöz és a fast-path osztályozóhoz.</li>
+          <li><strong>Osztályozó tudásbázis:</strong> a tanult tünetek megbízhatósággal és alkalmazásszámmal.</li>
+          <li><strong>Second Opinion Konszenzus Tesztelő:</strong> illessz be egy tracebacket (vagy a legutóbbi crash-t), és nézd meg mindkét véleményt és a döntést.</li>
+          <li><strong>Pull Requestek:</strong> verifikált javítás- és review PR-ek színes diffel, Approve / Reject gombbal és Gitea linkkel.</li>
         </ul>
       </div>
       <div class="defense-tip">
@@ -175,17 +180,18 @@ POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre
         <div class="card">
           <h3>Auditálható Gitea Felülvizsgálat</h3>
           <ul>
-            <li>Indítsd a <code>make up</code>, majd hoston a <code>make pr-bonus</code> parancsot.</li>
+            <li>A <code>make up</code> a rendszer többi részével együtt a Giteát is elindítja (hoston: <code>make pr-bonus</code>).</li>
             <li>A helyi pull requestek a Gitea <code>http://127.0.0.1:3000</code> felületén vizsgálhatók.</li>
-            <li>A dashboard/API merge vagy reject döntése auditálható kezelői lépés.</li>
+            <li>A dashboard/API merge vagy reject döntése auditálható kezelői lépés; a jóváhagyás a Giteán is összevonja a PR-t (megvárja, amíg a Gitea még ellenőrzi).</li>
           </ul>
         </div>
         <div class="card">
           <h3>Campus-Biztos GitOps Redeploy</h3>
           <ul>
             <li>A <code>make argocd-bonus</code> privileged <code>iow-k3s</code>-t hoz létre, nem nested k3d-t.</li>
-            <li>Az Argo CD a helyi Giteából szinkronizálja a <code>k8s/demo-app</code> állapotot.</li>
-            <li>Argo UI: <code>:8080</code>; demo NodePort: <code>:30051</code>.</li>
+            <li>Az Argo CD a helyi Giteából szinkronizálja a <code>k8s/demo-app</code> állapotot; a pod induláskor klónozza a javítási ágat.</li>
+            <li>A <code>make break-import gitops-publish</code> hibát ültet a klaszterbe. Minden commit a kódja git tree hash-ét a pod sablonba írja (<code>iow.42/source</code>), így maga a commit telepít: az Argo CD (15 mp-enként egyeztet) szinkronizálja és új podot indít. Az ágens push-ol és vár &mdash; szinkront csak akkor kér, ha 75 mp alatt semmi nem mozdult -, és a javítást akkor tartja meg, ha az új kód podja Ready, és kibírja a grace periodot.</li>
+            <li>Argo UI: <code>:8080</code> (az <code>IOW_ARGOCD_PORT</code> áthelyezi); demo NodePort: <code>:30051</code>.</li>
           </ul>
         </div>
       </div>
@@ -201,11 +207,11 @@ POST /api/bonus/prs/{pr_id}/reject   --> Ág törlése & Folyamat elvetése</pre
         <h3>Tipikus Értékelői Kérdések és Válaszok:</h3>
         <ul>
           <li><strong>K: Megsérti-e a bónusz rész a kizárólag helyi futtatás szabályát?</strong><br>
-              V: Semmiképpen sem. A konszenzus motor mindkét promptja a helyi host Ollama modellt (<code>qwen2.5-coder:1.5b</code>) használja, az osztályozó pedig 100%-ban helyi regex logikát.</li>
+              V: Nem. A second opinion mindkét promptja ugyanazt a helyi modellt (<code>qwen2.5-coder:1.5b</code>) használja, az osztályozó helyi kód egy helyi tárral, a Gitea és az Argo CD pedig ezen a gépen fut.</li>
           <li><strong>K: Miért van szükség a Fast-Path Classifierre, ha már van működő RAG?</strong><br>
-              V: Mert azonnali (0.01 mp) megoldást nyújt determinisztikus hibákra, megtakarítva a felesleges LLM és vektor-számítási időt.</li>
+              V: Egy korábban meggyógyított hibát a verifikált patchből az újraindítás és a grace period alatt gyógyít újra (alapbeállítással 24 mp) 45-80 mp helyett, modellhívás nélkül &mdash; akár leállított Ollamával is. Csak pontosan arra a kódra játssza vissza, amelyen tanulta.</li>
           <li><strong>K: Mi történik, ha az operátor elutasítja a PR-t?</strong><br>
-              V: Az <code>iow/review/*</code> ág azonnal törlődik, az éles ágon egyetlen bájtot sem módosít a rendszer, az eseménynaplóban pedig rögzítésre kerül az elutasítás ténye.</li>
+              V: A Gitea PR lezárul és a review ág törlődik; a célba soha semmi nem íródott, a PR pedig elutasítottként, a bíráló indoklásával kerül rögzítésre.</li>
         </ul>
       </div>
     </div>

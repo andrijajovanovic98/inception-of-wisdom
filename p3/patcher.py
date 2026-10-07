@@ -13,6 +13,11 @@ you can"). The patcher splices that region back in, so the patch that reaches th
 sanity gate, the disk and git is still the complete post-change file. Small files, and
 crashes that point nowhere specific, still get a full-file rewrite; a truncated one is
 retried once with an explicit length requirement and otherwise fails honestly.
+
+`analyst.patch_strategy: full_file` in iow.config.yml has the model write that complete
+JSON patch itself for every file - the strictest reading of the subject. Measured with
+qwen2.5-coder:1.5b on the 94-line demo target: 0 of 9 usable answers (each came back
+92-99 % shorter than the file and was refused), against 4 of 9 for a region rewrite.
 """
 
 from __future__ import annotations
@@ -32,7 +37,9 @@ except ImportError:
 
 from p2.chunker import AstChunker
 from p2.diagnostician import DiagnosticReport, _normalize_ollama_host
+from p3.exits import stops_in_a_new_way
 from p3.names import undefined_names
+from p3.unbound import unset_in_a_new_way
 
 logger = logging.getLogger("p3.patcher")
 
@@ -83,6 +90,20 @@ UNCHANGED_NOTE = (
     "\nYOUR PREVIOUS ANSWER WAS IDENTICAL TO THE REGION. The region fails exactly as it "
     "is: change the code that causes the failure.\n"
 )
+STOPS_NOTE = (
+    "\nYOUR PREVIOUS ANSWER STILL STOPS THE PROGRAM: {why}. That moves the failure instead of "
+    "removing it. Keep the program running: remove the cause of the error, and use a safe "
+    "default where a value is missing.\n"
+)
+UNSET_NOTE = (
+    "\nYOUR PREVIOUS ANSWER WOULD FAIL WITH A NameError: it {why}. Set the value on every "
+    "path - for example a safe default before the if / try - so the program keeps running.\n"
+)
+# Model calls per region rewrite: the first answer plus up to two more when it cannot
+# fix the crash (unchanged, it only moves the failure, or it reads a value it may not
+# have set). Each costs seconds; deploying such an answer costs a redeploy and a whole
+# attempt.
+MAX_REGION_ASKS = 3
 
 
 def _same_code(a: str, b: str) -> bool:
@@ -197,12 +218,17 @@ class CodePatcher:
         base_dir: Optional[str] = None,
         ollama_host: Optional[str] = None,
         model_name: str = DEFAULT_MODEL,
-        request_timeout: float = 180.0
+        request_timeout: float = 180.0,
+        patch_strategy: str = "region",
     ):
         self.base_dir = os.path.abspath(base_dir) if base_dir else os.getcwd()
         self.ollama_host = _normalize_ollama_host(ollama_host or DEFAULT_OLLAMA_HOST)
         self.model_name = model_name
         self.request_timeout = request_timeout
+        # iow.config.yml analyst.patch_strategy: "region" lets the model rewrite only the
+        # chunk the crash points at in a larger file (the patcher builds the full-file JSON
+        # patch from it); "full_file" has the model write that JSON patch itself, always.
+        self.patch_strategy = patch_strategy
 
     # ------------------------------------------------------------------
     # Public API
@@ -258,7 +284,7 @@ class CodePatcher:
 
         # The crash points into a larger file: have the model rewrite that region.
         for rel_path, text in file_contexts.items():
-            if text.count("\n") + 1 < REGION_MIN_FILE_LINES:
+            if self.patch_strategy == "full_file" or text.count("\n") + 1 < REGION_MIN_FILE_LINES:
                 continue
             region = self._find_region(rel_path, text, log_excerpt, diagnosis)
             if region is not None:
@@ -286,36 +312,61 @@ class CodePatcher:
         patch = self._parse_patch_response(raw_output, file_contexts, now)
         if not patch.success:
             return patch
+        patch.strategy = "full-file"
 
-        # One stricter retry when the model truncated the file instead of rewriting it.
-        truncated = self._truncated_files(patch, file_contexts)
-        if not truncated:
+        # One stricter retry when the model truncated the file instead of rewriting it,
+        # when its fix only moves the failure (a new raise / exit), or when it reads a
+        # value it sets on some paths only.
+        problem = self._full_file_problem(patch, file_contexts)
+        if problem is None:
             return patch
 
-        logger.warning(
-            "Model returned truncated file(s) %s - retrying once with an explicit "
-            "length requirement.", [t[0] for t in truncated]
-        )
+        logger.warning("The model's full-file patch cannot be used (%s) - retrying once.", problem[1])
         retry_prompt = self._build_patch_prompt(
             diagnosis.summary, log_excerpt, file_contexts,
-            refusal_hint=self._truncation_hint(truncated),
+            refusal_hint=problem[1], goal=goal, facts=target,
         )
-        retry_raw, retry_err = self._call_ollama(retry_prompt, temperature=temperature)
+        retry_raw, retry_err = self._call_ollama(retry_prompt, temperature=min(0.9, temperature + 0.3))
         if not retry_err:
             retry_patch = self._parse_patch_response(retry_raw, file_contexts, now)
-            if retry_patch.success and not self._truncated_files(retry_patch, file_contexts):
-                return retry_patch
             if retry_patch.success:
-                truncated = self._truncated_files(retry_patch, file_contexts)
-                patch = retry_patch
+                retry_patch.strategy = "full-file"
+                retry_problem = self._full_file_problem(retry_patch, file_contexts)
+                if retry_problem is None:
+                    return retry_patch
+                patch, problem = retry_patch, retry_problem
 
         return StructuredPatch(
-            summary="Patch rejected: the model returned an incomplete file.",
+            summary=problem[0],
             success=False,
             raw_response=patch.raw_response,
-            error_message=self._truncation_hint(truncated),
+            error_message=problem[1],
             timestamp=now,
+            strategy="full-file",
         )
+
+    def _full_file_problem(
+        self, patch: StructuredPatch, file_contexts: Dict[str, str]
+    ) -> Optional[Tuple[str, str]]:
+        """(summary, why) when a full-file answer cannot be used, else None."""
+        truncated = self._truncated_files(patch, file_contexts)
+        if truncated:
+            return "Patch rejected: the model returned an incomplete file.", self._truncation_hint(truncated)
+        for fp in patch.files:
+            original = file_contexts.get(fp.path)
+            stops = stops_in_a_new_way(original, fp.content) if original and fp.op != "delete" else None
+            if stops:
+                return "Patch rejected: the fix only moves the failure.", (
+                    f"'{fp.path}' does not fix the crash: {stops}. The program must keep running - "
+                    "remove the cause and use a safe default where a value is missing."
+                )
+            unset = unset_in_a_new_way(original, fp.content) if original and fp.op != "delete" else None
+            if unset:
+                return "Patch rejected: the fix reads a value it may not have set.", (
+                    f"'{fp.path}' would fail with a NameError: it {unset}. Set the value on every "
+                    "path - for example a safe default before the if / try."
+                )
+        return None
 
     # ------------------------------------------------------------------
     # Region-scoped rewrite
@@ -412,20 +463,6 @@ class CodePatcher:
             )
 
         new_region, summary, error = self._parse_region_response(raw_output, original_region)
-        if not error and new_region is not None and _same_code(new_region, original_region):
-            # Handed back unchanged: the sanity gate would refuse it and the whole attempt
-            # would be spent (seen live, even at a raised temperature). Ask once more,
-            # more freely, before that happens.
-            logger.info(f"The model returned {strategy} unchanged - asking once more.")
-            again, again_error = self._call_ollama(
-                prompt + UNCHANGED_NOTE, json_mode=False, temperature=min(0.9, temperature + 0.3)
-            )
-            if not again_error:
-                retried, retried_summary, retried_error = self._parse_region_response(
-                    again, original_region
-                )
-                if not retried_error and retried is not None and not _same_code(retried, original_region):
-                    new_region, summary, raw_output = retried, retried_summary, again
         if error:
             return StructuredPatch(
                 summary="Patch rejected.", success=False, raw_response=raw_output,
@@ -433,10 +470,52 @@ class CodePatcher:
                 timestamp=now,
             )
 
+        # An answer that cannot fix the crash costs the whole attempt: handed back
+        # unchanged, the sanity gate refuses it; one that only moves the failure (a new
+        # raise / exit, the service started under a condition) fails verification after
+        # a redeploy, and so does one that sets a value on some paths only (a NameError).
+        # All three were seen live, even at a raised temperature - ask again, more
+        # freely, before that happens.
         assert new_region is not None
-        if not new_region.endswith("\n"):
-            new_region += "\n"
-        new_text = "".join(lines[:start - 1]) + new_region + "".join(lines[end:])
+        new_text = self._splice(lines, start, end, new_region)
+        problem = self._region_problem(text, new_text, new_region, original_region)
+        asks = 1
+        while problem is not None and asks < MAX_REGION_ASKS:
+            logger.info(f"The model's rewrite of {strategy} {problem[1]} - asking again.")
+            note = {
+                "unchanged": UNCHANGED_NOTE,
+                "unset": UNSET_NOTE.format(why=problem[1]),
+            }.get(problem[0], STOPS_NOTE.format(why=problem[1]))
+            again, again_error = self._call_ollama(
+                prompt + note, json_mode=False, temperature=min(0.9, temperature + 0.3 * asks)
+            )
+            asks += 1
+            if again_error:
+                break
+            retried, retried_summary, retried_error = self._parse_region_response(again, original_region)
+            if retried_error or retried is None:
+                continue
+            retried_text = self._splice(lines, start, end, retried)
+            retried_problem = self._region_problem(text, retried_text, retried, original_region)
+            # An unchanged answer never replaces a changed one.
+            if retried_problem is not None and retried_problem[0] == "unchanged":
+                continue
+            new_region, summary, raw_output = retried, retried_summary, again
+            new_text, problem = retried_text, retried_problem
+
+        if problem is not None and problem[0] == "stops":
+            return StructuredPatch(
+                summary="Patch rejected: the fix only moves the failure.", success=False,
+                raw_response=raw_output, strategy=strategy,
+                error_message=(
+                    f"The rewritten region L{start}-{end} of {rel_path} does not fix the crash: "
+                    f"{problem[1]}. The program must keep running - remove the cause and use a "
+                    "safe default where a value is missing."
+                ),
+                timestamp=now,
+            )
+        # Still unchanged, or still reading a value it may not set, after every ask: handed
+        # on as it is - the sanity gate refuses a no-op and a possibly unset name.
         logger.info(f"Model rewrote {strategy}: '{summary}'")
         return StructuredPatch(
             summary=summary,
@@ -446,6 +525,26 @@ class CodePatcher:
             strategy=strategy,
             timestamp=now,
         )
+
+    @staticmethod
+    def _splice(lines: List[str], start: int, end: int, new_region: str) -> str:
+        """The complete file with lines start..end replaced by new_region."""
+        if not new_region.endswith("\n"):
+            new_region += "\n"
+        return "".join(lines[:start - 1]) + new_region + "".join(lines[end:])
+
+    @staticmethod
+    def _region_problem(
+        text: str, new_text: str, new_region: str, original_region: str
+    ) -> Optional[Tuple[str, str]]:
+        """("unchanged" | "stops" | "unset", why) when a rewritten region cannot fix the crash."""
+        if _same_code(new_region, original_region):
+            return "unchanged", "returned it unchanged"
+        stops = stops_in_a_new_way(text, new_text)
+        if stops:
+            return "stops", stops
+        unset = unset_in_a_new_way(text, new_text)
+        return ("unset", unset) if unset else None
 
     def _build_region_prompt(
         self,
@@ -490,6 +589,8 @@ RULES:
    code is already in the region (for example commented out), reuse it exactly.
    Do not add code from other parts of the file.
 5. No diffs, no "..." and no placeholders.
+6. Remove the cause of the error. Never replace it with raise, exit() or a branch that
+   skips the rest of the region: the program must keep running.
 """
 
     def _parse_region_response(

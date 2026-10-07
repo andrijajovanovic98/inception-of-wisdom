@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Inception of Wisdom (IoW) - Teljes Architektúra és Védési Prezentáció</title>
+  <title>Inception of Wisdom (IoW) &mdash; Teljes Architektúra és Védési Prezentáció</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -67,6 +67,7 @@
       display: flex;
       opacity: 1;
     }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.5rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); display: flex; align-items: center; gap: 10px; }
     p { font-size: 1.1rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 1000px; }
@@ -153,7 +154,7 @@
   <header>
     <div class="header-title">
       <span class="badge">42 Projekt</span>
-      <span>Inception-of-Wisdom (IoW) - Teljes Architektúra és Védési Prezentáció</span>
+      <span>Inception-of-Wisdom (IoW) &mdash; Teljes Architektúra és Védési Prezentáció</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 10</div>
   </header>
@@ -162,7 +163,7 @@
 
     <!-- Slide 1: Címoldal -->
     <div class="slide active">
-      <span class="badge" style="width: fit-content; margin-bottom: 16px;">42 VIENNA - AUTONÓM ÖNGYÓGYÍTÓ ÁGENS</span>
+      <span class="badge" style="width: fit-content; margin-bottom: 16px;">42 VIENNA &mdash; AUTONÓM ÖNGYÓGYÍTÓ ÁGENS</span>
       <h1>Inception of Wisdom (IoW)</h1>
       <p style="font-size: 1.3rem; color: #94a3b8; max-width: 800px;">
         Egy 100%-ban helyi, autonóm öngyógyító ágens-hurok, amely folyamatosan felügyel egy konténerizált szolgáltatást,
@@ -170,7 +171,7 @@
         és sikertelenség esetén a Git segítségével automatikusan visszaállítja a kódot.
       </p>
       <div class="highlight-box" style="max-width: 750px;">
-        <strong>Szigorú Subject Szabály:</strong> Minden kizárólag helyben futhat. Külső LLM API-k (OpenAI, Anthropic, Gemini) használata tilos és azonnali bukást (0 XP) von maga után.
+        <strong>Szigorú Subject Szabály:</strong> Minden kizárólag helyben futhat. Távoli LLM szolgáltatás (OpenAI, Anthropic, Gemini) bármilyen hívása tilos, és nulla pontos értékelést von maga után.
       </div>
       <div style="margin-top: 24px; color: var(--text-muted); font-size: 0.85rem;">
         Navigáció: <strong>Jobbra nyíl</strong> vagy <strong>Következő</strong> gomb.
@@ -209,29 +210,29 @@
 
     <!-- Slide 3: Konténerizáció és Host LLM Híd -->
     <div class="slide">
-      <h2>Konténerizáció és Helyi Ollama Hálózat</h2>
+      <h2>Konténerizáció és Helyi LLM</h2>
       <div class="grid-2">
         <div class="card">
-          <h3>Több-konténeres Docker Stack</h3>
+          <h3>Egyetlen <code>docker compose up</code></h3>
           <ul>
-            <li><strong>demo_app:</strong> Konténerizált Flask célalkalmazás (5001:5000 port) <code>./demo_app:/app</code> kötéssel.</li>
-            <li><strong>agent:</strong> IoW ágens és FastAPI dashboard (8000:8000 port).</li>
-            <li><strong>/var/run/docker.sock:</strong> Csatolva az ágensbe a konténer újraindításához és vizsgálatához.</li>
-            <li><strong>Campus-biztos fájlírás:</strong> Az ágens image nem rögzít <code>USER</code>-t és nem igényel host-specifikus chown-t; campuson a hoston futó ágens az ajánlott.</li>
+            <li><strong>make up</strong> = <code>docker compose up --build -d</code>: az ágens, az LLM futtatókörnyezet, a célalkalmazás és a Gitea.</li>
+            <li><strong>demo_app:</strong> Flask célalkalmazás (5001:5000 port), <code>./demo_app:/app</code> kötéssel, <code>STOPSIGNAL SIGINT</code>-tel &mdash; egy újraindítás jóval egy másodperc alatt van.</li>
+            <li><strong>agent:</strong> dashboard a :8000 porton; csatolva a Docker socket (<code>$DOCKER_SOCK</code>, campuson a rootless socket), a repó a <code>/workspace</code>-be és a <code>/tmp/iow</code>.</li>
+            <li><strong>Fájltulajdonos:</strong> a <code>scripts/agent_entrypoint.sh</code> a repó tulajdonosaként futtatja az ágenst &mdash; rootful Dockeren átvált annak az uid-jére, rootless Dockeren a host felhasználó eleve uid 0 a konténerben.</li>
           </ul>
         </div>
         <div class="card">
-          <h3>Offline Host LLM Kapcsolat</h3>
+          <h3>Helyi Modell Futtatókörnyezet</h3>
           <ul>
-            <li><strong>Helyi Ollama:</strong> A modell a hoston fut az erőforrások kímélése érdekében.</li>
-            <li><strong>Bridge Híd:</strong> A <code>host.docker.internal:host-gateway</code> kapcsolja a konténert a host helyi Ollama szolgáltatásához a <code>:11436</code> porton.</li>
-            <li><strong>Modell:</strong> <code>qwen2.5-coder:1.5b</code> (< 3B paraméter, a subject előírása szerint).</li>
-            <li><strong>Embedding:</strong> <code>all-MiniLM-L6-v2</code> offline cache a <code>/tmp/iow/</code>-ben (42 kvótavédelem).</li>
+            <li><strong>ollama szolgáltatás:</strong> az <code>ollama/ollama</code> első induláskor letölti a modellt egy volume-ba, és csak utána egészséges; az ágens a <code>http://ollama:11434</code> címen éri el (nincs host port).</li>
+            <li><strong>Hoston futtatva</strong> (<code>make p1</code> ... <code>make bonus</code>) a <code>make setup</code> által indított, :11436 porton futó Ollamát használja.</li>
+            <li><strong>Modell:</strong> <code>qwen2.5-coder:1.5b</code> (1,54 milliárd paraméter, a 3 milliárdos korlát alatt).</li>
+            <li><strong>Embedding:</strong> <code>all-MiniLM-L6-v2</code>, a <code>/tmp/iow/hf-cache</code>-ben, offline töltve.</li>
           </ul>
         </div>
       </div>
       <div class="defense-tip">
-        <strong>Defense Tipp:</strong> Az értékelők ellenőrizni fogják, hogy külső API-t hívsz-e. Mutasd meg nekik a <code>docker-compose.yml</code> <code>extra_hosts</code> beállítását és a helyi <code>host.docker.internal:11436</code> Ollama hidat!
+        <strong>Defense Tipp:</strong> Az értékelők ellenőrzik, hogy nincs-e felhőhívás. Az ágens minden végpontja helyi: Ollama, a célalkalmazás és a Gitea &mdash; lásd az <code>OLLAMA_HOST</code>-ot a <code>docker-compose.yml</code>-ban.
       </div>
     </div>
 
@@ -240,13 +241,13 @@
       <h2>Part 1: Observer (A Szenzoros Hálózat)</h2>
       <div class="grid-3">
         <div class="card">
-          <h3>Docker Socket Figyelő</h3>
-          <p>Közvetlenül kérdezi le a Docker API-t:</p>
+          <h3>Docker Figyelő</h3>
+          <p>A célkonténer állapota és eseményei a Docker démontól:</p>
           <ul>
-            <li>Nem-nulla exit code detektálása</li>
-            <li>Restart loop észrevétele</li>
-            <li>Dead / OOMKilled állapot</li>
-            <li>Konténer újraindítás vezérlése</li>
+            <li>Nem-nulla exit az eseményfolyamból (a restart policy elrejti a lekérdezés elől)</li>
+            <li>Restart loop (növekvő számláló, vagy beragadt újraindulás)</li>
+            <li>Dead / OOM-killed állapot</li>
+            <li>Túléli a démon kiesését és újracsatlakozik</li>
           </ul>
         </div>
         <div class="card">
@@ -254,22 +255,23 @@
           <p>Követi a konténer kimenetét:</p>
           <ul>
             <li>500 soros szálbiztos körpuffer</li>
-            <li>Regex hibaminta illesztés (Traceback, CRITICAL, Error, Exception)</li>
+            <li>Konfigurálható regex hibaminták (<code>target.error_patterns</code>)</li>
+            <li>Egy traceback = egy incidens; a visszajátszott múlt nem vált ki újra eseményt</li>
             <li>SSE eseménycsatorna a webes felületre</li>
           </ul>
         </div>
         <div class="card">
           <h3>HTTP Szondák és Osztályozás</h3>
-          <p>3 másodpercenként lekérdezi a <code>/</code> és <code>/healthz</code> végpontokat:</p>
+          <p>3 másodpercenként lekérdezi a <code>target.probe_urls</code> címeit (<code>/</code>, <code>/healthz</code>, <code>/api/missing-route</code>):</p>
           <ul>
             <li><strong>2xx:</strong> Egészséges működés</li>
             <li><strong>4xx:</strong> Soft szuggesztió (EMBERI feladat, nem javítja automatikusan)</li>
-            <li><strong>5xx / Timeout:</strong> Hard crash jelzés</li>
+            <li><strong>5xx / elutasított kapcsolat / timeout:</strong> Hard crash jelzés</li>
           </ul>
         </div>
       </div>
       <div class="highlight-box">
-        <strong>Csúszóablakos Deduplikáció:</strong> SHA-256 lenyomatokat képez. Egyetlen rossz újraindulás pontosan 1 crash eseményt kelt léptetett számlálóval, kizárva a másodpercenkénti eseményáradatot.
+        <strong>Csúszóablakos Deduplikáció:</strong> egy incidens = egy esemény számlálóval (90 mp-es ablak, hosszabb a Docker 60 mp-es maximális restart-várakozásánál; szuggesztióknál 300 mp). Az incidens véget ér, amint a cél újra kiszolgál, vagy egy javítás verifikált.
       </div>
     </div>
 
@@ -281,23 +283,23 @@
           <h3>AST Logikai Daraboló (chunker.py)</h3>
           <ul>
             <li>A subject kifejezetten tiltja a fix méretű darabolást (pl. 500 karakter).</li>
-            <li>Python <code>ast</code> modullal logikai függvény- és osztályhatárok mentén szeletel.</li>
-            <li>Minden chunkhoz SHA-256 lenyomatot rendel.</li>
-            <li>A ChromaDB <code>PersistentClient</code> a <code>/tmp/iow/chroma_db</code> mappában újraindításkor átugorja a változatlan kódkockákat.</li>
+            <li>Python <code>ast</code>: függvényenként, osztályonként és metódusonként egy chunk, plusz a modulszintű blokkok és a <code>__main__</code> blokk &mdash; minden sor benne van egy chunkban.</li>
+            <li>Chunkonkénti SHA-256: a változatlan chunk soha nem embeddelődik újra.</li>
+            <li>ChromaDB <code>PersistentClient</code> a <code>/tmp/iow/chroma_db</code>-ben; watch mode 3 mp-enként újraindexeli a változott fájlokat, és törli, ami eltűnt.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Traceback Által Vezérelt RAG</h3>
           <ul>
-            <li>Kivonja a hibalognak a pontos fájlneveit, sorait, függvényeit és kivételtípusát.</li>
-            <li>Koszinusz-hasonlósági keresést futtat a helyi <code>all-MiniLM-L6-v2</code> modellel.</li>
-            <li>A releváns kódszeleteket átadja a helyi Ollama promptnak.</li>
+            <li>A traceback függvényeit és <code>fájl:sor</code> kereteit magában az indexben keresi meg.</li>
+            <li>Ezeket egy koszinusz top-k kereséssel egyesíti (helyi <code>all-MiniLM-L6-v2</code>).</li>
+            <li>Csak ezek a chunkok kerülnek a promptba &mdash; a modell választ, nem talál ki.</li>
           </ul>
         </div>
       </div>
       <div class="card" style="margin-top: 16px;">
         <h3>Strukturált JSON Diagnózis és Anti-Hallucináció</h3>
-        <p>Szigorú JSON kimenetet kényszerít ki: <code>{"summary": "...", "files": ["eleresi/ut"]}</code>. A gyanúsított fájlokat összeveti a valós indexelt fájlokkal - az ágens nem találgat és nem nyúl képzeletbeli elérési utakhoz.</p>
+        <p>Szigorú JSON kimenetet kényszerít ki: <code>{"summary": "...", "files": ["eleresi/ut"]}</code>. A gyanúsított fájlokat összeveti a valós indexelt fájlokkal &mdash; az ágens nem találgat és nem nyúl képzeletbeli elérési utakhoz.</p>
       </div>
     </div>
 
@@ -307,25 +309,26 @@
       <div class="grid-3">
         <div class="card">
           <h3>Diff-mentes JSON Patcher</h3>
-          <p>A diffeket a subject szigorúan tiltja. A patch a teljes módosított fájltartalmat adja vissza: <code>{summary, files: [{path, op, content}]}</code>.</p>
+          <p>A patch <code>{summary, files: [{path, op, content}]}</code> a teljes módosított fájllal, az <code>op</code> create / modify / delete; diffet nem fogad el. Nagyobb fájlban a modell csak azt a chunkot írja újra, ahová a hiba mutat, és a patcher építi meg a teljes fájlos patchet (<code>analyst.patch_strategy: full_file</code> esetén a modell írja meg egészben).</p>
         </div>
         <div class="card">
           <h3>Sanity Bounds (Lemezre írás előtt)</h3>
           <ul>
             <li>Legfeljebb 3 fájlt módosíthat</li>
+            <li>Nem lehet triviális placeholder</li>
             <li>Max. 60%-os méretcsökkenés</li>
-            <li>Üres vagy placeholder fájlok tiltása</li>
-            <li>RAG markerek szűrése</li>
-            <li>Python szintaxis-ellenőrzés</li>
+            <li>Nem szivároghatnak RAG markerek</li>
+            <li>Csak <code>demo_app/</code>, soha az <code>iow.config.yml</code></li>
+            <li>Parse-olnia kell, változtatnia kell, és nem tűnhet el definíció</li>
           </ul>
         </div>
         <div class="card">
           <h3>GitManager és Ágkezelés</h3>
-          <p>Pre-loop snapshot mentése, <code>demo_app/</code>-ra korlátozott atomi írás <code>os.replace</code>-szel, majd commit a dedikált <code>iow/auto-heal</code> ágra.</p>
+          <p>Pre-loop revízióként rögzíti a <code>demo_app/</code> pontos futó állapotát (snapshot commit, ha eltér a HEAD-től), atomian ír (<code>*.iow.tmp</code> + fsync + <code>os.replace</code>), és git plumbinggal commitol az <code>iow/auto-heal</code> ágra &mdash; a HEAD, az index és a kicheckoutolt ág nem mozdul.</p>
         </div>
       </div>
       <div class="defense-tip">
-        <strong>A 3-Kísérletes Garancia:</strong> Ha mindhárom kísérlet sikertelen, a GitManager mixed resetet és célzott <code>demo_app/</code> visszaállítást végez. A repó más részein lévő ágens- és dashboard-munka megmarad.
+        <strong>A 3-Kísérletes Garancia:</strong> 3 sikertelen kísérlet után az <code>iow/auto-heal</code> visszaáll a pre-loop revízióra, a <code>demo_app/</code> egy eldobható indexen át helyreáll belőle, az újrahash-elt fa <em>identical</em>, és a cél ezen indul újra. Egy ágensleállítás miatt félbemaradt ciklus a következő induláskor visszaáll.
       </div>
     </div>
 
@@ -353,6 +356,7 @@ grace_period: 20
 cooldown: 300
 rate_limit_per_hour: 5
 hard_cap: 20
+boot_timeout: 45
 kill_switch: false
           </pre>
         </div>
@@ -365,19 +369,19 @@ kill_switch: false
       <div class="grid-3">
         <div class="card">
           <h3>Tiny Symptom Classifier</h3>
-          <p>Gyorsítótárazza az ellenőrzött javításokat. Ismert hiba esetén átugorja az LLM-et (Fast Path), 20 másodpercről <strong>0.01 másodpercre</strong> csökkentve a javítás idejét.</p>
+          <p>Minden verifikált javítást megtanul, azzal a kóddal együtt, amelyre alkalmazták. Ugyanaz a hiba ugyanazon a kódon a tárolt patchből gyógyul, LLM hívás nélkül: az újraindítás és a grace period alatt (az alapértelmezett 20 mp-cel 24 mp), 45-80 mp helyett. A sikertelen tárolt patch bizalmat veszít.</p>
         </div>
         <div class="card">
           <h3>Second Opinion Konszenzus</h3>
-          <p>Két független elemzési stratégiát futtat (Konzervatív vs Rendszerszintű). Csak akkor indul el a kódjavítás, ha mindkét vélemény megegyezik a hibás fájlban.</p>
+          <p>Két prompt (konzervatív stack frame vs hívói szerződés) egyezzen meg a gyanús fájlban &mdash; minden kísérletnél, az újrapróbálkozásoknál is. Eltérés esetén soha nem javít önállóan. Alapból kikapcsolva, a Bónusz fülön kapcsolható.</p>
         </div>
         <div class="card">
           <h3>Human-in-the-Loop PR-ek</h3>
-          <p>Automatikus commit helyett izolált <code>iow/review/*</code> ágat, vizuális Unified Diff-et és dashboard jóváhagyási gombot nyújt az emberi operátornak.</p>
+          <p>HITL módban semmi nem kerül be emberi jóváhagyás előtt: review PR (<code>iow/review/&lt;ciklus&gt;</code>) a helyi Giteán, a diffjével. A jóváhagyott kód a javítási korlátok alatt települ, és csak akkor marad, ha a cél fennmarad.</p>
         </div>
       </div>
       <div class="highlight-box">
-        A Gitea HITL a <code>make pr-bonus</code> paranccsal, a <code>:3000</code> porton fut. A <code>make argocd-bonus</code> campus-biztos <code>iow-k3s</code>-t használ (nem nested k3d-t), az Argo UI a <code>:8080</code>, a demo NodePort a <code>:30051</code> porton érhető el.
+        A Gitea a <code>make up</code>-pal (hoston: <code>make pr-bonus</code>) a <code>:3000</code> porton fut. GitOps: <code>make argocd-bonus</code> (campus-biztos <code>iow-k3s</code>, Argo UI <code>:8080</code> vagy <code>IOW_ARGOCD_PORT</code>, demo NodePort <code>:30051</code>); hibát a klaszterbe a <code>make break-import gitops-publish</code> ültet. Ott maga a javító commit telepít: a kódja hash-ét a pod sablonba írja, az Argo CD szinkronizálja és új podot indít.
       </div>
     </div>
 
@@ -388,32 +392,33 @@ kill_switch: false
         <div class="card">
           <h3>1. Lépés: Indítás és Alapállapot</h3>
           <pre>
-# demo_app + Gitea infrastruktúra indítása
+# Ágens + LLM futtatókörnyezet + cél + Gitea
 make up
 
-# Host dashboard és bónusz szolgáltatások
-make bonus
-
-# Nyisd meg a Dashboardot böngészőben:
+# Nyisd meg a Dashboardot:
 http://localhost:8000
+
+# Gyorsítás a védéshez (élőben, újraindítás nélkül):
+# grace_period: 5 a demo_app/iow.config.yml-ben
           </pre>
-          <p>Mutasd meg az értékelőknek: A célkonténer 200 OK (zöld jelvény), élő logstream folyik, 0 crash esemény.</p>
+          <p>Mutasd meg az értékelőknek: a cél fut és egészséges (zöld jelvény), élő logstream folyik, még nincs crash esemény.</p>
         </div>
         <div class="card">
-          <h3>2. Lépés: Hiba kiváltása (Live Break)</h3>
+          <h3>2. Lépés: Indulási hiba ültetése</h3>
           <pre>
-# ZeroDivisionError hiba kiváltása
-make break
+# hiányzó import (vagy: make break-env / break-syntax)
+make break-import
           </pre>
           <p>Kövesd végig a képernyőn a 4 ütemet:</p>
           <ol style="margin-left: 20px; font-size: 0.9rem; color: #cbd5e1;">
-            <li>Observer elkapja az 500-as kódot és a Traceback-et.</li>
+            <li>Az Observer egy crash eseményt kelt (exit kód, restart loop, traceback).</li>
             <li>Státusz sárgára vált ("HEALING IN PROGRESS").</li>
-            <li>Analyst azonosítja a <code>demo_app/app.py</code>-t.</li>
-            <li>Patcher generálja a teljes fájl JSON javítást.</li>
-            <li>Konténer újraindul és visszaszámol a 20s grace period.</li>
-            <li>Státusz zöldre vált ("VERIFIED HEALED").</li>
+            <li>Az Analyst a <code>demo_app/app.py</code>-t nevezi meg.</li>
+            <li>A patch átmegy a sanity kapun, és commit lesz az <code>iow/auto-heal</code> ágon.</li>
+            <li>A cél újraindul, és ki kell bírnia a grace periodot.</li>
+            <li>A kísérlet "VERIFIED HEALED" lesz, diffel együtt, a Wisdom Loop fülön.</li>
           </ol>
+          <p style="font-size: 0.85rem;">A <code>make break</code> / <code>break-hard</code> szándékosan összeomló végpontokat hív: a modell vagy átírja a végpontot, amíg az újraküldött kérés 2xx-et nem ad, vagy nem változtat rajta &mdash; ekkor a hurok visszaáll, <em>identical</em> eredménnyel.</p>
         </div>
       </div>
     </div>
@@ -424,18 +429,18 @@ make break
       <div class="grid-3">
         <div class="card">
           <h3>Kötelező Követelmények</h3>
-          <p>* Observe $\to$ Think $\to$ Act $\to$ Verify hurok<br>
+          <p>* Observe &rarr; Think &rarr; Act &rarr; Verify hurok<br>
              * Diff-mentes strukturált JSON patchek<br>
-             * Max 3 kísérlet + hatókörös mixed rollback<br>
-             * 5 dinamikus biztonsági korlát<br>
+             * Max 3 kísérlet + bájtra pontos rollback<br>
+             * 5 biztonsági korlát, élőben az <code>iow.config.yml</code>-ből<br>
              * Kizárólag helyi modellek</p>
         </div>
         <div class="card">
           <h3>Konténer és Kvóta</h3>
-          <p>* <code>make up</code> + host <code>make bonus</code><br>
-             * Docker socket vezérlés<br>
-             * Nincs rögzített konténer UID/GID követelmény<br>
-             * Minden cache a <code>/tmp/</code> mappába irányítva</p>
+          <p>* <code>make up</code> = egyetlen <code>docker compose up</code><br>
+             * Docker socket vezérlés az ágens konténerből<br>
+             * Az ágens a repó tulajdonosaként ír<br>
+             * Minden cache a <code>/tmp/iow</code> alatt</p>
         </div>
         <div class="card">
           <h3>Bónusz Csomag (Chapter VI)</h3>

@@ -5,14 +5,14 @@
 ![Autonomous Cloud Infrastructure Self-Healing Platform](docs/assets/banner.jpg)
 
 # Enterprise Autonomous Self-Healing Platform for Containerized Infrastructure
-**Continuous Reliability • Intelligent Root-Cause Analysis • Automated Zero-Downtime Remediation**
+**Crash Detection • Root-Cause Analysis by a Local LLM • Verified Remediation with Byte-for-Byte Rollback**
 
 [![Python 3.11](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Docker Engine](https://img.shields.io/badge/Docker-24.0+-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 [![ChromaDB](https://img.shields.io/badge/Vector_DB-Chroma_Persistent-FF6F00?style=for-the-badge)](https://www.trychroma.com/)
 [![Local LLM](https://img.shields.io/badge/Inference-Local_Sub--3B-black?style=for-the-badge)](https://ollama.ai)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Reactive_SSE-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Zero Cloud Egress](https://img.shields.io/badge/Security-100%25_Air--Gapped_/_Offline-success?style=for-the-badge)]()
+[![Local at Run Time](https://img.shields.io/badge/Runtime-Local_/_Offline-success?style=for-the-badge)]()
 [![Scoped Git Rollback](https://img.shields.io/badge/Reliability-Scoped_Git_Rollback-red?style=for-the-badge)]()
 
 <br>
@@ -31,11 +31,11 @@
 
 ## Executive Overview
 
-**Inception-of-Wisdom (IoW)** is a production-grade autonomous site-reliability and self-healing agent engineered for containerized application stacks. By continuously intercepting infrastructure telemetry, real-time log streams, and HTTP synthetic health probes, IoW detects operational failures, identifies root causes through semantic code analysis, synthesizes corrective patches, and validates service recovery.
+**Inception-of-Wisdom (IoW)** is an autonomous site-reliability and self-healing agent for containerized application stacks. By continuously intercepting infrastructure telemetry, real-time log streams, and HTTP synthetic health probes, IoW detects operational failures, identifies root causes through semantic code analysis, synthesizes corrective patches, and validates service recovery.
 
 ### Core Architectural Principles
 
-* **100% Air-Gapped & Local:** All machine learning inference (embeddings via `all-MiniLM-L6-v2` and code diagnosis via `Qwen 2.5 Coder 1.5B`) runs entirely on local host hardware. No proprietary cloud LLM APIs are called, guaranteeing total data sovereignty and zero telemetry egress.
+* **Local at Run Time:** All machine learning inference (embeddings via `all-MiniLM-L6-v2` and code diagnosis via `Qwen 2.5 Coder 1.5B`) runs on local host hardware. No cloud LLM API is ever called, and nothing leaves the machine while the system runs; only the first `make setup` / `make up` downloads packages, images and models. The model samples (temperature 0.1, 0.4, 0.7 across attempts), so two runs on the same crash can propose different fixes - each one goes through the same sanity gate and verification.
 * **Deterministic AST Code Intelligence:** Application source code is parsed into Abstract Syntax Trees, preserving discrete function and class boundaries rather than using arbitrary character chunking.
 * **Non-Destructive Atomic Patching:** Corrective changes are structured as full-file replacements and validated through strict pre-disk sanity boundaries, preventing partial corruptions and syntax regressions.
 * **Scoped Rollback Guarantee:** The loop never checks a branch out. Before the first attempt it records the exact state of `demo_app/` the target is running as the pre-loop revision (a snapshot commit when the working tree differs from the branch, e.g. an uncommitted planted bug). Heal commits stack onto `iow/auto-heal` with git plumbing (`hash-object` / `commit-tree` / `update-ref`), so HEAD, your index and every file outside `demo_app/` stay exactly where you left them. After 3 failed attempts the branch is rewound to the pre-loop revision, `demo_app/` is restored from it through a throwaway index, and the result is checked against the pre-loop tree hash (shown in the dashboard as *identical*). The cycle in progress is recorded in git (`refs/iow/pre-loop`), so an agent stopped or crashed mid-cycle rolls its unverified patch back the next time it starts. An edit someone makes to `demo_app/` while a cycle runs cannot survive the byte-for-byte rollback, but it is not lost: it is committed under `refs/iow/overwritten/<time>` first and named in the dashboard.
@@ -70,7 +70,7 @@ sequenceDiagram
     Note over Wis: Snapshot pre-loop state of demo_app/, then patch {summary, files[path, op, content]}
     Note over Wis: Pre-Disk Sanity Gate (<=3 files, no placeholder, no >60% shrink, no markers, parses, not a no-op)
     Wis->>Wis: Atomic write (*.iow.tmp + os.replace) & commit on iow/auto-heal
-    Wis->>Ver: Redeploy (Docker restart or Argo/kubectl when IOW_REDEPLOY_MODE=gitops)
+    Wis->>Ver: Redeploy (Docker restart, or in GitOps mode the pushed commit, which Argo CD syncs and rolls)
     Note over Ver: Replay the failing request, then grace period (probes, exit codes, log stream)
     alt Verification Succeeded (Crash-Free Uptime)
         Ver-->>Target: Container/Pod State Confirmed Healthy
@@ -136,6 +136,8 @@ The centralized administrative interface provides a modern SRE console powered b
 │   ├── patcher.py              # Model-written fixes packed into full-file JSON patches
 │   ├── sanity.py               # Pre-disk gate: file count, placeholders, shrinkage, markers, scope, AST
 │   ├── names.py                # Names a file uses but never defines (read with ast, no model)
+│   ├── exits.py                # A "fix" that only moves the crash: new raise / exit, conditional start
+│   ├── unbound.py              # A value read where it may not be set yet (NameError after the redeploy)
 │   ├── git_manager.py          # Pre-loop snapshot, iow/auto-heal commits, byte-for-byte rollback
 │   ├── verifier.py             # Redeploy, replay the failing request, grace period
 │   ├── loop.py                 # Multi-turn coordinator (up to 3 attempts with failure feedback)
@@ -147,7 +149,7 @@ The centralized administrative interface provides a modern SRE console powered b
 │   ├── classifier.py           # Known-symptom classifier: reuses a verified patch, skips the LLM
 │   ├── consensus.py            # "Second Opinion" dual-perspective consensus engine
 │   ├── pr_manager.py           # Human-in-the-Loop PR review manager with live unified diff
-│   ├── gitops.py               # Argo CD/kubectl rollout verification for GitOps mode
+│   ├── gitops.py               # GitOps redeploy: push the commit, wait for Argo CD's pod of that code
 │   ├── bonus_api.py            # Fast-path triage, consensus scoring & PR approval endpoints
 │   └── tests/                  # make test-bonus
 │
@@ -159,12 +161,14 @@ The centralized administrative interface provides a modern SRE console powered b
 │   ├── gitea_bootstrap.sh      # Gitea admin user, API token and review repository
 │   ├── argocd_bonus_up.sh      # Creates iow-k3s and installs/configures Argo CD
 │   ├── argocd_bonus_down.sh    # Removes the GitOps runtime
+│   ├── gitops_publish.sh       # demo_app/ -> the branch Argo CD tracks (Argo CD rolls the pod)
 │   ├── ensure_gitops_tools.sh  # Installs kubectl/argocd under /tmp/iow/bin
 │   └── gitops_doctor.sh        # Diagnoses and optionally purges broken GitOps state
 │
 ├── dashboard/                  # UNIFIED OPERATIONS DASHBOARD
 │   ├── app.py                  # Central FastAPI application uniting all subsystems
-│   └── templates/index.html    # Modern SRE interface with 4 functional tabs
+│   ├── templates/index.html    # Modern SRE interface with 4 functional tabs
+│   └── tests/                  # make test-dashboard (orchestrator, Makefile, compose, scripts, docs)
 │
 ├── demo_app/                   # TARGET APPLICATION SUITE
 │   ├── app.py                  # Containerized service featuring synthetic failure endpoints
@@ -208,7 +212,7 @@ graph LR
     H -->|Reject| I[Clean Abort]
     F --> J{Redeploy Mode}
     J -->|docker| K[Container Restart]
-    J -->|gitops| L[Argo Sync / kubectl Rollout]
+    J -->|gitops| L[Push the commit, Argo CD rolls the pod]
 ```
 
 ### 1. Known-Symptom Classifier (`bonus/classifier.py`)
@@ -225,13 +229,14 @@ graph LR
 
 ### 3. Human-in-the-Loop PR Manager (`bonus/pr_manager.py`)
 * **Objective:** Auditable change management via local **Gitea** (`make pr-bonus` / `make gitea`).
-* **Mechanism:** With HITL on nothing is applied until approval: the patch (after the sanity gate) becomes a review branch `iow/review/...` with a dashboard diff. Approving lands exactly that commit, the way the loop lands a heal: under the heal bounds (kill switch, single-flight, rate limit, hard cap), redeployed through the Verifier (in GitOps mode that pushes the branch Argo CD tracks), and kept only if the target stays up for the grace period - otherwise it is rolled back to the PR's base and marked `reverted`. A PR whose base no longer matches the target's code is refused as stale instead of reverting the newer code, and a PR created through the API passes the sanity gate first. Verified heals also get a record PR (`iow/heal/<cycle>` → `iow/base/<cycle>`) when HITL is off.
+* **Mechanism:** With HITL on nothing is applied until approval: the patch (after the sanity gate) becomes a review branch `iow/review/...` with a dashboard diff. Approving lands exactly that commit, the way the loop lands a heal: under the heal bounds (kill switch, single-flight, rate limit, hard cap), redeployed through the Verifier (in GitOps mode that pushes the branch Argo CD tracks), and kept only if the target stays up for the grace period - otherwise it is rolled back to the PR's base and marked `reverted`. The PR is merged on Gitea as well: the approval waits while Gitea is still checking the PR, and a merge Gitea refuses is reported (the PR then stays open there). The decision also shows on the heal cycle that proposed the PR in the Wisdom Loop tab (healed, rolled back, or refused with the reviewer's reason). A PR whose base no longer matches the target's code is refused as stale instead of reverting the newer code, and a PR created through the API passes the sanity gate first. Verified heals also get a record PR (`iow/heal/<cycle>` → `iow/base/<cycle>`) when HITL is off. A decided PR's local branch is deleted (Gitea keeps its own copy), and at start the agent deletes the branches of PRs no longer on record - the records live under `/tmp/iow`, which a reboot wipes - touching only branches whose tip the agent wrote.
 * **Credentials:** `/tmp/iow/gitea/gitea.env` - UI http://127.0.0.1:3000 (`iow` / `iowiow123`).
 * **API:** `GET /api/bonus/prs`, `POST /api/bonus/prs/create`, `/prs/{id}/merge`, `/prs/{id}/reject`.
 
 ### 4. GitOps Redeploy (`bonus/gitops.py` + `make argocd-bonus`)
-* **Objective:** After a heal commit, redeploy the target via **Argo CD** / kubectl instead of only Docker restart.
+* **Objective:** In GitOps mode the heal commit alone redeploys the target through **Argo CD**. Every commit the agent writes stamps the git tree hash of its `demo_app/` into the Deployment's pod template (`iow.42/source` in `k8s/demo-app/deployment.yaml`), so a code change is a manifest change: Argo CD, which the bootstrap sets to reconcile every 15 s, syncs it and rolls the pod by itself. The agent pushes the branch and waits for a Ready pod of exactly that code, then the usual grace period. It asks Argo CD for a sync only when nothing moved within 75 s (`IOW_GITOPS_SELF_SYNC_S`), and restarts the rollout itself only when there is no new code to roll (the same code again, or a manifest without the stamp).
 * **Campus path:** Nested k3d fails under rootless Docker (missing `cpu` cgroup). Bootstrap runs **`iow-k3s`** - privileged k3s-in-Docker with `--cgroupns=host` - then installs Argo CD and syncs from Gitea over `iow-network`. Each run rebuilds `inception-of-wisdom-demo_app:latest` from root `demo_app/`, imports it into k3s, and publishes both `demo_app/` and `k8s/demo-app` to Gitea so the cluster app matches compose (`:5001`). Pods reach Gitea through the Service `gitea.iow` the bootstrap creates (compose names such as `iow_gitea` do not resolve inside the cluster). The Observer follows the newest pod, so a new revision that crash-loops behind a still-serving old pod is seen.
+* **Plant a crash in the cluster:** the pod runs what is on the branch Argo CD tracks, not your local files, so a `make break-*` alone changes nothing it serves. `make break-import gitops-publish` publishes the working tree's `demo_app/` to that branch with its stamp, and Argo CD rolls the pod within about 15 s; the loop heals from the same tree and pushes its fix there. `make demo-reset gitops-publish` puts the original code back.
 * **URLs:** Argo UI http://127.0.0.1:8080 (`admin` / password printed by make; `IOW_ARGOCD_PORT=18080 make argocd-bonus` when 8080 is taken - the bootstrap never forwards onto a busy port, and the agent only logs in to a server that answers like Argo CD); in-cluster demo NodePort http://127.0.0.1:30051; dashboard http://127.0.0.1:8000.
 * **Ops:** `make gitops-doctor` / `make gitops-doctor-purge` / `make argocd-bonus-down` / `make ensure-gitops-tools`.
 
@@ -256,10 +261,11 @@ target:
 
 For a smooth defense, set `grace_period: 5` - the running agent picks it up at once.
 The `target:` and `analyst:` sections are live as well (probe URLs, error patterns,
-dedup windows, probe/watch intervals, `top_k`); only `container_name`, `service_url`,
-`model` and `embedding_model` wait for a restart. A typo in `kill_switch` never
+dedup windows, probe/watch intervals, `top_k`, `patch_strategy`); only `container_name`,
+`service_url`, `model` and `embedding_model` wait for a restart. A typo in `kill_switch` never
 disarms it, any unusable value keeps the last good one, an empty file (an editor
-mid-save) keeps the last good values, and a deleted key falls back to its default.
+mid-save) keeps the last good values, a deleted file keeps the current ones (one warning,
+not one per reload), and a deleted key falls back to its default.
 
 ### Pre-Disk Sanity Filters (`p3/sanity.py`)
 Before any AI-generated patch is applied to the filesystem, it must pass:
@@ -270,6 +276,7 @@ Before any AI-generated patch is applied to the filesystem, it must pass:
 5. **Scope:** Only paths inside `demo_app/`, never the operator-owned `iow.config.yml`.
 6. **AST Syntax Parse & no-op check:** Modified Python must compile, and a patch identical to the file on disk is refused.
 7. **No lost definitions:** A patch may not leave a name undefined that the file still uses - a rewrite that drops an import or a constant is refused before it costs a redeploy.
+8. **No value read before it is set:** A patch may not read a name where it may not be set yet - `port` set only inside an `if`, or inside a `try` whose `except` falls through - which would fail with a NameError after the redeploy (`p3/unbound.py`).
 
 Heal writes and rollback are **scoped to `demo_app/`** (`p3/git_manager.py`), and the
 loop never checks out a branch, so agent/dashboard WIP is never touched. There is no
@@ -277,10 +284,20 @@ canned answer for any particular bug. A sub-3B model cannot echo a 100-line file
 as a JSON string, so when the traceback points into a larger file the model rewrites
 only that logical chunk (plain code) and the Patcher splices it into the complete
 post-change file of the structured JSON patch; small files get a full-file rewrite.
+`analyst.patch_strategy: full_file` in `iow.config.yml` has the model write that JSON
+patch itself every time - the strictest reading of the subject; measured with
+`qwen2.5-coder:1.5b` on `demo_app/app.py` it cut the file to a few lines in 9 of 9
+answers (refused by the truncation guard), against 4 of 9 usable region rewrites.
+An answer that cannot fix the crash is asked for again inside the same attempt (up to
+three asks), before it costs a redeploy: a region handed back unchanged, a "fix" that
+only moves the failure - a new `raise` / `exit()`, or the server started only when the
+missing value is there (`p3/exits.py`, read with `ast`) - or one that reads a value it sets
+on some paths only (`p3/unbound.py`). On `make break-env` that is what
+4 of 6 first answers did; with the re-ask 8 of 9 attempts produced a working fix, and the
+live heals went from 4 of 8 to 6 of 6 (all on attempt 1).
 Every retry learns from the failure before it: it is told what failed after the redeploy
 (and when the failure comes from code its own change added, such as a `raise` for a
-missing value), it samples more freely (temperature 0.1, 0.4, 0.7), a region handed back
-unchanged is asked for once more before it costs an attempt, and for environment
+missing value), it samples more freely (temperature 0.1, 0.4, 0.7), and for environment
 problems the prompt states the target's port and environment as read from its container
 (secrets never shown).
 Stopping Ollama makes the Analyst report an explicit failure rather than inventing a
@@ -344,22 +361,36 @@ make break-hard            # the process exits 1 (Observer: exit-code event)
 make break                 # HTTP 500 + traceback on POST /api/crash (Observer: log + 5xx)
 make suggest               # 4xx probe → suggestion, flagged but never auto-healed
 make heal                  # manual heal trigger (latest crash; 409 when nothing crashed)
+make rollback              # put demo_app/ back to the last cycle's pre-loop revision
 make demo-reset            # restore demo_app/app.py from HEAD + restart the target
 make status | logs
 ```
 
-`make break` and `make break-hard` hit routes whose whole purpose is to crash; a
-sub-3B model usually declines to "fix" them, and the loop then rolls back cleanly.
-The three startup crashes are the runtime failures the subject recommends.
+A target stopped on purpose (`docker stop`, `docker kill`, `docker pause`) is not a crash:
+the Observer reports the outage, the dashboard shows the target as *stopped* or *paused*
+(the tooltip names the command that brings it back), and no heal starts - a manual one is
+recorded as refused, with nothing to patch.
+
+`make break` and `make break-hard` hit routes whose whole purpose is to crash. The
+model either rewrites the route until the replayed request answers 2xx (seen live on
+attempt 3, after the replay had failed a docstring edit and a commented-out `raise`),
+or declines to change it, and the loop rolls back cleanly. To show a rollback,
+stop the model (`make stop` for the host Ollama, `docker stop iow_ollama` in Docker) and
+plant a crash. The three startup crashes are the runtime failures the subject recommends.
 
 **Quality gates:**
 
 ```sh
 make lint                  # flake8 + mypy
-make test                  # p1/tests p2/tests p3/tests bonus/tests (no model, no Docker)
-make test-p3               # one part, verbose
+make test                  # p1 p2 p3 bonus dashboard tests (no model, no Docker)
+make test-p3               # one part, verbose (test-p1 ... test-bonus, test-dashboard)
 make gates                 # all of the above
 ```
+
+`dashboard/tests` covers what joins the parts: which crash the orchestrator heals, how a
+review's outcome reaches the heal history, the GitOps wiring, and the entry points around
+it (Makefile, compose, Dockerfiles, the agent's entrypoint, scripts, manifests, the page),
+plus that the docs only name files and config keys that exist.
 
 ### Which stage does what
 
@@ -383,6 +414,7 @@ locked tab.
 make bonus                 # classifier + consensus (Bonus tab)
 make pr-bonus              # + Gitea forge + HITL / verified heal PRs
 make argocd-bonus          # + k3s-in-Docker + Argo CD (CLIs → /tmp/iow/bin)
+make break-import gitops-publish   # plant a crash in the cluster (demo_app/ -> tracked branch, Argo CD rolls the pod)
 make argocd-bonus-down     # delete iow-k3s (+ legacy k3d leftovers)
 make ensure-gitops-tools   # kubectl / argocd only
 make gitops-doctor         # inspect compose vs iow-k3s
@@ -398,7 +430,7 @@ Credentials: `/tmp/iow/gitea/gitea.env` (user `iow`, pass `iowiow123`).
 GitOps env: `/tmp/iow/gitops/env` - demo `http://127.0.0.1:30051`.
 
 Campus: nested **k3d** fails under rootless Docker (`failed to find cpu cgroup (v2)`).  
-`make argocd-bonus` uses privileged **`iow-k3s`** + `--cgroupns=host`, attaches to `iow-network` for Gitea, rebuilds/imports the same `demo_app` image as compose, syncs `demo_app/` + manifests to Gitea, and port-forwards Argo to :8080.
+`make argocd-bonus` uses privileged **`iow-k3s`** + `--cgroupns=host`, attaches to `iow-network` for Gitea, rebuilds/imports the same `demo_app` image as compose, syncs `demo_app/` + manifests to Gitea, sets Argo CD to reconcile every 15 s, and port-forwards Argo to :8080.
 
 ```sh
 source /tmp/iow/gitops/path.env
@@ -433,12 +465,12 @@ Small LLMs (< 3B parameters) struggle with character-accurate arithmetic require
 <summary><b>How are infinite restart and patch loops prevented?</b></summary>
 <br>
 Through a layered defense-in-depth approach:
-1. Event deduplication sliding window (90 seconds for crashes - longer than Docker's 60 s maximum restart backoff - and 300 for suggestions): an ongoing crash loop stays one event. A verified heal - or the target serving again, however it came back - ends the outage, so the same crash planted again is a new event (still subject to the cooldown).
+1. Event deduplication sliding window (90 seconds for crashes - longer than Docker's 60 s maximum restart backoff, and at least 330 s in GitOps mode, where Kubernetes backs off up to 300 s - and 300 for suggestions): an ongoing crash loop stays one event. A verified heal - or the target serving again, however it came back - ends the outage, so the same crash planted again is a new event (still subject to the cooldown).
 2. One heal at a time (single-flight); signals raised while it runs (exit code, log line, dead probe of the same crash) share its cooldown.
 3. Per-signature cooldown periods (300 seconds).
 4. Rolling hourly rate-limits (<strong>5</strong> heals/hour) and hard lifetime caps (<strong>20</strong>) from <code>iow.config.yml</code>, plus the <code>kill_switch</code>.
 5. Turn-limited remediation flights (maximum 3 attempts), then a rollback of <code>demo_app/</code> to the pre-loop revision.
-6. No heal without a symptom: before anything is patched the failing request is replayed (or the target's state and probes are read); a crash that is already gone is recorded as <code>not_needed</code> and nothing is changed, and a manual trigger with no crash and no log answers <code>409</code>.
+6. No heal without a symptom: before anything is patched the failing request is replayed (or the target's state and probes are read); a crash that is already gone is recorded as <code>not_needed</code> and nothing is changed, a target stopped or paused on purpose is reported but never patched, and a manual trigger with no crash and no log answers <code>409</code>.
 </details>
 
 <details>
@@ -477,6 +509,6 @@ Ten self-contained, offline-compatible HTML5 technical presentations are availab
 <div align="center">
 
 **Inception-of-Wisdom (IoW)**<br>
-*Deterministic Incident Response • 100% Air-Gapped Operation • Continuous Availability*
+*Local-LLM Incident Response • Offline at Run Time • Verified Heals with Byte-for-Byte Rollback*
 
 </div>

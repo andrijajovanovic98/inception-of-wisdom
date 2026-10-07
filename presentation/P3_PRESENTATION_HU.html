@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Part 3: Wisdom Loop - Inception of Wisdom</title>
+  <title>Part 3: Wisdom Loop &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -26,6 +26,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-purple); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -50,7 +51,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Part 3</span>
-      <span>Wisdom Loop Részletes Bemutató - Inception of Wisdom</span>
+      <span>Wisdom Loop Részletes Bemutató &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 8</div>
   </header>
@@ -60,12 +61,12 @@
     <!-- Slide 1 -->
     <div class="slide active">
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">ACT & VERIFY FÁZIS</span>
-      <h1>Part 3: Wisdom Loop - Autonóm Hibajavítás és Visszaállítás</h1>
+      <h1>Part 3: Wisdom Loop &mdash; Autonóm Hibajavítás és Visszaállítás</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
         A Wisdom Loop a diagnózisból kiindulva ellenőrzött forráskód-javítást végez. Összehangolja a diff-mentes JSON javítócsomagokat, a többlépcsős érvényességi ellenőrzést (sanity bounds), az atomikus Git ágkezelést, a Docker konténer újraindítást, a türelmi időszakos aktív verifikációt és a legfeljebb 3 próbálkozás utáni automatikus visszaállítást (rollback).
       </p>
       <div class="highlight-box">
-        <strong>Subject követelmény:</strong> "Cselekedj a diagnózis alapján: készíts patch-et, alkalmazd a módosításokat, igazold a konténer helyreállását. Tartsd be a biztonsági korlátokat (rate limit, cooldown, hard cap, kill-switch). Sikertelen verifikáció esetén automatikus visszaállítás maximum 3 kísérlet után."
+        <strong>Subject (V.3, fordítás):</strong> "Egy diagnózisból a hurok patchet készít, alkalmazza, commitol, újraindítja a célt, és eldönti, hogy eltűnt-e a tünet." &mdash; "Három sikertelen kísérlet után a Wisdom Loop visszatekeri az auto-heal ágat a pre-loop revízióra (az ágens commitjai elérhetetlenné válnak), az eredeti kódon indítja újra a célt, és tiszta hibát jelez a dashboardon."
       </div>
     </div>
 
@@ -80,20 +81,19 @@
         <div class="card">
           <h3>Strukturált Teljes Fájlcsere</h3>
           <pre>{
-  "summary": "ZeroDivisionError kezelése guard feltétellel",
+  "summary": "Az indulási kódnak szükséges Flask import visszaállítása",
   "files": [
     {
       "path": "demo_app/app.py",
-      "op": "replace",
-      "content": "... teljes szintaktikailag helyes forráskód ..."
+      "op": "modify",
+      "content": "... a teljes módosított fájl ..."
     }
   ]
 }</pre>
           <ul>
-            <li>A modell teljes fájlt ír felül vagy hoz létre.</li>
-            <li>Nincsenek pontatlan eltolási (offset) anomáliák.</li>
-            <li>A system prompt szintaktikailag zárt, teljes kódot követel meg.</li>
-            <li>Nincs előre megírt javítás: nagyobb fájlnál a modell csak a traceback által mutatott chunkot írja újra (sima kódként), a patcher pedig ezt illeszti be a JSON patch teljes fájltartalmába. Sikertelen kísérlet után az új hibanapló megy vissza az Analystnek; 3 kísérlet után minden visszaáll.</li>
+            <li>A <code>content</code> a teljes módosított fájl; az <code>op</code> <code>create</code>, <code>modify</code> vagy <code>delete</code>. Diffet nem fogad el.</li>
+            <li>Nincs előre megírt javítás: nagyobb fájlnál a modell csak a traceback által mutatott chunkot írja újra (sima kódként), a patcher pedig ezt illeszti be a JSON patch teljes fájltartalmába. Az <code>analyst.patch_strategy: full_file</code> esetén a modell maga írja a teljes JSON patchet (egy 1.5B modell megcsonkítja a fájlt &mdash; mérve 0 a 9-ből).</li>
+            <li>A változatlanul visszaadott, vagy a hibát csak áthelyező válasz (új <code>raise</code> / <code>exit()</code>, feltételhez kötött szerverindítás) még a kísérleten belül újrakérésre kerül &mdash; mielőtt egy újratelepítésbe kerülne.</li>
           </ul>
         </div>
       </div>
@@ -104,12 +104,16 @@
       <h2>Érvényességi Korlátok és Védelmi Falak (p3/sanity.py)</h2>
       <div class="card">
         <h3>Lemezre Írás Előtti Szigorú Szűrés</h3>
-        <p>Mielőtt egy generált patch megérintené a fájlrendszert vagy a Git tárolót, át kell mennie 4 védelmi kapun:</p>
+        <p>Mielőtt egy patch megérintené a fájlrendszert vagy a Git tárolót, át kell mennie a subject négy szabályán, és további négyen:</p>
         <ul>
-          <li><strong>Fájlszám korlát:</strong> Legfeljebb 3 fájlt módosíthat egyetlen javítási körben (megelőzi a teljes repó szétzilálását).</li>
-          <li><strong>Zsugorodás elleni védelem (Shrinkage Guard):</strong> Legfeljebb 60%-kal csökkenhet a fájl mérete az eredetihez képest (kivédi a kód véletlen kiürítését).</li>
-          <li><strong>Helyettesítő token védelem:</strong> Letiltja a lusta AI mintákat: <code># TODO</code>, <code># rest of code here</code>, <code># implement here</code>.</li>
-          <li><strong>Szintaktikai ellenőrzés:</strong> Python fájloknál lefuttatja az <code>ast.parse(content)</code> hívást; szintaxishiba esetén a patch azonnal elutasításra kerül.</li>
+          <li><strong>Fájlszám korlát:</strong> legfeljebb 3 fájl patchenként.</li>
+          <li><strong>Triviális placeholder:</strong> nem üres fájlból nem lehet csonk (<code>pass</code>, <code>...</code>, egy docstring); nem kerülhet be új <code># TODO</code> vagy <code>rest of code unchanged</code>.</li>
+          <li><strong>Zsugorodás elleni védelem:</strong> legfeljebb 60%-kal lehet kisebb az eredetinél, bármit mond az <code>op</code> (egy létező fájl fölé írt <code>create</code> is számít, egy nem üres fájl törlése 100%-os zsugorodás), és bármekkora a fájl.</li>
+          <li><strong>RAG markerek:</strong> a prompt vázai (<code>--- File: ... ---</code>, <code>--- Code Snippet #n ---</code>, régióhatárok) nem szivároghatnak a kódba.</li>
+          <li><strong>Hatókör:</strong> csak a <code>demo_app/</code>-on belül, soha az operátor <code>iow.config.yml</code>-je.</li>
+          <li><strong>Parse-olható és változtat:</strong> az <code>ast.parse</code>-nak sikerülnie kell, és a fájllal azonos patch elutasításra kerül.</li>
+          <li><strong>Nem tűnhet el definíció:</strong> az újraírás nem hagyhat el olyan importot vagy konstanst, amelyet a fájl még használ.</li>
+          <li><strong>Nincs beállítás előtti olvasás:</strong> ha a <code>port</code> csak egy <code>if</code>-ben, vagy egy olyan <code>try</code>-ban kap értéket, amelynek <code>except</code>-je továbbfut, a patch elutasításra kerül (NameError lenne az újratelepítés után).</li>
         </ul>
       </div>
     </div>
@@ -122,15 +126,15 @@
           <h3>Dedikált Öngyógyító Ág</h3>
           <ul>
             <li>Minden autonóm módosítás az izolált <code>iow/auto-heal</code> ágon fut.</li>
-            <li>A ciklus előtt rögzíti a kiinduló állapotot: <code>pre-loop revision</code> (commit SHA).</li>
-            <li>Atomikus fájlkezelés: ideiglenes fájlba ír, majd biztonságos átnevezést végez.</li>
-            <li>Git commitot hoz létre a diagnózis összefoglalójával és a kísérlet sorszámával.</li>
+            <li>Pre-loop revízióként rögzíti a <code>demo_app/</code> pontos futó állapotát: a HEAD-et, ha a fa egyezik vele, különben egy snapshot commitot (a nem commitolt, ültetett hibával együtt), és a ciklus végéig a <code>refs/iow/pre-loop</code>-ban tartja.</li>
+            <li>Atomikus fájlírás: <code>*.iow.tmp</code> + fsync + <code>os.replace</code>, a fájlmód megmarad.</li>
+            <li>Git plumbinggal commitol, a tárgysort a diagnózisból generálja: a HEAD, az index és a kicheckoutolt ág nem mozdul.</li>
           </ul>
         </div>
         <div class="card">
-          <h3>Hatókörös Mixed Rollback</h3>
+          <h3>Bájtra Pontos Rollback</h3>
           <div class="highlight-box">
-            <strong>Védett Munkakönyvtár:</strong> Ha mindhárom verifikáció sikertelen, a GitManager mixed resetet és kizárólag a <code>demo_app/</code> célzott visszaállítását végzi. A másutt lévő nem commitolt ágens- és dashboard-munka megmarad.
+            <strong>Bizonyítva, nem feltételezve:</strong> 3 sikertelen kísérlet után az <code>iow/auto-heal</code> visszaáll a pre-loop revízióra, a <code>demo_app/</code> pedig egy eldobható indexen át (<code>read-tree</code> + <code>checkout-index</code>) helyreáll belőle. A fát újrahash-eli és összeveti: a dashboard <em>identical</em>-t mutat. Az operátor <code>iow.config.yml</code>-je megmarad, a ciklus közbeni szerkesztés pedig előbb a <code>refs/iow/overwritten/&lt;idő&gt;</code> alá mentődik.
           </div>
         </div>
       </div>
@@ -145,17 +149,16 @@
           <ul>
             <li>A host Docker démonnal kommunikál a <code>/var/run/docker.sock</code>-on keresztül.</li>
             <li>Alapértelmezetten a Docker Engine API-val indítja újra a célkonténert.</li>
-            <li><code>IOW_REDEPLOY_MODE=gitops</code> esetén Argo CD/kubectl rolloutra vár.</li>
+            <li><code>IOW_REDEPLOY_MODE=gitops</code> esetén helyette push-olja a commitot, és megvárja a podot, amelyet az Argo CD indít belőle (a commit a kódja hash-ét a pod sablonba írja).</li>
             <li>Lekéri az új állapotot és kilépési kódot.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Aktív Türelmi Időszak (Grace Period, 20s)</h3>
           <ul>
-            <li>Nem fogadja el azonnal a helyreállást pusztán a konténer elindulása miatt.</li>
-            <li>A <code>/</code> és <code>/healthz</code> végpontokat teszteli a türelmi idő alatt.</li>
-            <li>Az <code>/api/crash</code> kizárólag a <code>make break</code> szándékos hibatriggere, nem health probe.</li>
-            <li>Pásztázza a konténer logjait, hogy nem lép-e fel azonnali újabb crash loop.</li>
+            <li>Megvárja, amíg a cél egyszer válaszol (<code>boot_timeout</code>), csak utána indul a türelmi idő.</li>
+            <li>Újra elküldi azt a kérést, amely összeomlasztotta a célt &mdash; a cél saját logjából olvasva (a Flask <code>Exception on /api/crash [POST]</code> sora, az 5xx access sor): egy olyan végponton lévő soft crash, amelyet egyik szonda sem hív, nem mehet át gyógyultként.</li>
+            <li>Bármely crash esemény, az új folyamat nem-nulla kilépése vagy hibázó szondák a türelmi idő alatt elbuktatják a kísérletet.</li>
           </ul>
         </div>
       </div>
@@ -172,10 +175,10 @@
                  ▼ (Visszacsatolás: Konténer kilépési kód: 1, Traceback log átadva)
 2. Kísérlet: Bővített prompt az előző hibával -> Új patch -> Sikeres!
                  │
-                 └─ Ha a 3. kísérlet is bukik: hatókörös demo_app/ mixed rollback</pre>
+                 └─ Ha a 3. kísérlet is bukik: rollback a pre-loop revízióra (identical)</pre>
         <ul>
-          <li>Az 1. kísérlet hibaüzenete és tracebackje beépül a 2. kísérlet promptjába.</li>
-          <li>Lehetővé teszi, hogy az 1.5B modell korrigálja a korábbi tévedéseit.</li>
+          <li>Az új hibanapló &mdash; az újraindítás óta a démontól olvasva &mdash; visszamegy az Analysthez.</li>
+          <li>A következő patch prompt megtudja, mi bukott el (és hogy a saját módosítása okozta-e), szabadabban mintavételez (hőmérséklet 0.1 / 0.4 / 0.7), környezeti hibáknál pedig megkapja a cél portját és környezetét, a konténeréből olvasva.</li>
         </ul>
       </div>
     </div>
@@ -211,9 +214,9 @@
           <li><strong>K: Miért nem hagyományos git diff formátumot használtok?</strong><br>
               V: A 3B alatti modellek sorszám-eltolási anomáliákat okoznak. A strukturált teljes fájlcsere megbízható és szintaktikailag biztonságos.</li>
           <li><strong>K: Mi gátolja meg, hogy a modell letörölje a teljes projektet a 'javítás' kedvéért?</strong><br>
-              V: A Sanity ellenőrzések: max 3 fájl, max 60% méretcsökkenés, és kötelező AST szintaktikai érvényesítés a lemezre írás előtt.</li>
+              V: A sanity kapu, minden lemezre írás előtt: max 3 fájl, nem lehet triviális placeholder, max 60% méretcsökkenés, nem tűnhet el definíció, nem olvashat beállítás előtti értéket, és a kódnak parse-olhatónak kell maradnia.</li>
           <li><strong>K: Hogyan demonstráljátok a rollback működését a védésen?</strong><br>
-              V: Szándékosan feloldhatatlan hibát idézünk elő; 3 sikertelen kísérlet után ellenőrizzük, hogy csak a <code>demo_app/</code> tért vissza a kiinduló állapotba, a független munka pedig megmaradt.</li>
+              V: Leállítjuk a modellt (hoston <code>make stop</code>, Dockerben <code>docker stop iow_ollama</code>), hibát ültetünk, és végignézzük a 3 sikertelen kísérletet, majd a rollbacket: a <code>demo_app/</code> visszahash-elődik a pre-loop fára (<em>identical</em>), a független munka érintetlen.</li>
         </ul>
       </div>
     </div>

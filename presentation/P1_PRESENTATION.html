@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Part 1: Observer - Inception of Wisdom</title>
+  <title>Part 1: Observer &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -25,6 +25,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -49,7 +50,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Part 1</span>
-      <span>Observer Deep-Dive - Inception of Wisdom</span>
+      <span>Observer Deep-Dive &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
   </header>
@@ -59,12 +60,12 @@
     <!-- Slide 1 -->
     <div class="slide active">
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">OBSERVE PHASE</span>
-      <h1>Part 1: Observer - The Nervous System</h1>
+      <h1>Part 1: Observer &mdash; The Nervous System</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
         The Observer's responsibility is to continuously monitor target container lifecycle events, follow stdout/stderr logs in real time, probe HTTP endpoints, classify failure signals, and deduplicate incidents into a clean event stream.
       </p>
       <div class="highlight-box">
-        <strong>Subject Requirement:</strong> "Observe: inspect Docker events, follow the log stream in near real time, probe HTTP endpoints, and deduplicate events into a single incident."
+        <strong>Subject (V.1):</strong> "The container side reports the target's current state (running, restarting, exited), streams its standard output and standard error in near real time, and raises a crash event whenever the container exits with a non-zero status, enters a restart loop, or emits a line that matches a configurable list of error patterns."
       </div>
     </div>
 
@@ -74,25 +75,28 @@
       <div class="grid-2">
         <div class="card">
           <h3>Socket Communication</h3>
-          <p>Mounting <code>/var/run/docker.sock</code> into the agent enables direct communication with the host Docker engine via the Python <code>docker</code> SDK.</p>
+          <p>The daemon's socket (<code>$DOCKER_SOCK</code>, mounted as <code>/var/run/docker.sock</code>) gives the agent the host Docker engine through the Python <code>docker</code> SDK.</p>
           <ul>
-            <li>Non-zero exit detection: <code>status == "exited" and exit_code != 0</code></li>
-            <li>Crash loop detection: <code>status == "restarting"</code> with restart count</li>
-            <li>Dead state: <code>c_state.get("Dead") or c_state.get("OOMKilled")</code></li>
+            <li>Non-zero exit: the event stream's <code>die</code> with its <code>exitCode</code> &mdash; with <code>restart: unless-stopped</code> the exited state lasts milliseconds, so polling alone never sees it. The <code>kill</code> of our own restart explains exactly one exit.</li>
+            <li>Restart loop: the restart counter climbing within 60 s, or the container stuck in <code>restarting</code>.</li>
+            <li>Dead state: <code>State.Dead</code>, <code>State.OOMKilled</code> and the <code>oom</code> event.</li>
+            <li>Stopped on purpose: after <code>docker stop</code> / <code>kill</code> the container stays exited and its restart policy leaves it down; <code>docker pause</code> leaves it paused. The Observer reports the outage, but no heal starts &mdash; there is no code to fix.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Container Lifecycle Actions</h3>
           <p>The <code>DockerMonitor</code> provides resilient restart primitives:</p>
           <pre>
-def restart_container(self, timeout=10):
+def restart_target(self, timeout=10):
     container = client.containers.get(self.container_name)
+    if container.status == "running":
+        self.mark_deliberate()  # our own stop is no crash
     container.restart(timeout=timeout)
     return True
           </pre>
           <div class="defense-tip">
             <strong>Evaluator Question:</strong> "What happens if Docker daemon restarts?"<br>
-            <strong>Answer:</strong> <code>DockerMonitor</code> catches API exceptions and lazily reconnects without crashing the agent.
+            <strong>Answer:</strong> the agent keeps answering; the target reads <code>daemon_unavailable</code> (not a crash), one warning per outage is logged, and the event stream resumes at the last event it handled &mdash; no crash lost, none replayed.
           </div>
         </div>
       </div>
@@ -105,23 +109,26 @@ def restart_container(self, timeout=10):
         <div class="card">
           <h3>Stream Loop & Ring Buffer</h3>
           <ul>
-            <li>Follows <code>container.logs(stream=True, follow=True)</code> in a dedicated background worker thread.</li>
-            <li>Maintains a 500-line thread-safe ring buffer (<code>collections.deque(maxlen=500)</code>).</li>
-            <li>Yields real-time events to the dashboard via Server-Sent Events (SSE).</li>
+            <li>Follows <code>container.logs(stream=True, follow=True, timestamps=True)</code> in a background worker that re-attaches after every restart.</li>
+            <li>Lines logged before the agent started, or before a deliberate restart, are history: judged by the log's own timestamps, they never raise a crash.</li>
+            <li>500-line thread-safe ring buffer; tracebacks keep their indentation.</li>
+            <li>Every line goes to the dashboard over Server-Sent Events (SSE).</li>
           </ul>
         </div>
         <div class="card">
           <h3>Regex Error Matching</h3>
-          <p>Scans each line against compiled regex patterns:</p>
+          <p>Scans each line against the configurable patterns (live from <code>iow.config.yml</code>):</p>
           <pre>
-DEFAULT_ERROR_PATTERNS = [
-    r"Traceback \(most recent call last\):",
-    r"CRITICAL:",
-    r"Error:",
-    r"Exception:"
-]
+target:
+  error_patterns:
+    - "Traceback \\(most recent call last\\):"
+    - "CRITICAL:"
+    - "\\w*(?:Error|Exception):"
+    - "ModuleNotFoundError"
+    - "ImportError"
+    - "SyntaxError"
           </pre>
-          <p>When matched, immediately signals the central <code>EventManager</code>.</p>
+          <p>Matching lines within <code>incident_debounce_seconds</code> are one incident: a whole traceback reaches the <code>EventManager</code> as a single error.</p>
         </div>
       </div>
     </div>
@@ -139,13 +146,13 @@ DEFAULT_ERROR_PATTERNS = [
                 <li>HTTP 5xx Server Error</li>
                 <li>Connection refused / dropped socket</li>
                 <li>Timeout (target unresponsive)</li>
-                <li>👉 <em>Triggers the Wisdom Loop automatically!</em></li>
+                <li>&rarr; <em>Triggers the Wisdom Loop automatically!</em></li>
               </ul>
             </li>
             <li><strong>Soft Signal (Suggestion):</strong>
               <ul>
                 <li>HTTP 4xx (e.g. 404 Not Found, missing route)</li>
-                <li>👉 <em>Surfaced on dashboard for humans. NEVER patched automatically!</em></li>
+                <li>&rarr; <em>Surfaced on dashboard for humans. NEVER patched automatically!</em></li>
               </ul>
             </li>
           </ul>
@@ -158,8 +165,9 @@ DEFAULT_ERROR_PATTERNS = [
 target:
   service_url: "http://demo_app:5000"
   probe_interval_seconds: 3
-  probe_urls: ["/", "/healthz"]
+  probe_urls: ["/", "/healthz", "/api/missing-route"]
           </pre>
+          <p>The last one answers 404 on purpose: a suggestion. A dead target (refused, timed out) is one <em>target-unreachable</em> event, not one per URL.</p>
           <p>Inside Compose the agent uses <code>http://demo_app:5000</code>; host-run commands use <code>TARGET_URL=http://127.0.0.1:5001</code>.</p>
           <p>Reports response time in milliseconds for the dashboard latency monitor.</p>
         </div>
@@ -180,11 +188,12 @@ target:
             <li>Computes SHA-256 fingerprint: <code>SHA256(source + type + raw_key)</code>.</li>
             <li>Maintains sliding-window timestamp cache:
               <ul>
-                <li><strong>Crash window:</strong> 60 seconds (sliding, <code>crash_dedup_window_seconds</code>)</li>
+                <li><strong>Crash window:</strong> 90 seconds (sliding, <code>crash_dedup_window_seconds</code>) &mdash; longer than Docker's 60 s maximum restart backoff, so a long crash loop stays one event (at least 330 s in GitOps mode: Kubernetes backs off up to 300 s)</li>
                 <li><strong>Suggestion window:</strong> 300 seconds (<code>suggestion_dedup_window_seconds</code>)</li>
               </ul>
             </li>
             <li>Duplicate events within the window increment a counter (<code>x3</code>) instead of generating new notifications.</li>
+            <li>An incident ends once the target serves again, or when a heal is verified: the same crash planted again is a new event.</li>
           </ul>
         </div>
       </div>
@@ -202,7 +211,7 @@ target:
           <li><code>GET /api/observer/status</code>: Container health, Docker state, HTTP latency.</li>
           <li><code>GET /api/observer/logs</code>: Snapshot of the recent ring buffer logs.</li>
           <li><code>GET /api/observer/events</code>: List of deduplicated incident events.</li>
-          <li><code>GET /api/observer/stream</code>: <strong>Server-Sent Events (SSE)</strong> real-time event pipeline streaming directly into the browser terminal.</li>
+          <li><code>GET /api/observer/stream</code> (also <code>GET /events</code>): <strong>Server-Sent Events (SSE)</strong> &mdash; log lines, crash events and heartbeats, straight into the browser terminal.</li>
         </ul>
       </div>
       <div class="defense-tip">
@@ -221,7 +230,7 @@ target:
           <li><strong>Q: Why are 4xx errors not automatically patched?</strong><br>
               A: Subject specification: 4xx indicates a missing feature or client error (soft suggestion), not a service crash. Only hard failures trigger automated code repair.</li>
           <li><strong>Q: How is log flooding prevented?</strong><br>
-              A: Sliding-window deduplication in <code>event_manager.py</code> groups recurring signatures over a sliding window (60 s by default, <code>iow.config.yml</code>).</li>
+              A: Sliding-window deduplication in <code>event_manager.py</code> groups recurring signatures over a sliding window (90 s for crashes, 300 s for suggestions, both in <code>iow.config.yml</code>).</li>
         </ul>
       </div>
     </div>

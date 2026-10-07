@@ -56,6 +56,10 @@ LIVE_LISTS: Tuple[Tuple[str, List[str]], ...] = (
     ("probe_urls", ["/", "/healthz"]),
     ("error_patterns", list(DEFAULT_ERROR_PATTERNS)),
 )
+# (section, key, allowed values, default)
+LIVE_CHOICES: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
+    ("analyst", "patch_strategy", ("region", "full_file"), "region"),
+)
 
 
 @dataclass
@@ -83,6 +87,7 @@ class SafetyManager:
         self.config_path = os.path.abspath(config_path or DEFAULT_CONFIG_PATH)
         self._last_mtime: float = -1.0
         self._failed_mtime: float = -1.0
+        self._missing_reported = False
         self._config: Dict[str, Any] = self._load_defaults()
         self._raw: Dict[str, Any] = {}
         # Bumped on every successful (re)load, so other readers of the file's sections
@@ -188,8 +193,15 @@ class SafetyManager:
     def reload_config(self) -> Dict[str, Any]:
         """Reads iow.config.yml when it changed on disk, without restarting the agent."""
         if not os.path.isfile(self.config_path):
-            logger.warning(f"Configuration file not found at {self.config_path}. Using defaults.")
+            # Once per disappearance: every status poll asks, and each used to warn again.
+            if not self._missing_reported:
+                logger.warning(
+                    f"Configuration file not found at {self.config_path} - keeping the current "
+                    "values (the defaults until a file has been read)."
+                )
+                self._missing_reported = True
             return self._config
+        self._missing_reported = False
 
         try:
             mtime = os.path.getmtime(self.config_path)
@@ -413,7 +425,7 @@ class SafetyManager:
         return float(self.reload_config().get("boot_timeout", 45.0))
 
     def read_live_settings(self, previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """The live target:/analyst: settings (LIVE_SETTINGS, LIVE_LISTS), validated.
+        """The live target:/analyst: settings (LIVE_SETTINGS, LIVE_LISTS, LIVE_CHOICES), validated.
 
         An unusable value keeps the previous one (the default at start-up) - it used to
         raise in the dashboard's constructor, so one typo stopped the agent from starting.
@@ -446,6 +458,17 @@ class SafetyManager:
                 logger.warning(
                     "iow.config.yml: 'target.%s' must be a non-empty list of strings - keeping %r",
                     key, keep,
+                )
+                settings[key] = keep
+        for section, key, allowed, choice in LIVE_CHOICES:
+            raw = sections[section].get(key, choice)
+            if isinstance(raw, str) and raw.strip().lower() in allowed:
+                settings[key] = raw.strip().lower()
+            else:
+                keep = fallback.get(key, choice)
+                logger.warning(
+                    "iow.config.yml: '%s.%s: %r' must be one of %s - keeping %r",
+                    section, key, raw, ", ".join(allowed), keep,
                 )
                 settings[key] = keep
         return settings

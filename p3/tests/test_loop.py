@@ -8,6 +8,7 @@ import unittest
 from typing import List, Optional
 
 from p3.tests.helpers import TempRepo
+from p1.docker_monitor import ContainerState
 from p1.event_manager import ObserverEvent
 from p2.diagnostician import DiagnosticReport
 from p3.git_manager import GitManager
@@ -228,6 +229,31 @@ class WisdomLoopTests(unittest.TestCase):
         self.assertEqual(self.repo.read("demo_app/app.py"), "OPERATOR = 'reset by hand'\n")
         self.assertIsNone(self.gm.interrupted_cycle())
 
+    def test_an_unexpected_error_rolls_back_and_redeploys_through_the_verifier(self) -> None:
+        """A bare container restart here never published the rewound branch in GitOps mode,
+        so the cluster kept the unverified patch."""
+        self.repo.write("demo_app/app.py", self.repo.read("demo_app/app.py").replace(
+            "from flask import Flask", "# from flask import Flask"))  # planted, uncommitted
+        before = self.repo.snapshot_files()
+
+        class Exploding(FakeVerifier):
+            def restart_and_verify(self, grace_period: float = 20.0, progress_callback=None, replay=None):
+                if self.calls == 0:
+                    self.calls += 1
+                    raise RuntimeError("daemon went away mid-redeploy")
+                return super().restart_and_verify(grace_period, progress_callback, replay)
+
+        verifier = Exploding([False])
+        record = self._loop(FakePatcher([_fixed(self.repo, "a1")]), verifier).execute_heal(
+            _crash(), grace_period=0.0
+        )
+        self.assertEqual(record.status, "rolled_back")
+        self.assertIn("daemon went away", record.failure_reason or "")
+        self.assertEqual(self.repo.snapshot_files(), before)
+        self.assertEqual(verifier.calls, 2)                         # the redeploy after the rollback
+        self.assertEqual((record.post_rollback or {}).get("target_up"), False)
+        self.assertIsNone(self.gm.interrupted_cycle())
+
     def test_refused_patch_is_never_written(self) -> None:
         before = self.repo.snapshot_files()
         patcher = FakePatcher(["pass\n", "pass\n", "pass\n"])     # a stub every time
@@ -293,6 +319,41 @@ class WisdomLoopTests(unittest.TestCase):
         self.assertEqual(self.repo.snapshot_files(), before)
         self.assertEqual(self.gm.get_branch_tip("iow/auto-heal"), tip)
         self.assertFalse(self._loop(FakePatcher([]), verifier).is_active())
+
+    def test_a_target_stopped_on_purpose_is_never_patched(self) -> None:
+        """Seen live: after a `docker stop` the model replaced the healthcheck and 'healed'."""
+        class Stopped(FakeDocker):
+            def inspect(self):
+                return ContainerState(name="t", status="exited", exit_code=0, stopped=True,
+                                      error_reason="Stopped (exit code 0) - not crashed")
+
+        before = self.repo.snapshot_files()
+        diag = FakeDiagnostician()
+        verifier = FakeVerifier([True])
+        loop = self._loop(FakePatcher([_fixed(self.repo, "x")]), verifier, diag)
+        loop.docker_monitor = Stopped()  # type: ignore[assignment]
+        record = loop.execute_heal(_crash(), grace_period=0.0)
+        self.assertEqual(record.status, "refused")
+        self.assertIn("Nothing to patch", record.failure_reason or "")
+        self.assertEqual((diag.logs, verifier.calls), ([], 0))       # no model, no restart
+        self.assertEqual(self.repo.snapshot_files(), before)
+        self.assertFalse(loop.is_active())
+
+    def test_a_human_decision_on_a_review_pr_shows_on_its_cycle(self) -> None:
+        """Seen live: an approved and verified review stayed 'awaiting_review' in the history."""
+        loop = self._loop(FakePatcher([]), FakeVerifier([True]))
+        waiting = loop.record_refused_cycle(
+            _crash(), "sent for review", status="awaiting_review",
+            review_pr="pr-abc", pre_loop_hash="base123",
+        )
+        other = loop.record_refused_cycle(_crash(), "withheld")
+        self.assertEqual(waiting.pre_loop_hash, "base123")
+        self.assertIsNone(loop.resolve_review("pr-unknown", "healed", "x"))
+        self.assertIs(loop.resolve_review("pr-abc", "healed", "Approved and verified"), waiting)
+        self.assertEqual((waiting.status, waiting.failure_reason), ("healed", "Approved and verified"))
+        self.assertEqual(waiting.to_dict()["review_pr"], "pr-abc")
+        self.assertEqual(other.status, "refused")
+        self.assertIsNone(loop.resolve_review("pr-abc", "refused", "again"))   # decided once
 
     def test_commit_message_is_generated_from_the_diagnosis(self) -> None:
         diag = DiagnosticReport(success=True, summary="Bad PORT env var. It is not an int.", files=["x"])

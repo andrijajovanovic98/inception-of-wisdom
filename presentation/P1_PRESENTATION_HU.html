@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Part 1: Observer - Inception of Wisdom</title>
+  <title>Part 1: Observer &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -25,6 +25,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -49,7 +50,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Part 1</span>
-      <span>Observer Részletes Védési Prezentáció - Inception of Wisdom</span>
+      <span>Observer Részletes Védési Prezentáció &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
   </header>
@@ -59,12 +60,12 @@
     <!-- Slide 1 -->
     <div class="slide active">
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">MEGFIGYELÉS FÁZIS</span>
-      <h1>Part 1: Observer - A Szenzoros Idegrendszer</h1>
+      <h1>Part 1: Observer &mdash; A Szenzoros Idegrendszer</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
         Az Observer feladata a célkonténer életciklusának folyamatos monitorozása, a stdout/stderr logok valós idejű követése, HTTP szondák futtatása, a hibajelzések osztályozása és a hibaesemények deduplikációja.
       </p>
       <div class="highlight-box">
-        <strong>Subject Előírás:</strong> "Observe: figyeli a Docker eseményeket, szinte valós időben streameli a logokat, HTTP végpontokat tesztel, és az eseményeket egyetlen incidenssé vonja össze."
+        <strong>Subject (V.1, fordítás):</strong> "A konténer oldal jelenti a cél aktuális állapotát (running, restarting, exited), szinte valós időben streameli a standard kimenetét és hibakimenetét, és crash eseményt kelt, valahányszor a konténer nem-nulla státusszal kilép, restart loopba kerül, vagy olyan sort ír, amely illeszkedik a hibaminták konfigurálható listájára."
       </div>
     </div>
 
@@ -74,25 +75,28 @@
       <div class="grid-2">
         <div class="card">
           <h3>Socket Kommunikáció</h3>
-          <p>A <code>/var/run/docker.sock</code> csatolásával az ágens közvetlenül a host Docker démonját kérdezi le a Python <code>docker</code> SDK-val.</p>
+          <p>A démon socketje (<code>$DOCKER_SOCK</code>, a konténerben <code>/var/run/docker.sock</code>) a Python <code>docker</code> SDK-n át adja az ágensnek a host Docker motorját.</p>
           <ul>
-            <li>Nem-nulla exit code: <code>status == "exited" and exit_code != 0</code></li>
-            <li>Crash loop észrevétele: <code>status == "restarting"</code> számlálóval</li>
-            <li>Halott konténer: <code>c_state.get("Dead") or c_state.get("OOMKilled")</code></li>
+            <li>Nem-nulla exit: az eseményfolyam <code>die</code> eseménye az <code>exitCode</code>-dal &mdash; <code>restart: unless-stopped</code> mellett az exited állapot ezredmásodpercekig tart, lekérdezéssel nem látszik. A saját újraindításunk <code>kill</code>-je pontosan egy kilépést magyaráz.</li>
+            <li>Restart loop: 60 mp-en belül növekvő újraindítás-számláló, vagy <code>restarting</code>-ben beragadt konténer.</li>
+            <li>Halott konténer: <code>State.Dead</code>, <code>State.OOMKilled</code> és az <code>oom</code> esemény.</li>
+            <li>Szándékos leállítás: <code>docker stop</code> / <code>kill</code> után a konténer exited marad, a restart policy nem indítja újra; <code>docker pause</code> után paused. Az Observer jelzi a kiesést, de javítás nem indul &mdash; nincs mit javítani a kódban.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Konténer Újraindítás</h3>
           <p>A <code>DockerMonitor</code> ellenálló újraindító primitívet nyújt:</p>
           <pre>
-def restart_container(self, timeout=10):
+def restart_target(self, timeout=10):
     container = client.containers.get(self.container_name)
+    if container.status == "running":
+        self.mark_deliberate()  # a saját leállításunk nem crash
     container.restart(timeout=timeout)
     return True
           </pre>
           <div class="defense-tip">
             <strong>Értékelői Kérdés:</strong> "Mi történik, ha a Docker démon újraindul?"<br>
-            <strong>Válasz:</strong> A <code>DockerMonitor</code> elkapja az API hibákat, és automatikusan újracsatlakozik anélkül, hogy az ágens összeomlana.
+            <strong>Válasz:</strong> az ágens tovább válaszol; a cél állapota <code>daemon_unavailable</code> (nem crash), kiesésenként egy figyelmeztetés kerül a logba, és az eseményfolyam az utoljára kezelt eseménytől folytatódik &mdash; nem vész el és nem ismétlődik crash.
           </div>
         </div>
       </div>
@@ -105,23 +109,26 @@ def restart_container(self, timeout=10):
         <div class="card">
           <h3>Stream Ciklus és Körpuffer</h3>
           <ul>
-            <li>Követi a <code>container.logs(stream=True, follow=True)</code> folyamot egy háttérszálban.</li>
-            <li>500 soros szálbiztos körpuffert kezel (<code>collections.deque(maxlen=500)</code>).</li>
-            <li>Server-Sent Events (SSE) csatornán keresztül azonnal elküldi a sorokat a dashboardnak.</li>
+            <li>Követi a <code>container.logs(stream=True, follow=True, timestamps=True)</code> folyamot egy háttérszálban, amely minden újraindulás után újracsatlakozik.</li>
+            <li>Az ágens indulása vagy egy szándékos újraindítás előtt logolt sorok múltnak számítanak: a log saját időbélyegei alapján soha nem váltanak ki crash-t.</li>
+            <li>500 soros szálbiztos körpuffer; a tracebackek megtartják a behúzásukat.</li>
+            <li>Server-Sent Events (SSE) csatornán minden sor azonnal a dashboardra kerül.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Regex Hibaminta Illesztés</h3>
-          <p>Minden sort összevet a kompilált mintákkal:</p>
+          <p>Minden sort összevet a konfigurálható mintákkal (élőben az <code>iow.config.yml</code>-ből):</p>
           <pre>
-DEFAULT_ERROR_PATTERNS = [
-    r"Traceback \(most recent call last\):",
-    r"CRITICAL:",
-    r"Error:",
-    r"Exception:"
-]
+target:
+  error_patterns:
+    - "Traceback \\(most recent call last\\):"
+    - "CRITICAL:"
+    - "\\w*(?:Error|Exception):"
+    - "ModuleNotFoundError"
+    - "ImportError"
+    - "SyntaxError"
           </pre>
-          <p>Találat esetén azonnal jelzést küld a központi <code>EventManager</code>-nek.</p>
+          <p>Az <code>incident_debounce_seconds</code>-on belül illeszkedő sorok egy incidenst alkotnak: egy teljes traceback egyetlen hibaként jut az <code>EventManager</code>-hez.</p>
         </div>
       </div>
     </div>
@@ -139,13 +146,13 @@ DEFAULT_ERROR_PATTERNS = [
                 <li>HTTP 5xx Server Error</li>
                 <li>Connection refused / megszakadt kapcsolat</li>
                 <li>Timeout (nem válaszoló célalkalmazás)</li>
-                <li>👉 <em>Automatikusan elindítja a Wisdom Loop öngyógyítást!</em></li>
+                <li>&rarr; <em>Automatikusan elindítja a Wisdom Loop öngyógyítást!</em></li>
               </ul>
             </li>
             <li><strong>Soft Signal (Szuggesztió):</strong>
               <ul>
                 <li>HTTP 4xx (pl. 404 Not Found, hiányzó route)</li>
-                <li>👉 <em>Csak megjelenik a dashboardon az ember számára. SOHA nem javítja automatikusan!</em></li>
+                <li>&rarr; <em>Csak megjelenik a dashboardon az ember számára. SOHA nem javítja automatikusan!</em></li>
               </ul>
             </li>
           </ul>
@@ -158,8 +165,9 @@ DEFAULT_ERROR_PATTERNS = [
 target:
   service_url: "http://demo_app:5000"
   probe_interval_seconds: 3
-  probe_urls: ["/", "/healthz"]
+  probe_urls: ["/", "/healthz", "/api/missing-route"]
           </pre>
+          <p>Az utolsó szándékosan 404-et ad: szuggesztió. Egy halott cél (elutasított kapcsolat, timeout) egyetlen <em>target-unreachable</em> esemény, nem URL-enként egy.</p>
           <p>Compose-on belül az ágens a <code>http://demo_app:5000</code> címet használja; hoston futtatva a cím <code>TARGET_URL=http://127.0.0.1:5001</code>.</p>
           <p>Késleltetést mér milliszekundumban a felület számára.</p>
         </div>
@@ -180,11 +188,12 @@ target:
             <li>SHA-256 ujjlenyomat: <code>SHA256(forras + tipus + kulcs)</code>.</li>
             <li>Csúszóablakos időbélyeg cache:
               <ul>
-                <li><strong>Crash ablak:</strong> 60 másodperc (csúszó, <code>crash_dedup_window_seconds</code>)</li>
+                <li><strong>Crash ablak:</strong> 90 másodperc (csúszó, <code>crash_dedup_window_seconds</code>) &mdash; hosszabb a Docker 60 mp-es maximális restart-várakozásánál, így egy hosszú crash loop egy esemény marad (GitOps módban legalább 330 mp: a Kubernetes akár 300 mp-et vár két újraindítás között)</li>
                 <li><strong>Szuggesztió ablak:</strong> 300 másodperc (<code>suggestion_dedup_window_seconds</code>)</li>
               </ul>
             </li>
             <li>Az ablakon belül érkező duplikátumok egy számlálót léptetnek (<code>x3</code>) új esemény dobása helyett.</li>
+            <li>Az incidens véget ér, amint a cél újra kiszolgál, vagy egy javítás verifikált: ugyanaz a hiba újra elültetve új esemény.</li>
           </ul>
         </div>
       </div>
@@ -202,7 +211,7 @@ target:
           <li><code>GET /api/observer/status</code>: Konténer állapot, Docker státusz, HTTP késleltetés.</li>
           <li><code>GET /api/observer/logs</code>: A körpuffer legutóbbi sorainak pillanatképe.</li>
           <li><code>GET /api/observer/events</code>: A deduplikált incidensek listája.</li>
-          <li><code>GET /api/observer/stream</code>: <strong>Server-Sent Events (SSE)</strong> folyamatos adatfolyam a webes terminálhoz.</li>
+          <li><code>GET /api/observer/stream</code> (vagy <code>GET /events</code>): <strong>Server-Sent Events (SSE)</strong> &mdash; logsorok, crash események és heartbeat a webes terminálhoz.</li>
         </ul>
       </div>
       <div class="defense-tip">
@@ -221,7 +230,7 @@ target:
           <li><strong>K: Miért nem javítja automatikusan a 4xx hibákat?</strong><br>
               V: Subject előírás: a 4xx funkcionális hiányosságot vagy klienshibát jelent, nem pedig rendszerszintű összeomlást. Csak a hard hibák aktiválják az öngyógyítást.</li>
           <li><strong>K: Hogyan akadályozod meg az eseményáradatot?</strong><br>
-              V: Az <code>event_manager.py</code> csúszóablakos deduplikációja SHA-256 ujjlenyomat alapján a csúszó ablakon (alapból 60 másodperc) belül egyetlen incidenssé vonja össze az ismétlődő hibákat.</li>
+              V: Az <code>event_manager.py</code> csúszóablakos deduplikációja SHA-256 ujjlenyomat alapján a csúszó ablakon belül (crash: 90 mp, szuggesztió: 300 mp, mindkettő az <code>iow.config.yml</code>-ben) egyetlen incidenssé vonja össze az ismétlődő hibákat.</li>
         </ul>
       </div>
     </div>

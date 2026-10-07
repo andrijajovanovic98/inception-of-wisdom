@@ -106,6 +106,19 @@ class SanityTests(unittest.TestCase):
         dropped = self.original.replace("import os\n", "")
         self.assertRefused(_patch(FilePatch("demo_app/app.py", "modify", dropped)), "leaves os undefined")
 
+    def test_a_value_set_on_some_paths_only_is_refused(self) -> None:
+        """J7: the value read where it may not be set yet - a NameError after the redeploy."""
+        guarded = self.original + (
+            '\nif __name__ == "__main__":\n'
+            '    if "PORT" in os.environ:\n'
+            '        port = int(os.environ["PORT"])\n'
+            '    print(port)\n'
+        )
+        self.assertRefused(_patch(FilePatch("demo_app/app.py", "modify", guarded)), "reads port on line")
+        defaulted = guarded.replace('    if "PORT"', '    port = 5000\n    if "PORT"')
+        result = self.gate.check_patch(_patch(FilePatch("demo_app/app.py", "modify", defaulted)))
+        self.assertTrue(result.passed, result.reasons)
+
     def test_a_partial_fix_of_an_already_broken_file_passes(self) -> None:
         broken = self.original.replace("from flask import Flask", "# from flask import Flask")
         self.repo.write("demo_app/app.py", broken)

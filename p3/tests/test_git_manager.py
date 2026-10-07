@@ -126,5 +126,49 @@ class GitManagerTests(unittest.TestCase):
         self.assertEqual(self.gm.snapshot_pre_loop(), healed.commit_hash)
 
 
+MANIFEST = "k8s/demo-app/deployment.yaml"
+
+
+class ManifestStampTests(unittest.TestCase):
+    """GitOps: every commit the agent makes stamps the pod template with the code's tree
+    hash, so the commit alone is the redeploy - Argo CD rolls the pod."""
+
+    def setUp(self) -> None:
+        self.repo = TempRepo()
+        self.repo.write(MANIFEST, 'spec:\n  template:\n    metadata:\n      annotations:\n'
+                                  '        iow.42/source: "unstamped"\n')
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-qm", "manifest")
+        self.head = self.repo.git("rev-parse", "HEAD")
+        self.gm = GitManager(repo_dir=self.repo.path)
+        self.gm.manifest_stamp = MANIFEST
+
+    def tearDown(self) -> None:
+        self.repo.cleanup()
+
+    def _code(self, revision: str) -> str:
+        return self.repo.git("rev-parse", f"{revision}:demo_app")
+
+    def test_heal_and_snapshot_commits_carry_their_code_and_the_tree_does_not(self) -> None:
+        self.repo.write("demo_app/app.py", "BROKEN = 1\n")              # planted bug
+        pre = self.gm.snapshot_pre_loop()
+        self.assertEqual(self.gm.source_stamp(pre), self._code(pre))
+        healed = self.gm.apply_patch_atomically(_patch(FilePatch("demo_app/app.py", "modify", "OK = 1\n")))
+        assert healed.commit_hash
+        self.assertEqual(self.gm.source_stamp(healed.commit_hash), self._code(healed.commit_hash))
+        self.assertNotEqual(self.gm.source_stamp(healed.commit_hash), self.gm.source_stamp(pre))
+        self.assertIn('"unstamped"', self.repo.read(MANIFEST))            # only commits are stamped
+        self.assertEqual(self.repo.git("status", "--short", MANIFEST), "")
+        self.assertTrue(self.gm.rollback_to_pre_loop())                    # rewound: the old stamp
+        self.assertEqual(self.gm.source_stamp("iow/auto-heal"), self._code(pre))
+
+    def test_a_clean_tree_is_still_head_and_docker_mode_stamps_nothing(self) -> None:
+        self.assertEqual(self.gm.snapshot_pre_loop(), self.head)
+        self.assertEqual(self.gm.source_stamp(self.head), "unstamped")
+        plain = GitManager(repo_dir=self.repo.path)
+        commit = plain.apply_patch_atomically(_patch(FilePatch("demo_app/app.py", "modify", "X = 1\n")))
+        self.assertIn('"unstamped"', self.repo.git("show", f"{commit.commit_hash}:{MANIFEST}"))
+
+
 if __name__ == "__main__":
     unittest.main()

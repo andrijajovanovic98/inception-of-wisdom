@@ -10,6 +10,7 @@ import unittest
 from typing import List, Optional, Tuple
 
 from p2.diagnostician import DiagnosticReport
+from p3.exits import stops_in_a_new_way
 from p3.patcher import CodePatcher
 
 BIG_APP = "\n".join(
@@ -102,11 +103,107 @@ class PatcherTests(unittest.TestCase):
         self.assertEqual(len(patcher.prompts), 2)
         self.assertIn("IDENTICAL TO THE REGION", patcher.prompts[1])
         self.assertIn("from flask import Flask, jsonify\n\napp", patch.files[0].content)
-        # Unchanged twice: handed on as it is - the sanity gate refuses a no-op.
-        stubborn = ScriptedPatcher(self.dir, ["```python\n" + unchanged + "```\n"] * 2)
+        # Unchanged every time: handed on as it is - the sanity gate refuses a no-op.
+        stubborn = ScriptedPatcher(self.dir, ["```python\n" + unchanged + "```\n"] * 3)
         again = stubborn.generate_patch(_diag(), NAME_ERROR)
-        self.assertEqual(len(stubborn.prompts), 2)
+        self.assertEqual(len(stubborn.prompts), 3)
         self.assertEqual(again.files[0].content, BIG_APP if BIG_APP.endswith("\n") else BIG_APP + "\n")
+
+    def test_a_fix_that_only_moves_the_crash_is_asked_for_again(self) -> None:
+        """Seen live on `make break-env`: 4 of 6 rewrites of the startup block added exit(1) or
+        raise ValueError, or started the server only when the variable was set."""
+        app = BIG_APP.replace('int(os.environ.get("PORT", 5000))', 'int(os.environ["IOW_DEMO_PORT"])')
+        self._write("demo_app/app.py", app)
+        log = (
+            "Traceback (most recent call last):\n"
+            f'  File "/app/app.py", line {len(app.splitlines())}, in <module>\n'
+            "KeyError: 'IOW_DEMO_PORT'\n"
+        )
+        main = 'if __name__ == "__main__":\n'
+        exits = main + '    if "IOW_DEMO_PORT" not in os.environ:\n        exit(1)\n' \
+            '    app.run(port=int(os.environ["IOW_DEMO_PORT"]))\n'
+        guarded = main + '    if "IOW_DEMO_PORT" in os.environ:\n' \
+            '        app.run(port=int(os.environ["IOW_DEMO_PORT"]))\n'
+        fixed = main + '    app.run(port=int(os.environ.get("IOW_DEMO_PORT", 5000)))\n'
+        answers = [f"SUMMARY: x\n```python\n{body}```\n" for body in (exits, guarded, fixed)]
+        patcher = ScriptedPatcher(self.dir, answers)
+        patch = patcher.generate_patch(_diag(), log)
+        self.assertTrue(patch.success, patch.error_message)
+        self.assertEqual(len(patcher.prompts), 3)
+        self.assertIn("adds exit()", patcher.prompts[1])
+        self.assertIn("app.run(...) no longer runs every time", patcher.prompts[2])
+        self.assertIn('os.environ.get("IOW_DEMO_PORT", 5000)', patch.files[0].content)
+        # Still stopping after every ask: refused before it costs a redeploy.
+        stubborn = ScriptedPatcher(self.dir, [answers[0]] * 3)
+        refused = stubborn.generate_patch(_diag(), log)
+        self.assertFalse(refused.success)
+        self.assertIn("does not fix the crash", refused.error_message or "")
+
+    def test_a_fix_that_reads_a_value_it_may_not_set_is_asked_for_again(self) -> None:
+        """J7: one rewrite of the break-env startup block set `port` only when the variable
+        was there - a NameError that only verification found, after a redeploy."""
+        app = BIG_APP.replace('int(os.environ.get("PORT", 5000))', 'int(os.environ["IOW_DEMO_PORT"])')
+        self._write("demo_app/app.py", app)
+        log = (
+            "Traceback (most recent call last):\n"
+            f'  File "/app/app.py", line {len(app.splitlines())}, in <module>\n'
+            "KeyError: 'IOW_DEMO_PORT'\n"
+        )
+        main = 'if __name__ == "__main__":\n'
+        only_if = main + '    if "IOW_DEMO_PORT" in os.environ:\n' \
+            '        port = int(os.environ["IOW_DEMO_PORT"])\n    app.run(port=port)\n'
+        fixed = main + '    app.run(port=int(os.environ.get("IOW_DEMO_PORT", 5000)))\n'
+        answers = [f"SUMMARY: x\n```python\n{body}```\n" for body in (only_if, fixed)]
+        patcher = ScriptedPatcher(self.dir, answers)
+        patch = patcher.generate_patch(_diag(), log)
+        self.assertTrue(patch.success, patch.error_message)
+        self.assertEqual(len(patcher.prompts), 2)
+        self.assertIn("WOULD FAIL WITH A NameError", patcher.prompts[1])
+        self.assertIn("reads port on line", patcher.prompts[1])
+        self.assertIn('os.environ.get("IOW_DEMO_PORT", 5000)', patch.files[0].content)
+
+    def test_full_file_strategy_has_the_model_write_the_whole_json_patch(self) -> None:
+        """analyst.patch_strategy: full_file (J1) - no region, even in a large file."""
+        full = BIG_APP.replace("# from flask import Flask, jsonify", "from flask import Flask, jsonify")
+        answer = {"summary": "restore the import",
+                  "files": [{"path": "demo_app/app.py", "op": "modify", "content": full}]}
+        patcher = ScriptedPatcher(self.dir, [json.dumps(answer)])
+        patcher.patch_strategy = "full_file"
+        patch = patcher.generate_patch(_diag(), NAME_ERROR)
+        self.assertTrue(patch.success, patch.error_message)
+        self.assertEqual(patch.strategy, "full-file")
+        self.assertIn("CURRENT SOURCE CODE", patcher.prompts[0])
+        self.assertIn("def route_11", patcher.prompts[0])
+        self.assertEqual(patch.files[0].content, full)
+
+    def test_a_full_file_fix_that_raises_is_retried_then_refused(self) -> None:
+        self._write("demo_app/app.py", "import os\nport = int(os.environ['P'])\nprint(port)\n")
+        stopping = "import os\nif 'P' not in os.environ:\n    raise SystemExit(1)\n" \
+            "port = int(os.environ['P'])\nprint(port)\n"
+        answer = {"summary": "x", "files": [{"path": "demo_app/app.py", "op": "modify", "content": stopping}]}
+        patcher = ScriptedPatcher(self.dir, [json.dumps(answer)] * 2)
+        patch = patcher.generate_patch(_diag(), "KeyError: 'P'\n")
+        self.assertFalse(patch.success)
+        self.assertEqual(len(patcher.prompts), 2)
+        self.assertIn("adds raise", patcher.prompts[1])
+        self.assertIn("does not fix the crash", patch.error_message or "")
+
+    def test_the_retry_of_a_cut_off_file_keeps_the_goal_and_the_facts(self) -> None:
+        """Q3: the stricter retry rebuilt its prompt without them."""
+        small = "import os\n" + "".join(f"X{i} = {i}\n" for i in range(12)) + "PORT = int(os.environ['P'])\n"
+        self._write("demo_app/app.py", small)
+        cut = {"summary": "x",
+               "files": [{"path": "demo_app/app.py", "op": "modify", "content": "import os\n"}]}
+        whole = {"summary": "x", "files": [{"path": "demo_app/app.py", "op": "modify",
+                                            "content": small.replace("['P']", ".get('P', 5000)")}]}
+        patcher = ScriptedPatcher(self.dir, [json.dumps(cut), json.dumps(whole)])
+        facts = "\nFACT (read from the target's container): the service is reached on port 5000.\n"
+        patch = patcher.generate_patch(_diag(), "KeyError: 'P'\n", goal="the service must start", facts=facts)
+        self.assertTrue(patch.success, patch.error_message)
+        self.assertIn("cut off", patcher.prompts[1])
+        for prompt in patcher.prompts:
+            self.assertIn("the service must start", prompt)
+            self.assertIn("reached on port 5000", prompt)
 
     def test_echoed_fence_lines_are_stripped_from_the_region(self) -> None:
         fixed = (
@@ -207,7 +304,7 @@ class PatcherTests(unittest.TestCase):
         patcher = ScriptedPatcher(self.dir, [json.dumps(answer)])
         patch = patcher.generate_patch(_diag(), NAME_ERROR)
         self.assertTrue(patch.success)
-        self.assertIsNone(patch.strategy)
+        self.assertEqual(patch.strategy, "full-file")
         self.assertIn("CURRENT SOURCE CODE", patcher.prompts[0])
 
     def test_diffs_are_rejected(self) -> None:
@@ -229,6 +326,28 @@ class PatcherTests(unittest.TestCase):
         }
         patch = ScriptedPatcher(self.dir, [json.dumps(answer)]).generate_patch(_diag(), NAME_ERROR)
         self.assertEqual((patch.files[0].path, patch.files[0].op), ("demo_app/app.py", "modify"))
+
+
+class StopsInANewWayTests(unittest.TestCase):
+    MAIN = 'import os\nif __name__ == "__main__":\n    log("start")\n    app.run(port=PORT)\n'
+
+    def test_a_fix_that_keeps_the_program_running_passes(self) -> None:
+        guarded = self.MAIN.replace("    app.run", "    try:\n        app.run").replace(
+            "(port=PORT)\n", "(port=PORT)\n    except OSError:\n        log('busy')\n")
+        self.assertIsNone(stops_in_a_new_way(self.MAIN, guarded))     # try still always runs
+        quiet = self.MAIN.replace('    log("start")\n', '    if DEBUG:\n        log("start")\n')
+        self.assertIsNone(stops_in_a_new_way(self.MAIN, quiet))       # only the last call counts
+        before = "def f():\n    raise RuntimeError('x')\n"
+        self.assertIsNone(stops_in_a_new_way(before, "def f():\n    return 1\n"))
+        self.assertIsNone(stops_in_a_new_way("def f(:\n", "def f(): raise X\n"))  # syntax check's job
+
+    def test_a_new_stop_or_a_service_that_may_not_start_is_reported(self) -> None:
+        self.assertIn("adds sys.exit()", stops_in_a_new_way(
+            self.MAIN, self.MAIN.replace('    log("start")\n', '    sys.exit(1)\n')) or "")
+        self.assertIn("adds raise", stops_in_a_new_way(
+            self.MAIN, self.MAIN.replace('    log("start")\n', '    raise ValueError("no")\n')) or "")
+        gone = "import os\nlog('start')\n"
+        self.assertIn("app.run(...) no longer runs", stops_in_a_new_way(self.MAIN, gone) or "")
 
 
 if __name__ == "__main__":

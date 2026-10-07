@@ -68,6 +68,8 @@ class ContainerState:
     is_crash: bool = False
     error_reason: Optional[str] = None
     timestamp: float = 0.0
+    # Down, but not crashed: someone stopped or paused it. No code change can fix that.
+    stopped: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -190,8 +192,28 @@ class DockerMonitor:
             is_crash = False
             error_reason = None
 
+            # Stopped on purpose. Under a policy that restarts crashed containers (always /
+            # unless-stopped) Docker marks a crash 'restarting' before it even reports the
+            # exit, and leaves only a stopped container exited - `docker stop` (exit 0) and
+            # `docker kill` (exit 137) alike (measured). The outage is real, but no code
+            # change can end it: healed anyway, the model rewrote working routes (seen live).
+            policy = str(((attrs.get("HostConfig") or {}).get("RestartPolicy") or {}).get("Name") or "")
+            stopped = status == "paused" or (
+                status == "exited" and (exit_code == 0 or policy in ("always", "unless-stopped"))
+            )
+            if status == "paused":
+                error_reason = (
+                    f"Paused (docker pause) - not a crash; `docker unpause {self.container_name}` "
+                    "resumes it"
+                )
+            elif stopped:
+                error_reason = (
+                    f"Stopped (exit code {exit_code}) and not restarted by its restart policy: stopped "
+                    f"on purpose, not crashed; `docker start {self.container_name}` brings it back"
+                )
+
             # Crash condition 1: container exited with a non-zero exit code
-            if status == "exited" and exit_code != 0:
+            elif status == "exited" and exit_code != 0:
                 is_crash = True
                 error_reason = f"Container terminated with non-zero exit code {exit_code}"
 
@@ -235,7 +257,8 @@ class DockerMonitor:
                 restart_count=restart_count,
                 is_crash=is_crash,
                 error_reason=error_reason,
-                timestamp=now
+                timestamp=now,
+                stopped=stopped,
             )
             self._last_state = state
             return state

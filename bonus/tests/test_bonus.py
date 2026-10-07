@@ -255,15 +255,65 @@ class PullRequestTests(unittest.TestCase):
 
     def test_approval_lands_the_patch_without_touching_the_index(self) -> None:
         pr = self._open()
+        review_commit = self.gm.get_branch_tip(pr.branch_name)
         merged: List[str] = []
         ok, _ = self.prs.merge_pr(pr.pr_id, on_merged=lambda rec: merged.append(rec.pr_id))
         self.assertTrue(ok)
         self.assertEqual(self.repo.read("demo_app/app.py"), "print('fixed')\n")
-        self.assertEqual(self.gm.get_branch_tip("iow/auto-heal"), self.gm.get_branch_tip(pr.branch_name))
+        self.assertEqual(self.gm.get_branch_tip("iow/auto-heal"), review_commit)
+        self.assertIsNone(self.gm.get_branch_tip(pr.branch_name))      # decided: branch dropped (U1)
         self.assertEqual(self.repo.git("diff", "--cached", "--name-only"), "")
         self.assertEqual(merged, [pr.pr_id])
         reloaded = self._manager().get_pr(pr.pr_id)                          # persisted
         self.assertEqual(reloaded.status if reloaded else None, "merged")
+
+    def test_an_approval_waits_for_gitea_to_finish_checking_the_pr(self) -> None:
+        """Seen live: approved seconds after it opened, the PR got 405 'Please try again
+        later' - the code landed and the PR stayed open on Gitea."""
+        pr = self._open()
+        pr.remote_pr_number = 7
+        busy = (405, {"message": "Please try again later"})
+        answers = [busy, busy, (200, {})]
+        with mock.patch.object(self.prs, "_http_request", side_effect=lambda *a, **k: answers.pop(0)), \
+                mock.patch("bonus.pr_manager.time.sleep"):
+            ok, message = self.prs.merge_pr(pr.pr_id)
+        self.assertTrue(ok)
+        self.assertEqual(answers, [])
+        self.assertEqual(pr.remote_merge, "merged on Gitea (#7)")
+        self.assertIn("merged successfully", message)
+
+    def test_a_merge_gitea_refuses_for_good_is_reported(self) -> None:
+        pr = self._open()
+        pr.remote_pr_number = 8
+        self.prs.remote_merge_wait = 0.0
+        busy = (405, {"message": "Please try again later"})
+        with mock.patch.object(self.prs, "_http_request", return_value=busy):
+            ok, message = self.prs.merge_pr(pr.pr_id)
+        self.assertTrue(ok)                                        # the approved code still lands
+        self.assertIn("stays open", message)
+        self.assertIn("HTTP 405", pr.remote_merge or "")
+
+    def test_branches_of_pull_requests_no_longer_on_record_are_removed_at_start(self) -> None:
+        """U1: the records live under /tmp/iow, which a reboot wipes, and their branches stayed
+        in the repository for good (iow/review/smoke02 and smoke03, three weeks after their
+        smoke test). Only the agent's own branches go, and none while the store is unreadable."""
+        pending = self._open()
+        review_commit = self.gm.get_branch_tip(pending.branch_name) or ""
+        self.repo.git("branch", "iow/heal/old-cycle", review_commit)   # a record PR's leftover head
+        self.repo.git("branch", "iow/review/by-hand", "HEAD")          # a human's commit: never touched
+        self._manager()                                                # same store: still pending
+        self.assertEqual(self.gm.get_branch_tip(pending.branch_name), review_commit)
+        unreadable = os.path.join(self.dir, "unreadable.json")
+        with open(unreadable, "w", encoding="utf-8") as f:
+            f.write("{")
+        PullRequestManager(self.gm, store_path=unreadable, creds_file=os.path.join(self.dir, "none.env"))
+        self.assertEqual(self.gm.get_branch_tip(pending.branch_name), review_commit)
+        wiped = PullRequestManager(self.gm, store_path=os.path.join(self.dir, "after-reboot.json"),
+                                   creds_file=os.path.join(self.dir, "none.env"))
+        self.assertEqual(wiped.prs, {})
+        self.assertIsNone(self.gm.get_branch_tip(pending.branch_name))
+        self.assertIsNone(self.gm.get_branch_tip("iow/heal/old-cycle"))
+        self.assertIsNotNone(self.gm.get_branch_tip("iow/review/by-hand"))
 
     def test_rejection_discards_the_review(self) -> None:
         before = self.repo.snapshot_files()
@@ -354,6 +404,28 @@ class BonusRouterTests(unittest.TestCase):
         self.assertEqual(answer.status_code, 422)
         self.assertIn("placeholder", answer.json()["detail"])
 
+    def test_a_rejection_goes_through_the_dashboard_executor(self) -> None:
+        """The dashboard's executor also marks the heal cycle that proposed the PR (seen
+        live: it stayed 'awaiting_review' after the decision)."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from bonus.bonus_api import create_bonus_router
+
+        calls: List[Any] = []
+
+        def reject(pr_id: str, reason: Optional[str]) -> Tuple[int, str]:
+            calls.append((pr_id, reason))
+            return 200, "rejected"
+
+        pr_manager = mock.Mock()
+        pr_manager.get_pr.return_value = None
+        app = FastAPI()
+        app.include_router(create_bonus_router(pr_manager=pr_manager, reject_executor=reject))
+        answer = TestClient(app).post("/api/bonus/prs/pr-7/reject", json={"comment": "not like this"})
+        self.assertEqual(answer.status_code, 200)
+        self.assertEqual(calls, [("pr-7", "not like this")])
+        pr_manager.reject_pr.assert_not_called()
+
 
 def _pod(init_state: Dict[str, Any], init_last: Optional[Dict[str, Any]] = None,
          app_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -366,7 +438,71 @@ def _pod(init_state: Dict[str, Any], init_last: Optional[Dict[str, Any]] = None,
     }}
 
 
+class _StampedRepo:
+    heal_branch = "iow/auto-heal"
+
+    def __init__(self, stamp: str) -> None:
+        self.stamp = stamp
+
+    def source_stamp(self, revision: str) -> str:
+        return self.stamp
+
+
+class GitOpsRedeployTests(unittest.TestCase):
+    """Bonus: 'the commit alone triggers the redeploy' - the agent pushes and watches."""
+
+    def _redeploy(self, pushed: str, deployed: str, ready: List[List[Tuple[str, str, str]]]):
+        from bonus import gitops
+        commands: List[List[str]] = []
+        ready_rounds = list(ready)
+
+        def run(cmd: List[str], timeout: float = 60.0) -> Tuple[int, str, str]:
+            commands.append(cmd)
+            return 0, "", ""
+
+        with mock.patch.multiple(
+            gitops,
+            tools_available=lambda: (True, "ok"),
+            push_heal_commit=lambda gm, branch=None: (True, "pushed"),
+            _pod_identities=lambda ns, sel: [("old", "uid-old")],
+            _deployed_stamp=lambda ns, dep: deployed,
+            _ready_pods=lambda ns, sel: ready_rounds.pop(0) if len(ready_rounds) > 1 else ready_rounds[0],
+            _argocd_sync=mock.Mock(return_value=(True, "argocd sync ok")),
+            _run=run,
+            SELF_SYNC_S=0.01,
+        ):
+            ok, detail = gitops.wait_for_gitops_redeploy(grace_period=0.0, git_manager=_StampedRepo(pushed))
+            return ok, detail, commands, gitops._argocd_sync
+
+    def test_a_new_stamp_is_rolled_by_argo_cd_alone(self) -> None:
+        ok, detail, commands, sync = self._redeploy("new", "old", [[("p", "uid-new", "new")]])
+        self.assertTrue(ok, detail)
+        self.assertIn("by itself", detail)
+        sync.assert_not_called()
+        self.assertFalse(any("restart" in c for c in commands))
+
+    def test_argo_cd_is_asked_to_sync_only_when_it_has_not_moved(self) -> None:
+        ok, detail, _, sync = self._redeploy("new", "old", [[], [], [("p", "uid-new", "new")]])
+        self.assertTrue(ok, detail)
+        self.assertIn("explicit Argo CD sync", detail)
+        sync.assert_called_once()
+
+    def test_code_that_already_runs_is_restarted_by_hand(self) -> None:
+        """A rollback onto the deployed code changes no manifest: nothing for Argo CD to roll."""
+        ok, detail, commands, sync = self._redeploy("same", "same", [[("p", "uid-new", "same")]])
+        self.assertTrue(ok, detail)
+        self.assertTrue(any("restart" in c for c in commands))
+        sync.assert_not_called()
+
+
 class GitOpsTests(unittest.TestCase):
+    def test_one_crash_loop_stays_one_event_on_kubernetes(self) -> None:
+        """Seen live: the pod's backoff outgrew the 90 s window, every restart raised the
+        crash again, and the same symptom retriggered the loop after the cooldown."""
+        from bonus.gitops import crash_dedup_window
+        self.assertGreater(crash_dedup_window(90), 300)        # Kubernetes' maximum backoff
+        self.assertEqual(crash_dedup_window(600), 600)          # a longer window is kept
+
     def test_a_pod_that_never_started_the_app_is_not_a_code_crash(self) -> None:
         """Seen live: the source fetch could not resolve Gitea, and the loop 'healed' good code."""
         from bonus.gitops import _start_blocker

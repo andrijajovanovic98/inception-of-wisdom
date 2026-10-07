@@ -38,8 +38,9 @@ TARGET       := demo_app
 TARGET_URL   ?= http://127.0.0.1:5001
 DOCKER_TARGET := iow_demo_target
 LINT_DIRS    := p1 p2 p3 bonus demo_app dashboard
-# Each part carries its own regression suite: p1/tests, p2/tests, p3/tests, bonus/tests.
-TEST_PARTS   := p1 p2 p3 bonus
+# Each part carries its own regression suite: p1/tests, p2/tests, p3/tests, bonus/tests,
+# and dashboard/tests for what joins them (orchestrator, Makefile, compose, entrypoint, docs).
+TEST_PARTS   := p1 p2 p3 bonus dashboard
 DOCKER_IMAGE_AGENT := inception-of-wisdom-agent
 DOCKER_IMAGE_DEMO  := inception-of-wisdom-demo_app
 DOCKER_NETWORK     := iow-network
@@ -70,12 +71,13 @@ export IOW_PORT = $(PORT)
 DASHBOARD_URL = http://127.0.0.1:$(PORT)
 
 .PHONY: all up up-infra up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
-	pr-bonus argocd-bonus argocd-bonus-down ensure-gitops-tools gitops-doctor gitops-doctor-purge gitea \
+	pr-bonus argocd-bonus argocd-bonus-down gitops-publish ensure-gitops-tools gitops-doctor \
+	gitops-doctor-purge gitea \
 	break break-hard break-import break-env break-syntax demo-reset suggest heal rollback status logs \
 	setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
 	ensure-embed ensure-lint-tools ensure-target ensure-gitea ensure-dashboard-port \
-	flake mypy lint test test-p1 test-p2 test-p3 test-bonus gates
+	flake mypy lint test test-p1 test-p2 test-p3 test-bonus test-dashboard gates
 
 # Infra for host make bonus/p1/p2/p3/run. Containerized dashboard is opt-in (up-agent).
 DOCKER_INFRA := demo_app gitea
@@ -104,6 +106,7 @@ help:
 	@echo " make pr-bonus         - bonus + Gitea forge + HITL / verified PRs"
 	@echo " make argocd-bonus     - bonus + k3s/Argo CD GitOps (iow-k3s; UI :8080, IOW_ARGOCD_PORT=...)"
 	@echo " make argocd-bonus-down - delete iow-k3s / legacy k3d"
+	@echo " make gitops-publish  - GitOps: demo_app/ -> tracked branch, Argo CD rolls the pod (after break-*/demo-reset)"
 	@echo " make ensure-gitops-tools - download kubectl/argocd → $(IOW_DIR)/bin (no sudo)"
 	@echo " make gitops-doctor       - list compose vs k3s containers + dump failing logs"
 	@echo " make gitops-doctor-purge - wipe broken k3s/k3d only (keep demo/gitea)"
@@ -114,9 +117,12 @@ help:
 	@echo " make break-syntax     - startup crash: syntax error (unclosed parenthesis)"
 	@echo " make demo-reset       - restore demo_app/app.py from HEAD + restart the target"
 	@echo " make suggest          - 4xx probe: surfaced for a human, never auto-healed"
+	@echo " make heal             - heal the latest crash now (409 when nothing crashed)"
+	@echo " make rollback         - put demo_app/ back to the last cycle's pre-loop revision"
+	@echo " make status | logs    - dashboard overview (JSON) | follow the containers' logs"
 	@echo " make flake | mypy | lint - lint check (flake8 + mypy) on $(LINT_DIRS)"
-	@echo " make test             - regression suites p1/ p2/ p3/ bonus/tests (stdlib unittest)"
-	@echo " make test-p1 | test-p2 | test-p3 | test-bonus - one part's suite (verbose)"
+	@echo " make test             - regression suites p1/ p2/ p3/ bonus/ dashboard/tests (unittest)"
+	@echo " make test-p1 | test-p2 | test-p3 | test-bonus | test-dashboard - one suite (verbose)"
 	@echo " make gates            - every quality gate: lint + test"
 	@echo " make stop             - stop IoW ollama (pid file + orphans on $(OLLAMA_BIND))"
 	@echo " make clean            - docker-clean + caches (keep venv)"
@@ -384,48 +390,51 @@ break-hard:
 
 # Startup crash: plant a real bug (missing import) so the container restart-loops,
 # exactly the failure mode the subject describes. `make heal` then repairs it.
+# One shell per planted bug: a recipe line's `exit` ends only that line, so a separate
+# guard line used to say "nothing to break" and then plant and restart anyway.
+TARGET_STATE = docker inspect $(DOCKER_TARGET) \
+	--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
+	2>/dev/null || true
+
 break-import:
 	@if ! grep -q '^from flask import Flask, jsonify' demo_app/app.py; then \
-		echo "[*] demo_app/app.py already patched or modified - nothing to break"; exit 0; \
+		echo "[*] demo_app/app.py already patched or modified - nothing to break"; \
+	else \
+		sed -i 's/^from flask import Flask, jsonify/# from flask import Flask, jsonify  # removed by make break-import/' demo_app/app.py; \
+		echo "[!] Removed the Flask import from demo_app/app.py - restarting target..."; \
+		docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true; \
+		sleep 4; \
+		echo "[*] Container state (expect a non-zero exit / restart loop):"; \
+		$(TARGET_STATE); \
+		echo "    Undo: make demo-reset"; \
 	fi
-	@sed -i 's/^from flask import Flask, jsonify/# from flask import Flask, jsonify  # removed by make break-import/' demo_app/app.py
-	@echo "[!] Removed the Flask import from demo_app/app.py - restarting target..."
-	@docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true
-	@sleep 4
-	@echo "[*] Container state (expect a non-zero exit / restart loop):"
-	@docker inspect $(DOCKER_TARGET) \
-		--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
-		2>/dev/null || true
-	@echo "    Undo by hand: git checkout HEAD -- demo_app/app.py && docker restart $(DOCKER_TARGET)"
 
 # Startup crash #2 (subject: "a bad environment variable"): the target reads a variable
 # that is not set, so int(os.environ[...]) raises KeyError before the server starts.
 break-env:
 	@if ! grep -q 'port = int(os.environ.get("PORT", 5000))' demo_app/app.py; then \
-		echo "[*] demo_app/app.py already patched or modified - nothing to break"; exit 0; \
+		echo "[*] demo_app/app.py already patched or modified - nothing to break"; \
+	else \
+		sed -i 's/port = int(os.environ.get("PORT", 5000))/port = int(os.environ["IOW_DEMO_PORT"])  # planted by make break-env/' demo_app/app.py; \
+		echo "[!] demo_app/app.py now reads the unset IOW_DEMO_PORT - restarting target..."; \
+		docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true; \
+		sleep 4; \
+		$(TARGET_STATE); \
+		echo "    Undo: make demo-reset"; \
 	fi
-	@sed -i 's/port = int(os.environ.get("PORT", 5000))/port = int(os.environ["IOW_DEMO_PORT"])  # planted by make break-env/' demo_app/app.py
-	@echo "[!] demo_app/app.py now reads the unset IOW_DEMO_PORT - restarting target..."
-	@docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true
-	@sleep 4
-	@docker inspect $(DOCKER_TARGET) \
-		--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
-		2>/dev/null || true
-	@echo "    Undo: make demo-reset"
 
 # Startup crash #3 (subject: "a syntax error"): an unclosed parenthesis.
 break-syntax:
 	@if ! grep -q '^app = Flask(__name__)$$' demo_app/app.py; then \
-		echo "[*] demo_app/app.py already patched or modified - nothing to break"; exit 0; \
+		echo "[*] demo_app/app.py already patched or modified - nothing to break"; \
+	else \
+		sed -i 's/^app = Flask(__name__)$$/app = Flask(__name__  # planted by make break-syntax/' demo_app/app.py; \
+		echo "[!] demo_app/app.py no longer parses - restarting target..."; \
+		docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true; \
+		sleep 4; \
+		$(TARGET_STATE); \
+		echo "    Undo: make demo-reset"; \
 	fi
-	@sed -i 's/^app = Flask(__name__)$$/app = Flask(__name__  # planted by make break-syntax/' demo_app/app.py
-	@echo "[!] demo_app/app.py no longer parses - restarting target..."
-	@docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true
-	@sleep 4
-	@docker inspect $(DOCKER_TARGET) \
-		--format '    Status={{.State.Status}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}}' \
-		2>/dev/null || true
-	@echo "    Undo: make demo-reset"
 
 # Back to the committed demo target (drops planted bugs and unmerged heals in
 # demo_app/app.py only; iow.config.yml and everything else are left alone).
@@ -576,7 +585,7 @@ test: ensure-ready
 	done
 	@echo "[+] unittest OK ($(TEST_PARTS))"
 
-test-p1 test-p2 test-p3 test-bonus: test-%: ensure-ready
+test-p1 test-p2 test-p3 test-bonus test-dashboard: test-%: ensure-ready
 	@echo "[*] unittest → $*/tests"
 	@$(VENV)/bin/python -m unittest discover -s $*/tests -t . -v
 
@@ -728,6 +737,13 @@ argocd-bonus: ensure-ready ensure-ollama-quick ensure-target ensure-gitea ensure
 		ec=$$?; \
 		if [ $$ec -eq 0 ] || [ $$ec -eq 130 ] || [ $$ec -eq 143 ] || [ $$ec -eq 2 ]; then exit 0; fi; \
 		exit $$ec'
+
+# In GitOps mode the target runs what is on the branch Argo CD tracks, not the local
+# files: publish the working tree's demo_app/ there; Argo CD rolls the pod. Plant a bug in the
+# cluster with `make break-import gitops-publish`, put it back with
+# `make demo-reset gitops-publish`.
+gitops-publish:
+	@IOW_DIR="$(IOW_DIR)" bash scripts/gitops_publish.sh
 
 argocd-bonus-down:
 	@chmod +x scripts/argocd_bonus_down.sh scripts/ensure_gitops_tools.sh 2>/dev/null || true

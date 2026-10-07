@@ -94,7 +94,7 @@ from p3.loop_api import create_loop_router  # noqa: E402
 # Chapter VI: Bonus imports
 from bonus.classifier import TinySymptomClassifier  # noqa: E402
 from bonus.consensus import SecondOpinionEngine  # noqa: E402
-from bonus.pr_manager import PullRequestManager  # noqa: E402
+from bonus.pr_manager import PullRequestManager, PullRequestRecord  # noqa: E402
 from bonus.bonus_api import create_bonus_router  # noqa: E402
 
 
@@ -206,7 +206,7 @@ class InceptionOrchestrator:
             log_streamer=self.log_streamer,
             http_probe=self.http_probe,
             docker_poll_seconds=probe_interval,
-            crash_window_seconds=live["crash_dedup_window_seconds"],
+            crash_window_seconds=self._crash_window(live["crash_dedup_window_seconds"]),
             suggestion_window_seconds=live["suggestion_dedup_window_seconds"],
         )
 
@@ -228,6 +228,11 @@ class InceptionOrchestrator:
 
         # 4. Wisdom Loop (Part 3)
         self.git_manager = GitManager(repo_dir=REPO_PATH)
+        if self.redeploy_mode == "gitops":
+            # Every commit the agent makes stamps the pod template with the code's tree
+            # hash: the commit alone is the redeploy, Argo CD rolls the pod (bonus/gitops.py).
+            from bonus.gitops import DEFAULT_MANIFEST
+            self.git_manager.manifest_stamp = DEFAULT_MANIFEST
         # The gate refuses paths outside demo_app/ (and iow.config.yml) up front, so
         # such a patch is reported as a sanity violation rather than a git error.
         self.sanity_checker = SanityChecker(
@@ -236,7 +241,8 @@ class InceptionOrchestrator:
         self.patcher = CodePatcher(
             base_dir=REPO_PATH,
             model_name=model_name,
-            ollama_host=ollama_host
+            ollama_host=ollama_host,
+            patch_strategy=live["patch_strategy"],
         )
         self.index_watcher = IndexWatcher(
             chunker=self.chunker,
@@ -274,6 +280,20 @@ class InceptionOrchestrator:
         # Register event subscriber for autonomous healing
         self.event_manager.add_listener(self._on_observer_event)
 
+    def _crash_window(self, configured: float) -> float:
+        """The crash dedup window; on Kubernetes it must outlast the pod's restart backoff."""
+        if self.redeploy_mode != "gitops":
+            return configured
+        from bonus.gitops import crash_dedup_window
+        window = crash_dedup_window(configured)
+        if window != configured:
+            logger.info(
+                "GitOps mode: crash dedup window %.0fs instead of %.0fs - Kubernetes backs a "
+                "crash-looping pod off up to 300 s, and one crash loop must stay one event.",
+                window, configured,
+            )
+        return window
+
     def land_pull_request(self, pr_id: str, comment: Optional[str] = None) -> Tuple[int, str]:
         """Approve a PR: land it like a heal. Returns (http status, message).
 
@@ -291,11 +311,40 @@ class InceptionOrchestrator:
                 ok, message = self.pr_manager.merge_pr(
                     pr_id, comment=comment, on_merged=self._land_merged_pr
                 )
+                self._resolve_review(pr_id)
                 return (200 if ok else 400), message
             finally:
                 self.wisdom_loop.release()
         finally:
             self.safety_manager.release_heal_slot()
+
+    def reject_pull_request(self, pr_id: str, comment: Optional[str] = None) -> Tuple[int, str]:
+        """Reject a PR. Returns (http status, message)."""
+        ok, message = self.pr_manager.reject_pr(pr_id, reason=comment)
+        if ok:
+            self._resolve_review(pr_id)
+        return (200 if ok else 400), message
+
+    def _resolve_review(self, pr_id: str) -> None:
+        """Show a human's decision on a review PR on the heal cycle that proposed it."""
+        pr = self.pr_manager.get_pr(pr_id)
+        if pr is None:
+            return
+        landing = pr.landing or {}
+        if pr.status == "merged":
+            self.wisdom_loop.resolve_review(pr_id, "healed", (
+                "Approved by a human and verified: the target stayed up for the grace period."
+                if landing.get("healed") else "Approved by a human and landed."
+            ))
+        elif pr.status == "reverted":
+            self.wisdom_loop.resolve_review(pr_id, "rolled_back", (
+                f"Approved by a human, but the target did not stay up on it "
+                f"({landing.get('status')}): rolled back to {pr.base_revision[:8]}."
+            ))
+        elif pr.status == "rejected":
+            self.wisdom_loop.resolve_review(
+                pr_id, "refused", f"Review rejected by a human: {pr.reviewer_comment}"
+            )
 
     def _land_merged_pr(self, pr_record: Any) -> Dict[str, Any]:
         """Deploy approved code the way the loop deploys a patch, and keep it only if the
@@ -345,12 +394,12 @@ class InceptionOrchestrator:
         diagnosis_summary: str,
         patch_files: list,
         cycle_id: str,
-    ) -> bool:
+    ) -> Optional[PullRequestRecord]:
         """Create a Gitea Pull Request instead of auto-applying the patch.
 
-        Returns True only when a review actually exists for a human to act on; the
-        caller falls back to the Wisdom Loop otherwise, so a crash is never silently
-        dropped because the forge was down.
+        Returns the PR only when a review actually exists for a human to act on;
+        otherwise None, and the caller records the heal as withheld - it is never
+        applied without that review.
         """
         logger.info(
             f"Human-in-the-Loop gate active for [{cycle_id}] - opening Gitea PR."
@@ -366,20 +415,20 @@ class InceptionOrchestrator:
             )
         except Exception as e:
             logger.error(f"Failed to create HITL PR for [{cycle_id}]: {e}")
-            return False
+            return None
 
         if pr.remote_pr_number:
             logger.info(
                 f"HITL PR [{pr.pr_id}] Gitea #{pr.remote_pr_number} created - "
                 "awaiting human review."
             )
-            return True
+            return pr
 
         logger.warning(
             f"HITL PR [{pr.pr_id}] was recorded locally but no remote review was "
             "opened (is Gitea up? try `make pr-bonus`)."
         )
-        return False
+        return None
 
     def _on_observer_event(self, event: ObserverEvent) -> None:
         """Autonomously triggers the Wisdom Loop when a confirmed crash event arrives."""
@@ -396,7 +445,8 @@ class InceptionOrchestrator:
         # fix it, so do not spend a heal slot - or a commit - on it. The Observer keeps
         # watching and picks the target up when it returns.
         target_state = self.docker_monitor.inspect()
-        if target_state.status in ("not_found", "daemon_unavailable", "not_started"):
+        if target_state.status in ("not_found", "daemon_unavailable", "not_started") \
+                or getattr(target_state, "stopped", False):
             logger.warning(
                 "Crash signal [%s] while the target is '%s' (%s) - not something a code "
                 "patch can fix; waiting for the target to come back.",
@@ -579,7 +629,7 @@ class InceptionOrchestrator:
                 else "the second opinion diverged"
             )
             cycle_id = (sig[:8] if sig else "manual") + "-" + str(int(time.time()))
-            proposed = False
+            proposed: Optional[PullRequestRecord] = None
             detail = ""
             try:
                 diagnosis = preset_diagnosis or self.diagnostician.diagnose_crash(
@@ -622,6 +672,8 @@ class InceptionOrchestrator:
                     f"Patch sent for human review because {why}; it lands only when the "
                     "PR is approved (Bonus tab / Gitea).",
                     status="awaiting_review",
+                    review_pr=proposed.pr_id,
+                    pre_loop_hash=proposed.base_revision,
                 )
             else:
                 logger.warning(
@@ -781,13 +833,14 @@ class InceptionOrchestrator:
         self.http_probe.interval_seconds = new["probe_interval_seconds"]
         self.http_probe.timeout_seconds = new["probe_timeout_seconds"]
         self.event_manager.docker_poll_seconds = new["probe_interval_seconds"]
-        self.event_manager.crash_window_seconds = new["crash_dedup_window_seconds"]
+        self.event_manager.crash_window_seconds = self._crash_window(new["crash_dedup_window_seconds"])
         self.event_manager.suggestion_window_seconds = new["suggestion_dedup_window_seconds"]
         self.log_streamer.incident_debounce_seconds = new["incident_debounce_seconds"]
         self.incident_debounce = new["incident_debounce_seconds"]
         self.log_streamer.set_error_patterns(new["error_patterns"])
         self.index_watcher.interval_seconds = new["watch_interval_seconds"]
         self.retriever.default_top_k = new["top_k"]
+        self.patcher.patch_strategy = new["patch_strategy"]
         logger.info(
             "Applied iow.config.yml without a restart: %s",
             ", ".join(f"{k}={v}" for k, v in changed.items()),
@@ -852,6 +905,8 @@ class InceptionOrchestrator:
                 "exit_code": docker_status.exit_code,
                 "restart_count": docker_status.restart_count,
                 "is_crash": docker_status.is_crash,
+                "reason": docker_status.error_reason,
+                "stopped": getattr(docker_status, "stopped", False),
                 "http_healthy": target_healthy,
                 "http_detail": self.http_probe.get_health_detail(),
                 "latest_probes": latest_probes
@@ -960,6 +1015,7 @@ def create_app() -> FastAPI:
         pr_manager=orchestrator.pr_manager,
         flags=bonus_flags,
         merge_executor=orchestrator.land_pull_request,
+        reject_executor=orchestrator.reject_pull_request,
         patch_gate=orchestrator.gate_review_patch,
         enabled=BONUS_ENABLED,
         mode=IOW_MODE,

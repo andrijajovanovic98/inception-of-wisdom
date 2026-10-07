@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Part 2: Analyst - Inception of Wisdom</title>
+  <title>Part 2: Analyst &mdash; Inception of Wisdom</title>
   <style>
     :root {
       --bg-color: #090d16;
@@ -25,6 +25,7 @@
     .slides-container { flex: 1; position: relative; overflow: hidden; }
     .slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 40px 60px; display: none; flex-direction: column; justify-content: center; opacity: 0; transition: opacity 0.3s ease-in-out; overflow-y: auto; }
     .slide.active { display: flex; opacity: 1; }
+    @media (max-height: 800px) { .slide { padding: 16px 56px; } }   /* 1366x768 laptops */
     h1 { font-size: 2.4rem; margin-bottom: 16px; color: #fff; }
     h2 { font-size: 1.8rem; margin-bottom: 20px; color: var(--accent-blue); }
     p { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; margin-bottom: 16px; max-width: 950px; }
@@ -49,7 +50,7 @@
   <header>
     <div style="font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
       <span class="badge">Part 2</span>
-      <span>Analyst Részletes Védési Prezentáció - Inception of Wisdom</span>
+      <span>Analyst Részletes Védési Prezentáció &mdash; Inception of Wisdom</span>
     </div>
     <div id="slideCounter" style="color: var(--text-muted); font-weight: 600;">Slide 1 / 7</div>
   </header>
@@ -59,12 +60,12 @@
     <!-- Slide 1 -->
     <div class="slide active">
       <span class="badge" style="width: fit-content; margin-bottom: 16px;">ANALÍZIS FÁZIS</span>
-      <h1>Part 2: Analyst - Szemantikus Kód-Intelligencia</h1>
+      <h1>Part 2: Analyst &mdash; Szemantikus Kód-Intelligencia</h1>
       <p style="font-size: 1.25rem; color: #94a3b8;">
         Az Analyst híd a futásidejű hibaüzenetek és a forráskód szemantikája között. AST segítségével logikai darabokra bontja a célalkalmazást, indexeli a helyi ChromaDB vektoradatbázisba, lekéri a releváns részeket és strukturált JSON diagnózist állít fel a helyi LLM-mel (< 3B).
       </p>
       <div class="highlight-box">
-        <strong>Subject Előírás:</strong> "Indexeli a célkódot ChromaDB-be logikai darabolással (függvényeket és osztályokat megőrizve, nem fix mérettel). Visszaadja a releváns darabokat pontszámmal. Strukturált JSON diagnózist ad összefoglalóval és a gyanús fájlok listájával."
+        <strong>Subject (V.2, fordítás):</strong> "A diagnózis kimenete strukturált (JSON, legalább egy summary mezővel és a gyanús elérési utak files listájával)." &mdash; "A diagnózisnak valós fájlokat kell idéznie az indexből. Nem találhat ki elérési utakat."
       </div>
     </div>
 
@@ -82,7 +83,7 @@
             <li>A beépített Python <code>ast</code> modullal elemzi a forrásfájlokat.</li>
             <li>Azonosítja az <code>ast.FunctionDef</code>, <code>ast.AsyncFunctionDef</code> és <code>ast.ClassDef</code> csomópontokat.</li>
             <li>Megőrzi a dekorátorokat és a pontos kezdő/záró sorszámokat.</li>
-            <li>Külön kódkockaként kimenti a modul fejrészét (importok, globális konstansok).</li>
+            <li>Minden modulszintű utasítás egy chunkba kerül: a modul fejrésze (importok, globálisok), a definíciók közti modulblokkok és az <code>if __name__ == "__main__":</code> blokk &mdash; ahol egy rossz környezeti változó összeomlik.</li>
             <li>Determinisztikus SHA-256 lenyomatot rendel minden chunkhoz.</li>
           </ul>
         </div>
@@ -99,6 +100,7 @@
             <li>A <code>chromadb.PersistentClient(path="/tmp/iow/chroma_db")</code> klienst használja a <code>CHROMA_CACHE_DIR</code> beállításon keresztül.</li>
             <li><strong>Inkrementális frissítés:</strong> Összeveti az új chunkok SHA-256 hash-ét a tárolt metaadatokkal. Csak a valóban módosult függvényeket ágyazza be újra!</li>
             <li>Subject szabály: Az indexnek túlélnie kell az újraindítást, és <strong>tilos nulláról újraépülnie</strong>.</li>
+            <li><strong>Watch mode</strong> (<code>p2/watcher.py</code>): 3 mp-enként (<code>analyst.watch_interval_seconds</code>) újradarabolja a változott fájlokat; az elmozdult kód újraembeddelés nélkül kapja meg az új sorszámait, a törölt szimbólumok és fájlok kikerülnek.</li>
           </ul>
         </div>
         <div class="card">
@@ -120,17 +122,18 @@
           <h3>Azonosítók Kinyerése a Hibából</h3>
           <p>A hibanaplót kompilált reguláris kifejezésekkel fésüli át:</p>
           <pre>
-# Kinyeri a fájlt, sort, függvényt és a hibatípust:
-File "demo_app/app.py", line 45, in crash_me
-ZeroDivisionError: division by zero
+# make break-env - fájl, sor, hibatípus
+File "/app/app.py", line 92, in &lt;module&gt;
+KeyError: 'IOW_DEMO_PORT'
           </pre>
-          <p>Megkeresi a pontos hívási verem adatait a vektorkeresés megkezdése előtt.</p>
+          <p>Ezeket magában az indexben keresi meg (a subject tippje szerint): a függvényeket szimbólumnév, a <code>fájl:sor</code> kereteket a chunk sortartománya alapján.</p>
         </div>
         <div class="card">
           <h3>Hibrid Rangsorolás (Szimbólum + Vektor)</h3>
           <ul>
-            <li>1. prioritás: A tracebackben nevesített fájl és függvény kódkockája.</li>
-            <li>2. prioritás: Top-k szemantikus koszinusz-hasonlóság az <code>all-MiniLM-L6-v2</code> segítségével.</li>
+            <li>1. prioritás: az a chunk, amely a traceback sorát tartalmazza.</li>
+            <li>2. prioritás: a tracebackben nevesített függvény, majd a fájl.</li>
+            <li>Holtversenynél a koszinusz-hasonlóság dönt; a top-k az <code>analyst.top_k</code>.</li>
             <li>Metaadatokkal adja vissza a darabokat: <code>{file_path, symbol_name, lines, score}</code>.</li>
           </ul>
         </div>
@@ -144,15 +147,15 @@ ZeroDivisionError: division by zero
         <div class="card">
           <h3>Ollama Coder Prompt (< 3B)</h3>
           <ul>
-            <li>Modell: <code>qwen2.5-coder:1.5b</code> a host gépen.</li>
-            <li>Kikényszerített JSON séma: <code>{"summary": "...", "files": ["demo_app/app.py"]}</code>.</li>
-            <li>Kizárólag a kinyert releváns kódrészleteket fűzi be a promptba.</li>
+            <li>Modell: <code>qwen2.5-coder:1.5b</code>, helyben futtatva (a compose <code>ollama</code> szolgáltatás, vagy hoston futtatva a host Ollama).</li>
+            <li>Kikényszerített JSON séma: <code>{"files": ["demo_app/app.py"], "summary": "..."}</code>.</li>
+            <li>Csak a kinyert chunkokat és az engedélyezett fájlokat kapja: a modell választ, nem talál ki.</li>
           </ul>
         </div>
         <div class="card">
           <h3>Anti-Hallucinációs Védelem</h3>
           <div class="highlight-box">
-            <strong>Az Ágens Nem Találgat:</strong> A kisméretű 1.5B modellek hajlamosak nem létező fájlokat kitalálni. A diagnoszta szigorúan összeveti a válaszban kapott fájlokat a valós indexelt fájlokkal, és az ismeretleneket azonnal törli.
+            <strong>Az Ágens Nem Találgat:</strong> A kisméretű 1.5B modellek hajlamosak nem létező fájlokat kitalálni. Minden idézett fájlt összevet az indexszel; az ismeretlen vagy kétértelmű utakat elveti. Ha nincs használható fájl vagy összefoglaló &mdash; vagy nem érhető el a modell -, az kifejezett hiba, soha nem pótolja ki.
           </div>
         </div>
       </div>
@@ -171,7 +174,7 @@ ZeroDivisionError: division by zero
         </ul>
       </div>
       <div class="defense-tip">
-        <strong>Defense Tipp:</strong> A dashboard 2. fülén mutass egy szabad szöveges keresést (pl. "division by zero route"), hogy a vizsgáztató azonnal lássa a valós koszinusz pontszámokat!
+        <strong>Defense Tipp:</strong> A dashboard 2. fülén futtass egy szabad szöveges keresést (pl. "the startup configuration and port"), és mutasd meg a top-k chunkokat a hasonlósági pontszámukkal.
       </div>
     </div>
 

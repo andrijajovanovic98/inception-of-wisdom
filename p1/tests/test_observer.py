@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 import unittest
+from unittest import mock
 
 from p1.docker_monitor import ContainerState, DockerMonitor, target_facts_from
 from p1.event_manager import EventManager, normalize_incident_key
 from p1.http_probe import HttpProbeManager, ProbeResult
 from p1.log_streamer import LogStreamer, latest_error_block
+from p1.observer_api import create_observer_router
 
 
 def _event(action: str, nano: int, exit_code: str = "", signal: str = "") -> dict:
@@ -97,6 +100,119 @@ class DockerExitEventTests(unittest.TestCase):
         self.monitor._interpret_event(_event("start", ns + 300_000_000))       # the new code
         self.monitor._interpret_event(_event("die", ns + 800_000_000, exit_code="1"))
         self.assertEqual(self.monitor.last_crash_exit_since(redeploy, started_after=redeploy), 1)
+
+
+class _Container:
+    def __init__(self, status: str, exit_code: int, policy: str) -> None:
+        self.status = status
+        self.attrs = {"State": {"Status": status, "ExitCode": exit_code},
+                      "HostConfig": {"RestartPolicy": {"Name": policy}}, "RestartCount": 0}
+
+    def reload(self) -> None:
+        pass
+
+
+class StoppedTargetTests(unittest.TestCase):
+    """Seen live: after a `docker stop` the loop rewrote working routes and called it healed."""
+
+    def _state(self, status: str, exit_code: int, policy: str = "unless-stopped") -> ContainerState:
+        monitor = DockerMonitor(container_name="target")
+        container = _Container(status, exit_code, policy)
+        client = type("Client", (), {})()
+        client.containers = type("Containers", (), {"get": lambda _s, name: container})()
+        monitor._get_client = lambda: client  # type: ignore[method-assign]
+        return monitor.inspect()
+
+    def test_a_stopped_killed_or_paused_target_is_down_but_not_crashed(self) -> None:
+        for status, code in (("exited", 0), ("exited", 137), ("paused", 0)):   # stop, kill, pause
+            state = self._state(status, code)
+            self.assertTrue(state.stopped, (status, code))
+            self.assertFalse(state.is_crash, (status, code))
+            self.assertIn("docker", state.error_reason or "")
+
+    def test_a_crash_exit_the_restart_policy_does_not_cover_is_still_a_crash(self) -> None:
+        state = self._state("exited", 1, policy="no")
+        self.assertTrue(state.is_crash)
+        self.assertFalse(state.stopped)
+        self.assertFalse(self._state("restarting", 1).stopped)
+
+
+class DaemonOutageTests(unittest.TestCase):
+    def test_an_outage_is_reported_once_not_on_every_poll(self) -> None:
+        """O6: a 30 s outage used to log 36 warnings."""
+        from p1 import docker_monitor
+        monitor = DockerMonitor(container_name="target")
+        down = mock.Mock(from_env=mock.Mock(side_effect=OSError("no socket")),
+                         DockerClient=mock.Mock(side_effect=OSError("no socket")))
+        with mock.patch.object(docker_monitor, "docker", down), \
+                mock.patch.object(docker_monitor.logger, "warning") as warning:
+            states = [monitor.inspect().status for _ in range(10)]
+        self.assertEqual(set(states), {"daemon_unavailable"})          # not a crash
+        self.assertEqual(warning.call_count, 1)
+
+    def test_the_crash_window_outlasts_dockers_restart_backoff(self) -> None:
+        """R6: a 60 s window re-raised a long crash loop every minute (Docker backs off up to 60 s)."""
+        import os
+        import yaml
+        from p3.safety import LIVE_SETTINGS
+        config = os.path.join(os.path.dirname(__file__), "..", "..", "demo_app", "iow.config.yml")
+        with open(config, encoding="utf-8") as f:
+            shipped = yaml.safe_load(f)["target"]["crash_dedup_window_seconds"]
+        default = next(d for _, key, _, d, _ in LIVE_SETTINGS if key == "crash_dedup_window_seconds")
+        self.assertGreater(min(shipped, default, EventManager().crash_window_seconds), 60)
+
+
+class _Connected:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class SseFanOutTests(unittest.TestCase):
+    def test_a_worker_thread_wakes_the_clients_stream_at_once(self) -> None:
+        """O4: the log / probe / Docker threads put into the clients' asyncio queues directly -
+        not thread-safe, and a waiting stream only saw the line on its next 1 s heartbeat."""
+        streamer = mock.Mock()
+        router = create_observer_router(log_streamer=streamer)
+        on_line = streamer.add_line_listener.call_args[0][0]
+
+        async def scenario() -> tuple:
+            stream = (await router.stream_events(_Connected())).body_iterator
+            connected = await stream.__anext__()
+            put_at = []
+
+            def log_line() -> None:                        # arrives while the stream waits
+                put_at.append(time.monotonic())
+                on_line("Traceback (most recent call last):", True)
+
+            worker = threading.Timer(0.2, log_line)
+            worker.start()
+            line = await asyncio.wait_for(stream.__anext__(), timeout=3)
+            delay = time.monotonic() - put_at[0]
+            worker.join()
+            await stream.aclose()
+            return connected, line, delay
+
+        connected, line, delay = asyncio.run(scenario())
+        self.assertIn("event: connected", connected)
+        self.assertIn("event: log", line)
+        self.assertIn("Traceback", line)
+        self.assertLess(delay, 0.5)
+
+
+class LogRouteTests(unittest.TestCase):
+    def test_clear_empties_the_server_buffer_too(self) -> None:
+        """D4: *Clear* emptied the view only - the next refresh brought every line back."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        streamer = LogStreamer(_NoLogs())
+        streamer._process_chunk("Traceback (most recent call last):\nKeyError: 'X'\n")
+        app = FastAPI()
+        app.include_router(create_observer_router(log_streamer=streamer))
+        client = TestClient(app)
+        self.assertEqual(client.get("/api/observer/logs").json()["count"], 2)
+        self.assertEqual(client.post("/api/observer/logs/clear").json()["status"], "cleared")
+        self.assertEqual(client.get("/api/observer/logs").json()["count"], 0)
+        self.assertEqual(streamer.get_recent_logs(), [])
 
 
 class DeduplicationTests(unittest.TestCase):

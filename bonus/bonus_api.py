@@ -49,6 +49,7 @@ def create_bonus_router(
     flags: Optional[Dict[str, bool]] = None,
     on_pr_merged: Optional[Callable[[PullRequestRecord], Any]] = None,
     merge_executor: Optional[Callable[[str, Optional[str]], Tuple[int, str]]] = None,
+    reject_executor: Optional[Callable[[str, Optional[str]], Tuple[int, str]]] = None,
     patch_gate: Optional[Callable[[List[Dict[str, Any]]], Optional[str]]] = None,
     enabled: bool = True,
     mode: str = "full",
@@ -56,7 +57,9 @@ def create_bonus_router(
     """Factory function that creates and wires the FastAPI APIRouter for the Chapter VI Bonus Suite.
 
     merge_executor(pr_id, comment) -> (http status, message) lands an approved PR (the
-    dashboard: under the heal bounds, verified, rolled back on failure). patch_gate
+    dashboard: under the heal bounds, verified, rolled back on failure), and
+    reject_executor(pr_id, reason) rejects one; the dashboard's executors also show the
+    decision on the heal cycle that proposed the PR. patch_gate
     returns why a PR's files fail the pre-disk sanity gate, or None. With enabled
     False (make p1 / p2 / p3) every action answers 409 - the Bonus tab is locked.
     """
@@ -233,9 +236,14 @@ def create_bonus_router(
         if not pr_manager:
             raise HTTPException(status_code=404, detail="PR Manager not initialized")
         reason = (payload or {}).get("comment") or (payload or {}).get("reason")
-        success, message = pr_manager.reject_pr(pr_id, reason=reason)
-        if not success:
-            raise HTTPException(status_code=400, detail=message)
+        if reject_executor is not None:
+            code, message = reject_executor(pr_id, reason)
+            if code != 200:
+                raise HTTPException(status_code=code, detail=message)
+        else:
+            success, message = pr_manager.reject_pr(pr_id, reason=reason)
+            if not success:
+                raise HTTPException(status_code=400, detail=message)
         rejected = pr_manager.get_pr(pr_id)
         return {"status": "rejected", "message": message, "pr": rejected.to_dict() if rejected else {}}
 

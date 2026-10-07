@@ -22,9 +22,12 @@ try:
 except ImportError:
     httpx = None  # type: ignore[assignment,misc]
 
-from p3.git_manager import GitManager
+from p3.git_manager import COMMIT_EMAIL, GitManager
 
 logger = logging.getLogger("bonus.pr_manager")
+
+# Local branches the manager creates: a review PR's head, a verified heal's record PR head.
+PR_BRANCH_PREFIXES = ("iow/review/", "iow/heal/")
 
 DEFAULT_PR_STORE = os.environ.get("IOW_PR_STORE", "/tmp/iow/pull_requests.json")
 DEFAULT_CREDS_FILE = os.environ.get("GITEA_CREDS_FILE", "/tmp/iow/gitea/gitea.env")
@@ -53,6 +56,8 @@ class PullRequestRecord:
     base_branch: str = "main"
     # What happened when the approved code was deployed (redeploy + verification).
     landing: Optional[Dict[str, Any]] = None
+    # What Gitea said to the merge of an approved PR.
+    remote_merge: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -86,8 +91,12 @@ class PullRequestManager:
         self._status_ttl_ok: float = 15.0
         self._status_ttl_fail: float = 30.0
         self._status_timeout: float = 2.0
+        # Gitea checks a new PR's mergeability in the background; an approval waits for it.
+        self.remote_merge_wait: float = 20.0
+        self._store_unreadable = False
         self._load_creds()
         self._load_store()
+        self.prune_orphan_branches()
 
     # ------------------------------------------------------------------
     # Credentials & HTTP helpers
@@ -291,6 +300,7 @@ class PullRequestManager:
         except Exception as e:
             logger.error(f"Failed to load PR store from {self.store_path}: {e}")
             self.prs = {}
+            self._store_unreadable = True
 
     def _save_store(self) -> None:
         try:
@@ -676,14 +686,9 @@ Verified healthy after Wisdom Loop auto-heal.
             )
 
         if pr.remote_pr_number:
-            owner, repo = self._owner(), self._repo()
-            code, data = self._http_request(
-                "POST",
-                f"/api/v1/repos/{owner}/{repo}/pulls/{pr.remote_pr_number}/merge",
-                body={"Do": "merge", "merge_message_field": f"Merge PR {pr_id}: {pr.title}"},
-            )
-            if code not in (200, 201):
-                logger.warning(f"Gitea merge API returned {code}: {data}; attempting local merge.")
+            merged_remote, pr.remote_merge = self._merge_remote(pr)
+            if not merged_remote:
+                logger.warning(f"{pr.remote_merge}; landing it locally - the PR stays open on Gitea.")
 
         try:
             # Fast-forward the heal branch onto the review commit without checking
@@ -711,6 +716,9 @@ Verified healthy after Wisdom Loop auto-heal.
                     outcome = on_merged(pr)
                 except Exception as cb_err:
                     logger.error(f"on_merged callback failed: {cb_err}")
+            # Decided: the approved commit lives on in the heal branch (or was rolled back),
+            # and Gitea keeps the PR's own copy of the branch.
+            self._drop_branch(pr.branch_name)
             if isinstance(outcome, dict):
                 pr.landing = outcome
                 if outcome.get("reverted"):
@@ -726,10 +734,75 @@ Verified healthy after Wisdom Loop auto-heal.
                         f"PR [{pr_id}] was approved, but the target did not stay up on it "
                         f"({outcome.get('status')}): rolled back to {pr.base_revision[:8]}."
                     )
+            if pr.remote_merge and not pr.remote_merge.startswith("merged"):
+                return True, f"PR [{pr_id}] landed, but {pr.remote_merge} - it stays open there."
             return True, f"PR [{pr_id}] merged successfully."
         except Exception as e:
             logger.error(f"Failed to merge PR [{pr_id}]: {e}")
             return False, f"Git merge error: {str(e)}"
+
+    def _merge_remote(self, pr: PullRequestRecord) -> Tuple[bool, str]:
+        """Merge the PR on Gitea, waiting out its background mergeability check.
+
+        Until that check has run Gitea answers 405 "Please try again later": an approval
+        right after the PR opened landed the code but left the PR open on Gitea (seen live).
+        """
+        owner, repo = self._owner(), self._repo()
+        deadline = time.time() + self.remote_merge_wait
+        while True:
+            code, data = self._http_request(
+                "POST",
+                f"/api/v1/repos/{owner}/{repo}/pulls/{pr.remote_pr_number}/merge",
+                body={"Do": "merge", "merge_message_field": f"Merge PR {pr.pr_id}: {pr.title}"},
+            )
+            if code in (200, 201):
+                return True, f"merged on Gitea (#{pr.remote_pr_number})"
+            message = str(data.get("message") or data) if isinstance(data, dict) else str(data)
+            if code != 405 or "try again later" not in message.lower() or time.time() >= deadline:
+                return False, (
+                    f"Gitea refused the merge of #{pr.remote_pr_number} (HTTP {code}: {message[:120]})"
+                )
+            time.sleep(1.0)
+
+    def _drop_branch(self, branch: str) -> bool:
+        """Delete a PR's local branch. `git branch -D` refuses the checked-out branch."""
+        rc, _, _ = self.git_manager._run_git(["branch", "-D", branch], check=False)
+        return rc == 0
+
+    def prune_orphan_branches(self) -> List[str]:
+        """Delete the local PR branches that no pending pull request needs any more.
+
+        The records live under /tmp/iow, which a reboot wipes; the branches live in the
+        repository, so every lost record used to leave its branch behind for good (seen:
+        iow/review/smoke02 and smoke03, three weeks after their smoke test). Only branches
+        under the manager's own prefixes whose tip commit the agent wrote are touched, and
+        none at all while a store that exists cannot be read.
+        """
+        if self._store_unreadable:
+            return []
+        pending = {pr.branch_name for pr in self.prs.values() if pr.status == "pending_review"}
+        rc, out, _ = self.git_manager._run_git(
+            ["for-each-ref", "--format=%(refname:short)%00%(authoremail)%00%(contents:subject)",
+             *[f"refs/heads/{prefix.rstrip('/')}" for prefix in PR_BRANCH_PREFIXES]],
+            check=False,
+        )
+        if rc != 0:
+            return []
+        removed: List[str] = []
+        for line in out.splitlines():
+            name, email, subject = (line.split("\0") + ["", ""])[:3]
+            if name in pending or not name.startswith(PR_BRANCH_PREFIXES):
+                continue
+            if email.strip("<>") != COMMIT_EMAIL and not subject.startswith("review: "):
+                continue                                    # not the agent's commit
+            if self._drop_branch(name):
+                removed.append(name)
+        if removed:
+            logger.info(
+                f"Removed {len(removed)} branch(es) of pull requests no longer on record: "
+                + ", ".join(removed)
+            )
+        return removed
 
     def reject_pr(self, pr_id: str, reason: Optional[str] = None) -> Tuple[bool, str]:
         """Human rejection: close remote PR and discard review branch."""
@@ -738,7 +811,7 @@ Verified healthy after Wisdom Loop auto-heal.
             return False, f"PR '{pr_id}' not found."
         try:
             self._close_remote_pr(pr)
-            self.git_manager._run_git(["branch", "-D", pr.branch_name], check=False)
+            self._drop_branch(pr.branch_name)
             pr.status = "rejected"
             pr.resolved_at = time.time()
             pr.reviewer_comment = reason or "Rejected by human reviewer."
