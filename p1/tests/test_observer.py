@@ -255,6 +255,48 @@ class DeduplicationTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["details"]["kind"], "exit")
 
+    def test_one_exit_seen_by_the_poll_and_the_event_stream_is_one_event(self) -> None:
+        """O12: without a restart policy (`docker update --restart=no`) the poll sees the exited
+        container as well as the event stream's 'die', and the two worded the same exit
+        differently: one crash was raised as two exit events."""
+        monitor = DockerMonitor(container_name="t")
+        container = _Container("exited", 1, "no")
+        client = type("Client", (), {})()
+        client.containers = type("Containers", (), {"get": lambda _s, name: container})()
+        monitor._get_client = lambda: client  # type: ignore[method-assign]
+        em = EventManager(docker_monitor=monitor)
+        died = monitor._interpret_event(_event("die", 10**18, exit_code="1"))     # the event stream
+        assert died is not None
+        em.handle_docker_state(died)
+        em.handle_docker_state(monitor.inspect())                                   # the poll
+        events = em.get_events(event_type="crash")
+        self.assertEqual(len(events), 1)
+        self.assertEqual((events[0]["details"]["kind"], events[0]["count"]), ("exit", 2))
+
+    def test_a_target_that_stayed_down_has_its_last_output_streamed(self) -> None:
+        """O13: the log stream followed only running or restarting containers. Without a restart
+        policy a crashed target stays exited, and its traceback never reached the Observer (seen
+        live: the log view ended before the crash, and no log signal was raised)."""
+        traceback = (b"2030-01-01T00:00:00.000000001Z Traceback (most recent call last):\n"
+                     b"2030-01-01T00:00:00.000000002Z NameError: name 'Flask' is not defined\n")
+        container = _Container("exited", 1, "no")
+        container.logs = lambda **kw: iter([traceback])  # type: ignore[attr-defined]
+        monitor = DockerMonitor(container_name="t")
+        client = type("Client", (), {})()
+        client.containers = type("Containers", (), {"get": lambda _s, name: container})()
+        monitor._get_client = lambda: client  # type: ignore[method-assign]
+        stream = monitor.get_log_stream(tail=100)
+        assert stream is not None
+        found: list = []
+        streamer = LogStreamer(monitor, on_error_detected=lambda line, ctx: found.append(line),
+                               incident_debounce_seconds=0)
+        streamer._agent_start_ts = 1000.0
+        for chunk in stream:
+            streamer._process_chunk(chunk.decode())
+        self.assertIn("NameError: name 'Flask' is not defined", found)
+        container.status = "paused"
+        self.assertIsNone(monitor.get_log_stream(tail=100))         # nothing new while paused
+
     def test_pod_states_are_classified_like_container_states(self) -> None:
         """gitops mode: KubeTargetMonitor reports in Kubernetes' own words."""
         em = EventManager()
@@ -333,6 +375,60 @@ class DeduplicationTests(unittest.TestCase):
         kinds = [e["details"]["kind"] for e in em.get_events(event_type="crash")]
         self.assertEqual(kinds.count("exit"), 2)            # the crash came back: new event
         self.assertEqual(kinds.count("log_pattern"), 1)     # the soft crash still folds in
+
+    def test_a_crash_loop_ended_by_an_outside_restart_is_over(self) -> None:
+        """O10, seen live after `make demo-reset`: the restart counter still climbed inside the
+        last minute, so the target that served again was a "restart loop" - raised anew on
+        every poll once the outage was closed (nine events in 24 s), and a heal started on
+        the healthy target."""
+        monitor = DockerMonitor(container_name="t")
+        container = _Container("restarting", 1, "unless-stopped")
+        client = type("Client", (), {})()
+        client.containers = type("Containers", (), {"get": lambda _s, name: container})()
+        monitor._get_client = lambda: client  # type: ignore[method-assign]
+        em = EventManager(docker_monitor=monitor)
+        for restarts in (1, 2, 3):                                    # the crash loop
+            container.attrs["RestartCount"] = restarts
+            em.handle_docker_state(monitor.inspect())
+        self.assertEqual(len(em.get_events(event_type="crash")), 1)
+        container.attrs["State"] = {"Status": "running", "ExitCode": 0}   # reset from outside
+        ok = [ProbeResult(url="http://t/", status_code=200, is_healthy=True)]
+        for _ in range(6):                                            # it serves, polled
+            em.handle_docker_state(monitor.inspect())
+            em.handle_probe_round(ok)
+        self.assertEqual(len(em.get_events(event_type="crash")), 1)
+        self.assertFalse(monitor.inspect().is_crash)
+        container.attrs["State"] = {"Status": "restarting", "ExitCode": 1}   # planted again
+        for restarts in (4, 5):
+            container.attrs["RestartCount"] = restarts
+            em.handle_docker_state(monitor.inspect())
+        self.assertEqual(len(em.get_events(event_type="crash")), 2)   # a new bad start is new
+
+    def test_a_container_exit_gets_the_traceback_that_follows_it(self) -> None:
+        """O11, seen live: a crash's exit is raised before its traceback is streamed (the stream
+        re-attaches only after the restart). The exit event kept the healthy tail before it, and
+        picked in the Analyst tab it was diagnosed from access logs (a missing import blamed on
+        get_data)."""
+        streamer = LogStreamer(_NoLogs())
+        streamer.log_buffer.append('172.18.0.1 - - "GET /healthz HTTP/1.1" 200 -')
+        em = EventManager(log_streamer=streamer)
+        exited = em.handle_docker_state(ContainerState(
+            name="t", status="exited", exit_code=1, is_crash=True,
+            error_reason="Container exited with a non-zero status",
+        ))
+        refused = em.handle_http_crash(ProbeResult(url="http://t/", is_crash=True, error_message="refused"))
+        earlier = em.handle_http_crash(ProbeResult(url="http://t/x", status_code=500, is_crash=True))
+        assert exited is not None and refused is not None and earlier is not None
+        earlier.last_seen -= 60                                  # an earlier, unrelated incident
+        traceback = (
+            "Traceback (most recent call last):\n"
+            '  File "/app/app.py", line 11, in <module>\n'
+            "NameError: name 'Flask' is not defined"
+        )
+        em.handle_log_error("NameError: name 'Flask' is not defined", traceback)
+        self.assertEqual(exited.details["context_excerpt"], traceback)
+        self.assertEqual(refused.details["context_excerpt"], traceback)
+        self.assertNotIn("NameError", earlier.details["context_excerpt"])
 
     def test_window_expiry_allows_a_new_event(self) -> None:
         em = EventManager(crash_window_seconds=0.05)

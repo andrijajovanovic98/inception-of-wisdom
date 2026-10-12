@@ -829,6 +829,11 @@
             <div class="card-title">Structured Crash Diagnosis (Ollama JSON)</div>
             <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" onclick="loadLatestCrashLog()">Insert Latest Crash</button>
           </div>
+          <select id="diagEventSelect" class="form-input" style="font-size: 0.75rem;" onchange="pickCrashEvent()"
+                  title="A crash event the Observer raised: its log, container status and exit code go to the Analyst">
+            <option value="">Pick a crash event (or paste a log below)</option>
+          </select>
+          <div id="diagEventFacts" class="muted" style="font-size: 0.75rem;"></div>
           <textarea id="diagLogExcerpt" class="form-input" style="height: 140px; font-family: var(--font-mono); font-size: 0.75rem;" placeholder="Paste traceback / error log excerpt here..."></textarea>
           <div style="display: flex; justify-content: flex-end;">
             <button id="diagnoseBtn" class="btn btn-primary" onclick="requestDiagnosis()">Generate Diagnosis</button>
@@ -1191,6 +1196,7 @@
         if (term && term.dataset.seeded !== "1") seedRecentLogs(term, 0);
         pollObserverLogs();
       }
+      if (tabName === 'analyst') refreshDiagEvents();
     }
 
     // State - autoScroll is shared for Observer logs in every mode (p1/p2/p3/bonus)
@@ -1617,11 +1623,63 @@
       return latestErrorExcerpt.trim();
     }
 
+    // Subject V.2: the diagnosis takes a crash event - its log excerpt, status and exit code.
+    // The picker lists the Observer's crash events, newest first (by event id: one signature
+    // can come back as a new event once its incident is over).
+    let diagEvents = [];
+    let diagEvent = null;
+    let lastDiagEventsKey = "";
+    function crashEventLog(ev) {
+      const d = (ev && ev.details) || {};
+      return d.context_excerpt || d.matched_line || (ev && ev.summary) || "";
+    }
+
+    async function refreshDiagEvents() {
+      const select = document.getElementById('diagEventSelect');
+      if (!select || document.activeElement === select) return;   // never re-render an open list
+      try {
+        const res = await fetch('/api/observer/events?type=crash&limit=20');
+        if (!res.ok) return;
+        const data = await res.json();
+        diagEvents = (data.events || []).slice().reverse();
+        const key = JSON.stringify(diagEvents.map(ev => [ev.id, ev.count]));
+        if (key === lastDiagEventsKey) return;
+        lastDiagEventsKey = key;
+        const keep = select.value;
+        select.innerHTML = '<option value="">Pick a crash event (or paste a log below)</option>' + diagEvents.map(ev => {
+          const when = new Date((ev.last_seen || ev.first_seen || 0) * 1000).toLocaleTimeString([], {hour12: false});
+          const kind = (ev.details || {}).kind || ev.source || '';
+          return `<option value="${escapeHtml(ev.id)}">${escapeHtml(when)} · ${escapeHtml(kind)} · ${escapeHtml((ev.summary || '').slice(0, 70))} (x${ev.count || 1})</option>`;
+        }).join('');
+        if (keep && diagEvents.some(ev => ev.id === keep)) select.value = keep;
+      } catch (_) { /* the picker keeps its list */ }
+    }
+
+    function pickCrashEvent() {
+      const select = document.getElementById('diagEventSelect');
+      const facts = document.getElementById('diagEventFacts');
+      diagEvent = diagEvents.find(ev => ev.id === select.value) || null;
+      if (!diagEvent) {
+        facts.textContent = "";
+        return;
+      }
+      const d = diagEvent.details || {};
+      document.getElementById('diagLogExcerpt').value = crashEventLog(diagEvent);
+      const code = Number.isInteger(d.exit_code) ? d.exit_code : 'none';
+      facts.textContent = `Crash event ${diagEvent.id}: status ${d.status || 'crashed'} · exit code ${code} · ${d.kind || diagEvent.source}`;
+    }
+
     async function loadLatestCrashLog() {
-      const text = await latestCrashContext();
+      lastDiagEventsKey = "";
+      await refreshDiagEvents();
       const box = document.getElementById('diagLogExcerpt');
-      box.value = text || "";
-      if (!text) {
+      if (diagEvents.length) {
+        document.getElementById('diagEventSelect').value = diagEvents[0].id;
+        pickCrashEvent();
+        return;
+      }
+      box.value = latestErrorExcerpt.trim();
+      if (!box.value) {
         box.placeholder = "No crash observed yet - trigger one (make break / break-hard / break-import) or paste a traceback.";
       }
     }
@@ -1646,11 +1704,17 @@
       btn.textContent = "Diagnosing with LLM...";
       out.innerHTML = `<div style="color: #38bdf8; text-align: center;">Running Ollama structured diagnosis (< 3B)...</div>`;
 
+      // A picked crash event lends its status and exit code (a pasted log has neither).
+      const facts = (diagEvent && diagEvent.details) || {};
       try {
         const res = await fetch('/api/analyst/diagnose', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ log_excerpt: excerpt })
+          body: JSON.stringify({
+            log_excerpt: excerpt,
+            status: diagEvent ? (facts.status || "crashed") : "crashed",
+            exit_code: diagEvent && Number.isInteger(facts.exit_code) ? facts.exit_code : null,
+          })
         });
         const data = await res.json();
         out.innerHTML = `
@@ -2217,6 +2281,7 @@ RuntimeError: Intentional target service crash for IoW verification`;
         refreshOverview();
         if (tabs.includes("loop")) await refreshLoopHistory();
         refreshEvents();
+        if (tabs.includes("analyst")) refreshDiagEvents();
         if (tabs.includes("bonus")) refreshBonus();
       };
       refreshAll();

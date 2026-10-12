@@ -254,6 +254,7 @@ class WisdomLoop:
         preset_diagnosis: Optional[DiagnosticReport] = None,
         fast_path_patch: Optional[StructuredPatch] = None,
         diagnose_fn: Optional[Callable[..., DiagnosticReport]] = None,
+        check_first: bool = True,
     ) -> HealCycleRecord:
         """Runs the complete self-healing cycle up to 3 attempts.
 
@@ -262,6 +263,8 @@ class WisdomLoop:
         the model at all; if it fails verification the loop falls back to the LLM.
         diagnose_fn replaces the Analyst for every attempt that needs a diagnosis (the
         second-opinion mode: each retry is voted on too, not only the first attempt).
+        check_first=False: the caller already asked nothing_to_patch() for this crash
+        (checking again would replay the failing request a second time).
         """
         if not self._try_claim_cycle():
             logger.warning(
@@ -281,43 +284,18 @@ class WisdomLoop:
         cycle_id = str(uuid.uuid4())[:8]
         start_now = time.time()
 
-        current_error_log = (
-            crash_event.details.get("context_excerpt")
-            or crash_event.details.get("matched_line")
-            or crash_event.details.get("log_excerpt")
-            or crash_event.summary
-        )
+        current_error_log = self.error_log_of(crash_event)
         current_exit_code = crash_event.details.get("exit_code")
         current_status = crash_event.details.get("status", "crashed")
         # "Decides whether the symptom is gone": the request that crashed the target
         # is replayed after each redeploy (see TargetVerifier).
-        probe_paths = getattr(getattr(self.verifier, "http_probe", None), "probe_paths", None) or []
-        replay = failing_requests_from_log(current_error_log or "", ignore_paths=probe_paths)
+        replay = self._replay_for(current_error_log)
 
-        # A target someone stopped or paused is down, but its code is not broken: told to
-        # fix it anyway, the model rewrote working routes and "healed" (seen live after a
-        # `docker stop`). Nothing is patched, committed or restarted.
-        inspect = getattr(self.docker_monitor, "inspect", None)
-        state = inspect() if callable(inspect) else None
-        if state is not None and getattr(state, "stopped", False):
-            logger.info(f"Nothing to patch: {state.error_reason}")
-            self._release_cycle()
-            return self.record_refused_cycle(crash_event, f"Nothing to patch: {state.error_reason}.")
-
-        # A crash that is already gone has nothing left to heal: patching now could only
-        # change working code (a transient blip, an old event picked by hand, a sibling
-        # signature of a crash an earlier heal fixed).
-        check = getattr(self.verifier, "symptom_present", None)
-        if callable(check):
-            present, why = check(replay)
-            if not present:
-                logger.info(f"Nothing to heal: the symptom is gone ({why}). Nothing was changed.")
+        if check_first:
+            refused = self._nothing_to_patch(crash_event, replay)
+            if refused is not None:
                 self._release_cycle()
-                return self.record_refused_cycle(
-                    crash_event,
-                    f"The symptom is gone ({why}), so nothing was patched or restarted.",
-                    status="not_needed",
-                )
+                return refused
 
         # Record the exact state the target runs right now (a snapshot commit when the
         # working tree differs) and point the heal branch at it. Nothing is checked
@@ -564,6 +542,57 @@ class WisdomLoop:
                 f"(Status: {cycle_record.status.upper()}) ===")
 
         return cycle_record
+
+    @staticmethod
+    def error_log_of(crash_event: ObserverEvent) -> str:
+        """The log text a crash event hands to the Analyst."""
+        return (
+            crash_event.details.get("context_excerpt")
+            or crash_event.details.get("matched_line")
+            or crash_event.details.get("log_excerpt")
+            or crash_event.summary
+        )
+
+    def _replay_for(self, error_log: str) -> List[Any]:
+        """The request(s) that crashed the target - never one of the Observer's own probes."""
+        probe_paths = getattr(getattr(self.verifier, "http_probe", None), "probe_paths", None) or []
+        return failing_requests_from_log(error_log or "", ignore_paths=probe_paths)
+
+    def nothing_to_patch(self, crash_event: ObserverEvent) -> Optional[HealCycleRecord]:
+        """Why this crash needs no patch (recorded in the history), or None when it does.
+
+        Asked before a heal cycle, and before a patch is proposed for human review: with
+        review on, a crash that was already gone (or a target stopped on purpose) still
+        went to the model, and a review PR proposed a change to working code (seen live).
+        """
+        return self._nothing_to_patch(crash_event, self._replay_for(self.error_log_of(crash_event)))
+
+    def _nothing_to_patch(
+        self, crash_event: ObserverEvent, replay: List[Any]
+    ) -> Optional[HealCycleRecord]:
+        # A target someone stopped or paused is down, but its code is not broken: told to
+        # fix it anyway, the model rewrote working routes and "healed" (seen live after a
+        # `docker stop`). Nothing is patched, committed or restarted.
+        inspect = getattr(self.docker_monitor, "inspect", None)
+        state = inspect() if callable(inspect) else None
+        if state is not None and getattr(state, "stopped", False):
+            logger.info(f"Nothing to patch: {state.error_reason}")
+            return self.record_refused_cycle(crash_event, f"Nothing to patch: {state.error_reason}.")
+
+        # A crash that is already gone has nothing left to heal: patching now could only
+        # change working code (a transient blip, an old event picked by hand, a sibling
+        # signature of a crash an earlier heal fixed).
+        check = getattr(self.verifier, "symptom_present", None)
+        if callable(check):
+            present, why = check(replay)
+            if not present:
+                logger.info(f"Nothing to heal: the symptom is gone ({why}). Nothing was changed.")
+                return self.record_refused_cycle(
+                    crash_event,
+                    f"The symptom is gone ({why}), so nothing was patched or restarted.",
+                    status="not_needed",
+                )
+        return None
 
     def _target_facts(self) -> str:
         """The target's exposed ports and environment, as a fact for the patch prompt.

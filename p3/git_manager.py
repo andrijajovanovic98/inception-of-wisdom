@@ -756,8 +756,12 @@ class GitManager:
         if not pre:
             return None
         tip = self.get_branch_tip(self.heal_branch)
-        agent_state = bool(tip) and self.verify_heal_paths_match(tip or pre)[0]
-        untouched = self.verify_heal_paths_match(pre)[0]
+        # Operator-owned files aside: an edit to iow.config.yml (a shorter grace period is
+        # the subject's own example) made the tree look like someone else's work, and the
+        # unverified patch stayed on disk for the next cycle to take as pre-loop (seen in
+        # this audit). The rollback keeps the operator's file anyway.
+        agent_state = bool(tip) and self.heal_paths_at(tip or pre)
+        untouched = self.heal_paths_at(pre)
 
         self._pre_loop_hash = pre
         self._created_paths = []
@@ -862,6 +866,11 @@ class GitManager:
                 f"{differing} (operator-owned edits or files added during the cycle)."
             )
         return True
+
+    def heal_paths_at(self, revision: str) -> bool:
+        """Whether the heal paths on disk are exactly `revision` - operator-owned files aside."""
+        same, differing = self.verify_heal_paths_match(revision)
+        return same or (bool(differing) and all(path in self.protected_paths for path in differing))
 
     def verify_heal_paths_match(self, revision: str) -> Tuple[bool, List[str]]:
         """Does the working tree of the heal paths hash to exactly `revision`'s tree?"""

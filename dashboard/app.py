@@ -470,19 +470,24 @@ class InceptionOrchestrator:
 
     @staticmethod
     def _diagnosis_from_consensus(report: Any) -> DiagnosticReport:
-        """A diagnosis only when the two opinions agree; a divergence is an explicit failure."""
+        """A diagnosis only when the two opinions agree; anything else is an explicit failure -
+        a divergence, or no usable opinion at all (the model unreachable is said as such)."""
         chunks = list(report.opinion_a.get("candidate_chunks") or [])
         if not report.consensus_reached:
+            why = report.consensus_summary
+            if report.diverged:
+                mode, why = "diverged", f"{why} Only an agreement triggers the patch."
+            else:
+                modes = {report.opinion_a.get("mode"), report.opinion_b.get("mode")}
+                mode = "unavailable" if modes == {"unavailable"} else "unusable"
             return DiagnosticReport(
                 success=False,
                 summary="",
                 files=[],
                 candidate_chunks=chunks,
                 raw_response="second_opinion_consensus",
-                error_message=(
-                    f"{report.consensus_summary} Only an agreement triggers the patch."
-                ),
-                mode="diverged",
+                error_message=why,
+                mode=mode,
                 timestamp=time.time(),
             )
         # The root cause (opinion A), not the vote's bookkeeping: this summary becomes
@@ -566,6 +571,16 @@ class InceptionOrchestrator:
         log_excerpt = self._crash_context(event)
         event.details["context_excerpt"] = log_excerpt
 
+        # Nothing a patch can fix - a target stopped on purpose, or a crash that is already
+        # gone: asked once, before the classifier, the second opinion or a review PR spend
+        # anything on it. With review on, a heal of an old event used to go to the model and
+        # open a review PR proposing a change to working code (seen live: Gitea #14).
+        refused = self.wisdom_loop.nothing_to_patch(event)
+        if refused is not None:
+            if refused.status == "not_needed":
+                self.event_manager.close_incidents("crash")
+            return
+
         # --- Bonus: tiny classifier fast path -------------------------------------
         # A known symptom reuses its verified patch and skips the LLM entirely.
         fast_path_patch = None
@@ -606,11 +621,16 @@ class InceptionOrchestrator:
                 if report.consensus_reached:
                     # Reuse the agreed answer instead of paying for it twice.
                     preset_diagnosis = self._diagnosis_from_consensus(report)
-                else:
+                elif report.diverged:
                     consensus_diverged = True
                     logger.warning(
                         f"Second Opinion DIVERGED for [{sig[:8]}] - routing to a HITL PR."
                     )
+                else:
+                    # No usable opinion at all (the model is down, or both answers were
+                    # unusable): nothing disagreed. The loop reports the Analyst's explicit
+                    # failure on every attempt, as without the second opinion.
+                    logger.warning(f"Second Opinion produced no vote for [{sig[:8]}]: {report.error_message}")
             except Exception as e:
                 logger.warning(f"Consensus evaluation failed: {e}")
 
@@ -632,36 +652,54 @@ class InceptionOrchestrator:
             proposed: Optional[PullRequestRecord] = None
             detail = ""
             try:
-                diagnosis = preset_diagnosis or self.diagnostician.diagnose_crash(
-                    log_excerpt,
-                    exit_code=event.details.get("exit_code"),
-                    status=event.details.get("status") or "crashed",
-                    exclude_files=self.git_manager.protected_paths,
-                )
-                if not diagnosis.success:
-                    detail = f"diagnosis failed: {diagnosis.error_message}"
-                else:
-                    patch = self.patcher.generate_patch(diagnosis, log_excerpt)
-                    if not (patch.success and patch.files):
-                        detail = f"patch generation failed: {patch.error_message}"
+                patch: Optional[StructuredPatch] = None
+                summary = ""
+                # A review PR gets the same pre-disk gate as an applied patch.
+                if fast_path_patch is not None:
+                    # Bonus 3 holds under review too: a known symptom on exactly the code its
+                    # verified patch was learned on is proposed without asking the model
+                    # (it used to go to the model while the classifier counted a bypass).
+                    if self.sanity_checker.check_patch(fast_path_patch).passed:
+                        patch = fast_path_patch
+                        summary = (
+                            f"{fast_path_patch.summary} (known symptom {fast_path_symptom}: the "
+                            "classifier's verified patch, the model was not asked)"
+                        )
                     else:
-                        # A review PR gets the same pre-disk gate as an applied patch.
-                        sanity = self.sanity_checker.check_patch(patch)
-                        if not sanity.passed:
-                            detail = "sanity check refused the patch: " + "; ".join(sanity.reasons)
+                        logger.warning("The classifier's cached patch no longer passes the sanity "
+                                       "gate - asking the model instead.")
+                if patch is None:
+                    diagnosis = preset_diagnosis or self.diagnostician.diagnose_crash(
+                        log_excerpt,
+                        exit_code=event.details.get("exit_code"),
+                        status=event.details.get("status") or "crashed",
+                        exclude_files=self.git_manager.protected_paths,
+                    )
+                    if not diagnosis.success:
+                        detail = f"diagnosis failed: {diagnosis.error_message}"
+                    else:
+                        candidate = self.patcher.generate_patch(diagnosis, log_excerpt)
+                        if not (candidate.success and candidate.files):
+                            detail = f"patch generation failed: {candidate.error_message}"
                         else:
-                            patch_files = [
-                                {"path": f.path, "op": f.op, "content": f.content}
-                                for f in patch.files
-                            ]
-                            proposed = self._propose_hitl_patch(
-                                event, log_excerpt, diagnosis.summary, patch_files, cycle_id
-                            )
-                            if not proposed:
-                                detail = (
-                                    "the Gitea review PR could not be opened "
-                                    "(is the forge up? `make pr-bonus`)"
-                                )
+                            sanity = self.sanity_checker.check_patch(candidate)
+                            if sanity.passed:
+                                patch, summary = candidate, diagnosis.summary
+                            else:
+                                detail = "sanity check refused the patch: " + "; ".join(sanity.reasons)
+                if patch is not None:
+                    patch_files = [
+                        {"path": f.path, "op": f.op, "content": f.content}
+                        for f in patch.files
+                    ]
+                    proposed = self._propose_hitl_patch(
+                        event, log_excerpt, summary, patch_files, cycle_id
+                    )
+                    if not proposed:
+                        detail = (
+                            "the Gitea review PR could not be opened "
+                            "(is the forge up? `make pr-bonus`)"
+                        )
             except Exception as e:
                 logger.error(f"HITL patch proposal failed: {e}")
                 detail = f"unexpected error: {e}"
@@ -694,6 +732,7 @@ class InceptionOrchestrator:
             preset_diagnosis=preset_diagnosis,
             fast_path_patch=fast_path_patch,
             diagnose_fn=self._consensus_diagnosis if second_opinion else None,
+            check_first=False,                       # asked above, before the bonus gates
         )
         logger.info(f"Wisdom Loop finished with status: {result.status.upper()}")
         if result.status in ("healed", "not_needed"):

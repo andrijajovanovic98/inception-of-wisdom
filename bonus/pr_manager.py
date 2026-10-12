@@ -12,9 +12,10 @@ import json
 import time
 import difflib
 import logging
+import threading
 import urllib.error
 import urllib.request
-from typing import Optional, List, Dict, Any, Tuple, Callable
+from typing import Optional, List, Dict, Any, Set, Tuple, Callable
 from dataclasses import dataclass, asdict, field
 
 try:
@@ -93,6 +94,9 @@ class PullRequestManager:
         self._status_timeout: float = 2.0
         # Gitea checks a new PR's mergeability in the background; an approval waits for it.
         self.remote_merge_wait: float = 20.0
+        # A PR is decided once: approve and reject both start by marking it as being decided.
+        self._decision_lock = threading.Lock()
+        self._deciding: Set[str] = set()
         self._store_unreadable = False
         self._load_creds()
         self._load_store()
@@ -648,11 +652,28 @@ Verified healthy after Wisdom Loop auto-heal.
         if code not in (200, 201):
             logger.warning(f"Failed to close Gitea PR #{pr.remote_pr_number}: {data}")
 
-    def _tree_is_at(self, revision: str) -> bool:
-        """Whether demo_app/ on disk is exactly `revision` (operator-owned files aside)."""
-        same, differing = self.git_manager.verify_heal_paths_match(revision)
-        protected = set(self.git_manager.protected_paths)
-        return same or (bool(differing) and all(path in protected for path in differing))
+    def _begin_decision(self, pr_id: str) -> Tuple[Optional[PullRequestRecord], str]:
+        """Take the decision on a pending PR: (the PR, "") - or (None, why not).
+
+        Only a pending PR can be decided, and only once. A rejection used to be accepted for
+        a PR that was already approved and running, and one sent while an approval was still
+        landing succeeded too: either way the record said "rejected" next to the approved,
+        deployed code (seen live).
+        """
+        with self._decision_lock:
+            pr = self.prs.get(pr_id)
+            if not pr:
+                return None, f"PR '{pr_id}' not found."
+            if pr_id in self._deciding:
+                return None, f"PR '{pr_id}' is being decided right now - its approval is still landing."
+            if pr.status != "pending_review":
+                return None, f"PR '{pr_id}' is already {pr.status}."
+            self._deciding.add(pr_id)
+            return pr, ""
+
+    def _end_decision(self, pr_id: str) -> None:
+        with self._decision_lock:
+            self._deciding.discard(pr_id)
 
     def merge_pr(
         self,
@@ -665,20 +686,29 @@ Verified healthy after Wisdom Loop auto-heal.
         on_merged lands the approved code (redeploy + verification) and may return
         the outcome; {"reverted": True} means it failed and was rolled back.
         """
-        pr = self.prs.get(pr_id)
-        if not pr:
-            return False, f"PR '{pr_id}' not found."
-        if pr.status != "pending_review":
-            return False, f"PR '{pr_id}' is already {pr.status}."
+        pr, refusal = self._begin_decision(pr_id)
+        if pr is None:
+            return False, refusal
+        try:
+            return self._merge(pr, comment, on_merged)
+        finally:
+            self._end_decision(pr_id)
 
+    def _merge(
+        self,
+        pr: PullRequestRecord,
+        comment: Optional[str],
+        on_merged: Optional[Callable[[PullRequestRecord], Optional[Dict[str, Any]]]],
+    ) -> Tuple[bool, str]:
+        pr_id = pr.pr_id
         # A PR is a set of complete files built on base_revision. Landed on a tree that
         # has moved since (a later heal, an operator edit), it would silently revert
         # that change. A verified-heal PR is already on disk, which is fine too.
         head = self.git_manager.get_branch_tip(pr.branch_name)
         if not head:
             return False, f"Review branch '{pr.branch_name}' no longer exists."
-        already_applied = self._tree_is_at(head)
-        if not already_applied and not self._tree_is_at(pr.base_revision):
+        already_applied = self.git_manager.heal_paths_at(head)
+        if not already_applied and not self.git_manager.heal_paths_at(pr.base_revision):
             return False, (
                 f"PR '{pr_id}' is stale: the target's code changed after it was opened "
                 f"(it was built on {pr.base_revision[:8]}). Landing it would revert that "
@@ -806,9 +836,9 @@ Verified healthy after Wisdom Loop auto-heal.
 
     def reject_pr(self, pr_id: str, reason: Optional[str] = None) -> Tuple[bool, str]:
         """Human rejection: close remote PR and discard review branch."""
-        pr = self.prs.get(pr_id)
-        if not pr:
-            return False, f"PR '{pr_id}' not found."
+        pr, refusal = self._begin_decision(pr_id)
+        if pr is None:
+            return False, refusal
         try:
             self._close_remote_pr(pr)
             self._drop_branch(pr.branch_name)
@@ -821,3 +851,5 @@ Verified healthy after Wisdom Loop auto-heal.
         except Exception as e:
             logger.error(f"Failed to reject PR [{pr_id}]: {e}")
             return False, f"Error rejecting PR: {str(e)}"
+        finally:
+            self._end_decision(pr_id)

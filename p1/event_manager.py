@@ -19,7 +19,7 @@ from typing import Optional, List, Dict, Deque, Callable, Any
 from dataclasses import dataclass, field, asdict
 
 from p1.docker_monitor import DockerMonitor, ContainerState
-from p1.log_streamer import LogStreamer, latest_error_block
+from p1.log_streamer import LogStreamer, latest_error_block, latest_error_span
 from p1.http_probe import HttpProbeManager, ProbeResult
 
 logger = logging.getLogger("p1.event_manager")
@@ -30,6 +30,10 @@ MAX_ACTIVE_SIGNATURES = 500
 DOWN_KINDS = frozenset({"exit", "restart_loop", "oom", "dead", "unreachable"})
 # Consecutive healthy probe rounds (container running) that end a down incident.
 RECOVERY_ROUNDS = 2
+# A container exit or a dead probe is raised before the crash's traceback has been streamed
+# (the log stream re-attaches only after the restart): a traceback logged within this many
+# seconds of their last occurrence is the error report of the same incident.
+LEND_WINDOW_S = 10.0
 
 _TRACEBACK_FRAME_RE = re.compile(r'File\s+"([^"]+)",\s+line\s+(\d+)(?:,\s+in\s+([A-Za-z0-9_]+))?')
 _EXCEPTION_RE = re.compile(r'([A-Za-z0-9_.]*(?:Error|Exception|CRITICAL|Fatal))\s*:\s*(.*)')
@@ -276,7 +280,11 @@ class EventManager:
             logger.debug(f"Suppressed docker crash signal during restart window: {state.error_reason}")
             return None
         kind = self._docker_crash_kind(state)
-        raw_key = normalize_incident_key(f"{state.name}:{kind}:{state.error_reason}")
+        # One incident per signal kind. The reason text stays out of the key: the poll and the
+        # event stream word the same exit differently ("terminated with non-zero exit code 1"
+        # / "exited with a non-zero status"), and without a restart policy, where the poll sees
+        # the exited container too, one crash was raised as two exit events (seen live).
+        raw_key = f"{state.name}:{kind}"
         details = state.to_dict()
         details["kind"] = kind
         # The container side knows *that* it died, the log knows *why*: carry the
@@ -297,7 +305,7 @@ class EventManager:
         """Processes one detected error incident from LogStreamer."""
         raw_key = normalize_incident_key(matched_line, context_excerpt)
         summary = f"Error in container logs: {matched_line[:100]}"
-        return self.emit_event(
+        event = self.emit_event(
             event_type="crash",
             source="log",
             raw_key=raw_key,
@@ -308,6 +316,27 @@ class EventManager:
                 "context_excerpt": context_excerpt
             }
         )
+        self._lend_error_report(context_excerpt)
+        return event
+
+    def _lend_error_report(self, context_excerpt: str) -> None:
+        """Give this traceback to the container-side and probe events of the same incident.
+
+        Their log context is the tail at the moment they were raised, and a crash's exit (or
+        the dead probe) comes first: the tail held no error report, only what the target
+        logged before. Picked in the Analyst tab, such an event was diagnosed from healthy
+        access logs (seen live: a missing import blamed on get_data).
+        """
+        if latest_error_span(context_excerpt.splitlines()) is None:
+            return
+        now = time.time()
+        with self._lock:
+            for event in list(self._events)[-30:]:
+                if event.type != "crash" or event.source == "log" or now - event.last_seen > LEND_WINDOW_S:
+                    continue
+                own = str(event.details.get("context_excerpt") or "")
+                if latest_error_span(own.splitlines()) is None:
+                    event.details["context_excerpt"] = context_excerpt
 
     def handle_http_crash(self, probe: ProbeResult) -> Optional[ObserverEvent]:
         """Processes a 5xx or connection crash from HttpProbeManager."""
@@ -474,6 +503,12 @@ class EventManager:
         self._healthy_rounds = self._healthy_rounds + 1 if healthy else 0
         if self._healthy_rounds < RECOVERY_ROUNDS:
             return
+        if self._healthy_rounds == RECOVERY_ROUNDS:
+            # The container side must agree: its restarts (and a pod's last termination)
+            # are history now, or the same outage is raised again on the next poll.
+            forget = getattr(self.docker_monitor, "forget_restart_history", None)
+            if callable(forget):
+                forget()
         with self._lock:
             closed = [
                 sig for sig, ev in self._active_signatures.items()

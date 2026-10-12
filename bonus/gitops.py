@@ -100,6 +100,19 @@ def _which(name: str) -> Optional[str]:
     return None
 
 
+def _put_bin_dirs_first() -> None:
+    """The GitOps CLIs' directories in front of PATH, each once.
+
+    tools_available() runs on every Observer poll in GitOps mode. Prepending on every call
+    grew PATH by a few dozen bytes a time until, after a few thousand polls, it passed the
+    kernel's 128 KiB limit for one environment string: every program the agent starts
+    (kubectl, git, argocd) then failed with "Argument list too long".
+    """
+    first = list(dict.fromkeys(_bin_dirs()))
+    rest = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p not in first]
+    os.environ["PATH"] = os.pathsep.join(first + rest)
+
+
 def tools_available() -> Tuple[bool, str]:
     """kubectl present and the cluster actually answering."""
     if _which("kubectl") is None:
@@ -108,7 +121,7 @@ def tools_available() -> Tuple[bool, str]:
             "(run make argocd-bonus - installs into /tmp/iow/bin, no sudo)"
         )
 
-    os.environ["PATH"] = os.pathsep.join(_bin_dirs()) + os.pathsep + os.environ.get("PATH", "")
+    _put_bin_dirs_first()
     kube = os.environ.get("KUBECONFIG") or os.path.join(
         os.environ.get("IOW_DIR", "/tmp/iow"), "kube", "config"
     )
@@ -521,7 +534,10 @@ class KubeTargetMonitor:
         )
         self.container_name = f"{namespace}/{deployment}"
         self._last_state: Optional[Any] = None
-        self._restart_baseline: Optional[int] = None
+        # (pod uid, restart count) up to which the pod's last termination is history: the
+        # pod as the agent first saw it, or as it was when it served again.
+        self._restart_baseline: Optional[Tuple[str, int]] = None
+        self._last_pod: Optional[Tuple[str, int]] = None
 
     # -- state ---------------------------------------------------------------
     def inspect(self) -> Any:
@@ -578,6 +594,15 @@ class KubeTargetMonitor:
         phase = str(pod.get("status", {}).get("phase", "unknown")).lower()
         statuses = pod.get("status", {}).get("containerStatuses", []) or []
         restarts = sum(int(cs.get("restartCount", 0) or 0) for cs in statuses)
+        uid = str((pod.get("metadata") or {}).get("uid", ""))
+        if self._restart_baseline is None:
+            self._restart_baseline = (uid, restarts)
+        self._last_pod = (uid, restarts)
+        # Kubernetes keeps a container's last termination in the pod status until its next
+        # restart. A pod that came back on its own (a crash-and-restart in place) read as
+        # crashed on every poll, and once the Observer closed the outage it was raised anew
+        # each time. Only a termination after the baseline counts.
+        settled = self._restart_baseline[0] == uid and restarts <= self._restart_baseline[1]
 
         status = {"running": "running", "pending": "restarting", "failed": "exited",
                   "succeeded": "exited"}.get(phase, phase)
@@ -586,9 +611,12 @@ class KubeTargetMonitor:
         reason = None
 
         for cs in statuses:
-            terminated = (cs.get("lastState", {}) or {}).get("terminated") \
-                or (cs.get("state", {}) or {}).get("terminated")
-            waiting = (cs.get("state", {}) or {}).get("waiting") or {}
+            current = cs.get("state", {}) or {}
+            last = (cs.get("lastState", {}) or {}).get("terminated")
+            terminated = current.get("terminated") or (
+                None if settled and "running" in current else last
+            )
+            waiting = current.get("waiting") or {}
             if terminated and terminated.get("exitCode", 0) not in (0, None):
                 exit_code = terminated.get("exitCode")
                 is_crash = True
@@ -600,9 +628,6 @@ class KubeTargetMonitor:
                 is_crash = True
                 status = "restarting"
                 reason = f"Pod entered CrashLoopBackOff (restarts: {restarts})"
-
-        if self._restart_baseline is None:
-            self._restart_baseline = restarts
 
         state = ContainerState(
             name=self.container_name,
@@ -618,6 +643,11 @@ class KubeTargetMonitor:
 
     def get_last_state(self) -> Optional[Any]:
         return self._last_state
+
+    def forget_restart_history(self) -> None:
+        """The target serves again: the newest pod's terminations so far are history."""
+        if self._last_pod is not None:
+            self._restart_baseline = self._last_pod
 
     def target_facts(self) -> Dict[str, Any]:
         """Container ports and (non-secret) literal env of the newest pod's app container."""

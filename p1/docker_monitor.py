@@ -153,6 +153,19 @@ class DockerMonitor:
                 self._client = None
                 return None
 
+    def forget_restart_history(self) -> None:
+        """The target serves again: the restarts counted so far belong to an outage that is over.
+
+        The restart-loop check reads the restart counter over the last minute, and only the
+        agent's own restart used to clear it. A crash loop ended by any other restart
+        (`make demo-reset`, a hand fix and `docker restart`) kept "climbing" in that window:
+        a restart loop on a target that served again, raised anew on every poll once the
+        Observer had closed the outage (seen live: nine events in 24 s, and a heal started
+        on the healthy target).
+        """
+        self._restart_samples.clear()
+        self._restarting_since = None
+
     def _is_restart_loop(self, now: float, restart_count: int) -> bool:
         """True when the container restarted repeatedly inside the recent window."""
         self._restart_samples.append((now, restart_count))
@@ -324,7 +337,12 @@ class DockerMonitor:
         try:
             container = client.containers.get(self.container_name)
             container.reload()
-            if container.status not in ("running", "restarting"):
+            # An exited (or dead) container's stream is finite - the daemon sends what it
+            # logged and ends it - but that output is the crash itself: without a restart
+            # policy the target stayed down and its traceback never reached the Observer (seen
+            # live: no crash in the log view, no log signal). Paused or never-started
+            # containers have nothing new to say.
+            if container.status not in ("running", "restarting", "exited", "dead"):
                 return None
             kwargs: Dict[str, Any] = {
                 "stream": True,

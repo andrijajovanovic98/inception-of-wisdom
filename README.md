@@ -105,7 +105,7 @@ The centralized administrative interface provides a modern SRE console powered b
 | Module | Component | Description |
 |:---|:---|:---|
 | **1. Observer** | `p1/observer_api.py` | Live container lifecycle telemetry (`running`, `restarting`, `dead`), real-time FIFO log streaming, active synthetic HTTP probes, and deduplicated incident log. |
-| **2. Analyst** | `p2/analyst_api.py` | Semantic vector search across indexed codebase chunks, real-time cosine similarity ranking, and structured root-cause diagnostic reports. |
+| **2. Analyst** | `p2/analyst_api.py` | Semantic vector search across indexed codebase chunks, real-time cosine similarity ranking, and structured root-cause diagnostic reports of a picked crash event (its log, container status and exit code). |
 | **3. Wisdom Loop** | `p3/loop_api.py` | Multi-turn remediation history, full-file JSON patch inspector, commit SHA tracking, dynamic safety metrics, manual remediation trigger, and force rollback. |
 | **4. Extensions** | `bonus/bonus_api.py` | Symptom classifier stats, Second Opinion consensus tester, Gitea HITL / verified PR queue, and GitOps redeploy hooks (`bonus/gitops.py`). |
 
@@ -224,12 +224,12 @@ graph LR
 ### 2. "Second Opinion" Consensus Engine (`bonus/consensus.py`)
 * **Objective:** Mitigate single-prompt hallucination in sub-3B parameter models.
 * **Mechanism:** Two independent prompts (root-cause vs defensive architecture) vote on suspect files.
-* **Governance:** Only an agreement triggers the patch - on every attempt: a retry after a failed verification is voted on again, and a divergence there is a failed attempt (after three, the usual rollback). On a divergence before the first attempt the patch goes to a review PR, or - with no forge reachable - is withheld and recorded in the history; it is never applied autonomously. Off by default (`second_opinion_mandatory`), toggled in the Bonus tab.
+* **Governance:** Only an agreement triggers the patch - on every attempt: a retry after a failed verification is voted on again, and a divergence there is a failed attempt (after three, the usual rollback). On a divergence before the first attempt the patch goes to a review PR, or - with no forge reachable - is withheld and recorded in the history; it is never applied autonomously. An unreachable model (or two answers that cite nothing real) is not a divergence: there is no vote, and the loop reports the Analyst's explicit failure on every attempt, as without the second opinion. Off by default (`second_opinion_mandatory`), toggled in the Bonus tab.
 * **Test:** Bonus tab → **Second Opinion Consensus Tester**, or `POST /api/bonus/consensus/evaluate`.
 
 ### 3. Human-in-the-Loop PR Manager (`bonus/pr_manager.py`)
 * **Objective:** Auditable change management via local **Gitea** (`make pr-bonus` / `make gitea`).
-* **Mechanism:** With HITL on nothing is applied until approval: the patch (after the sanity gate) becomes a review branch `iow/review/...` with a dashboard diff. Approving lands exactly that commit, the way the loop lands a heal: under the heal bounds (kill switch, single-flight, rate limit, hard cap), redeployed through the Verifier (in GitOps mode that pushes the branch Argo CD tracks), and kept only if the target stays up for the grace period - otherwise it is rolled back to the PR's base and marked `reverted`. The PR is merged on Gitea as well: the approval waits while Gitea is still checking the PR, and a merge Gitea refuses is reported (the PR then stays open there). The decision also shows on the heal cycle that proposed the PR in the Wisdom Loop tab (healed, rolled back, or refused with the reviewer's reason). A PR whose base no longer matches the target's code is refused as stale instead of reverting the newer code, and a PR created through the API passes the sanity gate first. Verified heals also get a record PR (`iow/heal/<cycle>` → `iow/base/<cycle>`) when HITL is off. A decided PR's local branch is deleted (Gitea keeps its own copy), and at start the agent deletes the branches of PRs no longer on record - the records live under `/tmp/iow`, which a reboot wipes - touching only branches whose tip the agent wrote.
+* **Mechanism:** With HITL on nothing is applied until approval: the patch (after the sanity gate) becomes a review branch `iow/review/...` with a dashboard diff. Approving lands exactly that commit, the way the loop lands a heal: under the kill switch and single-flight (a human approval is not counted against the hourly rate limit or the lifetime cap), redeployed through the Verifier (in GitOps mode that pushes the branch Argo CD tracks), and kept only if the target stays up for the grace period - otherwise it is rolled back to the PR's base and marked `reverted`. The PR is merged on Gitea as well: the approval waits while Gitea is still checking the PR, and a merge Gitea refuses is reported (the PR then stays open there). The decision also shows on the heal cycle that proposed the PR in the Wisdom Loop tab (healed, rolled back, or refused with the reviewer's reason). A PR whose base no longer matches the target's code is refused as stale instead of reverting the newer code, and a PR created through the API passes the sanity gate first. A PR is decided once: rejecting an approved PR, or one whose approval is still landing, is refused. With review on, the same checks as the autonomous loop come first - a crash that is already gone or a target stopped on purpose gets no review PR - and a known symptom is proposed from the classifier's verified patch, without asking the model. Verified heals also get a record PR (`iow/heal/<cycle>` → `iow/base/<cycle>`) when HITL is off. A decided PR's local branch is deleted (Gitea keeps its own copy), and at start the agent deletes the branches of PRs no longer on record - the records live under `/tmp/iow`, which a reboot wipes - touching only branches whose tip the agent wrote.
 * **Credentials:** `/tmp/iow/gitea/gitea.env` - UI http://127.0.0.1:3000 (`iow` / `iowiow123`).
 * **API:** `GET /api/bonus/prs`, `POST /api/bonus/prs/create`, `/prs/{id}/merge`, `/prs/{id}/reject`.
 
@@ -272,7 +272,7 @@ Before any AI-generated patch is applied to the filesystem, it must pass:
 1. **File Count Bound:** Maximum 3 files modified per operation.
 2. **Shrinkage Guard:** A file may not shrink by more than 60% - whatever the `op` says (a `create` over an existing file counts, deleting a non-empty file is a 100% shrink) and whatever its size.
 3. **Trivial Placeholder Filter:** A non-empty file may not become a stub (`pass`, `...`, a docstring, `TODO`), and lazy markers (`# TODO`, `rest of code unchanged`) may not be introduced.
-4. **Retrieval Marker Filter:** Prompt scaffolding (`--- File: … ---`, `--- Code Snippet #n ---`, region fences) may not leak into the code.
+4. **Retrieval Marker Filter:** Prompt scaffolding (`--- File: … ---`, `--- Code Snippet #n ---`, region fences, the region header, the facts and retry notes, a prompt's section headers) may not leak into the code - also not as a comment, the only form in which such a line survives the parse check of a Python file.
 5. **Scope:** Only paths inside `demo_app/`, never the operator-owned `iow.config.yml`.
 6. **AST Syntax Parse & no-op check:** Modified Python must compile, and a patch identical to the file on disk is refused.
 7. **No lost definitions:** A patch may not leave a name undefined that the file still uses - a rewrite that drops an import or a constant is refused before it costs a redeploy.
@@ -308,6 +308,8 @@ culprit.
 ## Operational Guide
 
 ### Ports (quick map)
+
+Every port the Docker stack publishes is bound to `127.0.0.1` (the dashboard is an unauthenticated control API in front of the Docker socket); the host runs listen on `127.0.0.1` too.
 
 | Port | Service |
 |:---:|:---|
@@ -465,7 +467,7 @@ Small LLMs (< 3B parameters) struggle with character-accurate arithmetic require
 <summary><b>How are infinite restart and patch loops prevented?</b></summary>
 <br>
 Through a layered defense-in-depth approach:
-1. Event deduplication sliding window (90 seconds for crashes - longer than Docker's 60 s maximum restart backoff, and at least 330 s in GitOps mode, where Kubernetes backs off up to 300 s - and 300 for suggestions): an ongoing crash loop stays one event. A verified heal - or the target serving again, however it came back - ends the outage, so the same crash planted again is a new event (still subject to the cooldown).
+1. Event deduplication sliding window (90 seconds for crashes - longer than Docker's 60 s maximum restart backoff, and at least 330 s in GitOps mode, where Kubernetes backs off up to 300 s - and 300 for suggestions): an ongoing crash loop stays one event. A verified heal - or the target serving again, however it came back - ends the outage and the restarts counted for it, so the same crash planted again is a new event (still subject to the cooldown), and a crash loop ended by `make demo-reset` is not raised again as a "restart loop" on the target that serves.
 2. One heal at a time (single-flight); signals raised while it runs (exit code, log line, dead probe of the same crash) share its cooldown.
 3. Per-signature cooldown periods (300 seconds).
 4. Rolling hourly rate-limits (<strong>5</strong> heals/hour) and hard lifetime caps (<strong>20</strong>) from <code>iow.config.yml</code>, plus the <code>kill_switch</code>.
