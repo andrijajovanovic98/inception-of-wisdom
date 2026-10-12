@@ -101,6 +101,100 @@ class ReviewOutcomeTests(unittest.TestCase):
         self.assertEqual(self._decide("reverted", {"status": "crashed"}).status, "rolled_back")
 
 
+_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "/app/app.py", line 3, in <module>\n'
+    "NameError: name 'Flask' is not defined"
+)
+
+
+def _logged_crash(signature: str = "sig-log") -> ObserverEvent:
+    now = time.time()
+    return ObserverEvent(id="e2", type="crash", source="log", signature=signature,
+                         summary="NameError", details={"context_excerpt": _TRACEBACK},
+                         first_seen=now, last_seen=now)
+
+
+class ReviewPathTests(unittest.TestCase):
+    """Bonus 1 under review: the same checks as the autonomous loop, and bonus 3 still holds."""
+
+    def setUp(self) -> None:
+        self.orch = dashboard.orchestrator
+        flags = mock.patch.dict(dashboard.bonus_flags, {
+            "human_in_the_loop": True, "second_opinion_mandatory": False, "fast_path_classifier": True,
+        })
+        flags.start()
+        self.addCleanup(flags.stop)
+
+    def _run(self, state: ContainerState, present: Any) -> Any:
+        with mock.patch.object(self.orch.docker_monitor, "inspect", return_value=state), \
+                mock.patch.object(self.orch.verifier, "symptom_present", return_value=present) as check, \
+                mock.patch.object(self.orch.diagnostician, "diagnose_crash") as diagnose, \
+                mock.patch.object(self.orch, "_propose_hitl_patch", return_value=None) as propose:
+            diagnose.return_value = mock.Mock(success=False, error_message="(stub)")
+            self.orch.run_heal_cycle(_logged_crash(), grace_period=0.0)
+        return types.SimpleNamespace(check=check, diagnose=diagnose, propose=propose,
+                                     record=self.orch.wisdom_loop.history[-1])
+
+    def test_nothing_to_patch_gets_no_review(self) -> None:
+        """B17, seen live: with review on, a heal of an old event of a crash already fixed went
+        to the model, and Gitea #14 proposed "exception handling" for the healthy get_data."""
+        gone = self._run(ContainerState(name="t", status="running"), (False, "every probe answers"))
+        self.assertEqual((gone.diagnose.called, gone.propose.called), (False, False))
+        self.assertEqual(gone.record.status, "not_needed")
+        stopped = self._run(ContainerState(name="t", status="exited", exit_code=0, stopped=True,
+                                           error_reason="Stopped (exit code 0)"), (True, "exited"))
+        self.assertEqual((stopped.diagnose.called, stopped.propose.called), (False, False))
+        self.assertIn("Nothing to patch", stopped.record.failure_reason or "")
+        crashed = self._run(ContainerState(name="t", status="restarting", is_crash=True),
+                            (True, "still failing"))
+        self.assertTrue(crashed.diagnose.called)                     # a real crash still goes on
+        self.assertEqual(crashed.check.call_count, 1)                # asked once, not per gate
+
+    def test_a_known_symptom_is_proposed_without_the_model(self) -> None:
+        """B20: with review on, a crash the classifier knows on exactly this code still went to
+        the model - while the classifier counted a bypass."""
+        current = _REPO.read("demo_app/app.py")
+        fixed = current + "\n# restored\n"
+        key = self.orch.classifier.record_successful_heal(
+            _TRACEBACK, {"summary": "restore the import",
+                         "files": [{"path": "demo_app/app.py", "op": "modify", "content": fixed}]},
+            pre_contents={"demo_app/app.py": current},
+        )
+        self.addCleanup(self.orch.classifier.entries.pop, key, None)    # the orchestrator is shared
+        known = self._run(ContainerState(name="t", status="restarting", is_crash=True), (True, "failing"))
+        self.assertFalse(known.diagnose.called)
+        known.propose.assert_called_once()
+        files = known.propose.call_args.args[3]
+        self.assertEqual(files, [{"path": "demo_app/app.py", "op": "modify", "content": fixed}])
+        self.assertIn("model was not asked", known.propose.call_args.args[2])
+
+    def test_no_vote_is_not_routed_to_review(self) -> None:
+        """B19: with the model down the second opinion "diverged", and the heal was withheld for
+        review; there is no vote, and the loop reports the explicit failure on every attempt."""
+        from bonus.consensus import ConsensusReport
+        no_vote = ConsensusReport(
+            consensus_reached=False, agreed_files=[], confidence=0.0,
+            consensus_summary="No vote: neither prompt produced a usable diagnosis",
+            opinion_a={"mode": "unavailable"}, opinion_b={"mode": "unavailable"}, diverged=False,
+        )
+        crashed = ContainerState(name="t", status="restarting", is_crash=True)
+        vote_only = {"human_in_the_loop": False, "second_opinion_mandatory": True}
+        with mock.patch.dict(dashboard.bonus_flags, vote_only), \
+                mock.patch.object(self.orch.docker_monitor, "inspect", return_value=crashed), \
+                mock.patch.object(self.orch.verifier, "symptom_present", return_value=(True, "failing")), \
+                mock.patch.object(self.orch.consensus_engine, "evaluate_consensus", return_value=no_vote), \
+                mock.patch.object(self.orch, "_propose_hitl_patch") as propose, \
+                mock.patch.object(self.orch.wisdom_loop, "execute_heal") as heal:
+            heal.return_value = mock.Mock(status="rolled_back", attempts=[])
+            self.orch.run_heal_cycle(_logged_crash("sig-vote"), grace_period=0.0)
+        propose.assert_not_called()
+        self.assertIsNotNone(heal.call_args.kwargs["diagnose_fn"])
+        self.assertFalse(heal.call_args.kwargs["check_first"])
+        diagnosis = dashboard.InceptionOrchestrator._diagnosis_from_consensus(no_vote)
+        self.assertEqual((diagnosis.success, diagnosis.mode), (False, "unavailable"))
+
+
 class GitOpsWiringTests(unittest.TestCase):
     def test_gitops_mode_stamps_commits_and_keeps_one_crash_loop_one_event(self) -> None:
         """B2 / G2: commits carry the source stamp; Kubernetes backs off up to 300 s."""

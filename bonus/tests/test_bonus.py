@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from typing import Any, Dict, List, Optional, Tuple
 from unittest import mock
@@ -197,6 +198,27 @@ class SecondOpinionTests(unittest.TestCase):
         ])
         self.assertFalse(engine.evaluate_consensus(CRASH).consensus_reached)
 
+    def test_an_unreachable_model_is_no_vote_not_a_divergence(self) -> None:
+        """B19, seen live with the model stopped: "Opinion A suggested [], whereas Opinion B
+        suggested []" was reported as a divergence, and the heal was routed to review for a
+        disagreement that never happened. Nothing listens on port 9 here."""
+        engine = SecondOpinionEngine(
+            retriever=_Retriever(), ollama_host="http://127.0.0.1:9",  # type: ignore[arg-type]
+            request_timeout=5,
+        )
+        report = engine.evaluate_consensus(CRASH)
+        self.assertFalse(report.consensus_reached)
+        self.assertFalse(report.diverged)
+        self.assertIn("No vote", report.consensus_summary)
+        self.assertNotIn("disagree", report.consensus_summary)
+        self.assertEqual((report.opinion_a["mode"], report.opinion_b["mode"]), ("unavailable",) * 2)
+        self.assertIn("127.0.0.1:9", report.opinion_a["error_message"])
+        split = ScriptedOpinions([
+            {"summary": "trigger_crash raises.", "files": ["demo_app/app.py"]},
+            {"summary": "The port config is wrong.", "files": ["demo_app/config.py"]},
+        ])
+        self.assertTrue(split.evaluate_consensus(CRASH).diverged)     # a real disagreement still is one
+
 
 class PullRequestTests(unittest.TestCase):
     """Human-in-the-loop: nothing lands before approval, approval lands exactly the patch."""
@@ -357,6 +379,45 @@ class PullRequestTests(unittest.TestCase):
         self.repo.write("demo_app/iow.config.yml", "grace_period: 5\n")
         self.assertTrue(self.prs.merge_pr(pr.pr_id)[0])
         self.assertEqual(self.repo.read("demo_app/iow.config.yml"), "grace_period: 5\n")
+
+    def test_a_pr_is_decided_once(self) -> None:
+        """B18, seen live: an approved PR, merged on Gitea and running, was "rejected" afterwards
+        (HTTP 200), and a rejection sent while an approval was still landing succeeded too -
+        either way the record said rejected next to the approved, deployed code."""
+        pr = self._open()
+        self.assertTrue(self.prs.merge_pr(pr.pr_id)[0])
+        ok, message = self.prs.reject_pr(pr.pr_id, reason="changed my mind")
+        self.assertFalse(ok)
+        self.assertIn("already merged", message)
+        self.assertEqual(self.prs.get_pr(pr.pr_id).status, "merged")  # type: ignore[union-attr]
+
+        self.repo.write("demo_app/app.py", "print('broken again')\n")
+        second = self.prs.create_pull_request(
+            cycle_id="c2", diagnosis_summary="fix it again",
+            patch_files=[{"path": "demo_app/app.py", "op": "modify", "content": "print('fixed again')\n"}],
+            base_revision=self.gm.working_tree_commit(),
+        )
+        landing, release = threading.Event(), threading.Event()
+        results: List[Tuple[bool, str]] = []
+
+        def deploy(rec: Any) -> Dict[str, Any]:
+            landing.set()
+            release.wait(5)
+            return {"healed": True, "status": "healed"}
+
+        approval = threading.Thread(
+            target=lambda: results.append(self.prs.merge_pr(second.pr_id, on_merged=deploy))
+        )
+        approval.start()
+        self.assertTrue(landing.wait(5))
+        ok, message = self.prs.reject_pr(second.pr_id, reason="no")    # while it lands
+        release.set()
+        approval.join(5)
+        self.assertFalse(ok)
+        self.assertIn("being decided", message)
+        self.assertTrue(results and results[0][0])
+        self.assertEqual(self.prs.get_pr(second.pr_id).status, "merged")  # type: ignore[union-attr]
+        self.assertEqual(self.repo.read("demo_app/app.py"), "print('fixed again')\n")
 
     def test_a_landing_that_fails_is_recorded_as_reverted(self) -> None:
         pr = self._open()
@@ -537,6 +598,54 @@ class GitOpsTests(unittest.TestCase):
         self.assertEqual(newest["metadata"]["name"], "new")
         self.assertTrue(_app_has_run(new))                       # its traceback can be read
         self.assertFalse(_app_has_run(_pod({"running": {}})))    # still fetching the source
+
+    def test_the_tool_check_leaves_path_as_it_found_it(self) -> None:
+        """G5: every Observer poll in GitOps mode put the tools' directory in front of PATH
+        again, until PATH passed the kernel's 128 KiB limit for one environment string and every
+        program the agent starts (kubectl, git, argocd) failed with "Argument list too long"."""
+        from bonus import gitops
+        bin_dir = tempfile.mkdtemp(prefix="iow-bin-")
+        try:
+            kubectl = os.path.join(bin_dir, "kubectl")
+            with open(kubectl, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\necho node/iow\n")
+            os.chmod(kubectl, 0o755)
+            env = {"IOW_GITOPS_BIN": bin_dir, "IOW_DIR": bin_dir, "PATH": "/usr/bin:/bin"}
+            with mock.patch.dict(os.environ, env):
+                self.assertTrue(gitops.tools_available()[0])
+                once = os.environ["PATH"]
+                for _ in range(50):
+                    gitops.tools_available()
+                self.assertEqual(os.environ["PATH"], once)
+                self.assertTrue(once.startswith(bin_dir + os.pathsep))
+                self.assertTrue(once.endswith(os.pathsep + "/usr/bin:/bin"))
+        finally:
+            shutil.rmtree(bin_dir, ignore_errors=True)
+
+    def test_a_pod_that_came_back_by_itself_is_not_crashed_forever(self) -> None:
+        """O10 on Kubernetes: a pod keeps its container's last termination until the next
+        restart, so a pod that crashed once and came back (a restart in place) read as crashed
+        on every poll - raised anew each time the Observer closed the outage."""
+        from bonus import gitops
+
+        def pod(restarts: int, last_exit: Optional[int] = None) -> str:
+            container: Dict[str, Any] = {"name": "demo", "restartCount": restarts, "state": {"running": {}}}
+            if last_exit is not None:
+                container["lastState"] = {"terminated": {"exitCode": last_exit, "reason": "Error"}}
+            return json.dumps({"items": [{
+                "metadata": {"name": "p", "uid": "u1", "creationTimestamp": "2026-10-10T10:00:00Z"},
+                "status": {"phase": "Running", "containerStatuses": [container]},
+            }]})
+
+        answers = [pod(0), pod(1, last_exit=1), pod(1, last_exit=1), pod(2, last_exit=1)]
+        monitor = gitops.KubeTargetMonitor()
+        with mock.patch.object(gitops, "tools_available", lambda: (True, "ok")), \
+                mock.patch.object(gitops, "_run", lambda cmd, timeout=60.0: (0, answers.pop(0), "")):
+            self.assertFalse(monitor.inspect().is_crash)           # serving
+            self.assertTrue(monitor.inspect().is_crash)            # exited 1, restarted in place
+            monitor.forget_restart_history()                       # the Observer: it serves again
+            self.assertFalse(monitor.inspect().is_crash)           # that termination is history
+            self.assertTrue(monitor.inspect().is_crash)            # a new crash still is one
 
     def test_a_timed_out_command_never_echoes_its_arguments(self) -> None:
         import sys

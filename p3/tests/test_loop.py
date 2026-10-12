@@ -229,6 +229,25 @@ class WisdomLoopTests(unittest.TestCase):
         self.assertEqual(self.repo.read("demo_app/app.py"), "OPERATOR = 'reset by hand'\n")
         self.assertIsNone(self.gm.interrupted_cycle())
 
+    def test_an_operator_config_edit_does_not_stop_the_recovery(self) -> None:
+        """L18: the agent stopped mid-cycle and the operator shortened grace_period meanwhile
+        (the subject's own example of a live edit). The tree no longer matched either side,
+        so the unverified patch was "left as it is" - and the next cycle would have taken it
+        as its pre-loop state."""
+        before = self.repo.read("demo_app/app.py")
+        pre = self.gm.snapshot_pre_loop()
+        self.gm.apply_patch_atomically(_as_patch(_fixed(self.repo, "unverified")))
+        self.repo.write("demo_app/iow.config.yml", "grace_period: 5\n")
+        self.gm = GitManager(repo_dir=self.repo.path)               # the next agent start
+        record = self._loop(FakePatcher([]), FakeVerifier([True])).recover_interrupted_cycle()
+        assert record is not None
+        self.assertEqual(record.status, "rolled_back")
+        self.assertNotIn("left as they are", record.failure_reason or "")
+        self.assertEqual(self.repo.read("demo_app/app.py"), before)
+        self.assertEqual(self.repo.read("demo_app/iow.config.yml"), "grace_period: 5\n")   # kept
+        self.assertEqual(self.gm.get_branch_tip("iow/auto-heal"), pre)
+        self.assertIsNone(self.gm.interrupted_cycle())
+
     def test_an_unexpected_error_rolls_back_and_redeploys_through_the_verifier(self) -> None:
         """A bare container restart here never published the rewound branch in GitOps mode,
         so the cluster kept the unverified patch."""

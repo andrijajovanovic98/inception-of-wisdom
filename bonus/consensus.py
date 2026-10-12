@@ -35,9 +35,16 @@ class ConsensusReport:
     opinion_b: Dict[str, Any]
     confidence: float
     error_message: Optional[str] = None
+    # Not reached because the opinions pointed at different files - as opposed to no usable
+    # opinion at all (the model unreachable, or both answers unusable), where nothing disagreed.
+    diverged: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+class ModelUnavailable(Exception):
+    """The local model could not be asked (connection refused, timeout, HTTP error)."""
 
 
 class SecondOpinionEngine:
@@ -68,7 +75,11 @@ class SecondOpinionEngine:
         )
 
     def _query_llm_prompt(self, prompt: str, system_prompt: str, temperature: float = 0.0) -> Optional[str]:
-        """Queries the local Ollama instance with specialized system instructions and temperature."""
+        """Queries the local Ollama instance with specialized system instructions and temperature.
+
+        Raises ModelUnavailable when the model cannot be asked: swallowed into "no answer",
+        an unreachable model read as two opinions that disagreed (seen live).
+        """
         url = f"{self.ollama_host}/api/generate"
         payload = {
             "model": self.model_name,
@@ -92,14 +103,31 @@ class SecondOpinionEngine:
 
         try:
             with urllib.request.urlopen(req, timeout=self.request_timeout) as resp:
-                if resp.status == 200:
-                    raw_data = resp.read().decode("utf-8")
-                    data = json.loads(raw_data)
-                    return data.get("response", "")
-                return None
-        except Exception as e:
-            logger.warning(f"Ollama generation failed in consensus engine: {e}")
+                if resp.status != 200:
+                    raise ModelUnavailable(f"Ollama HTTP {resp.status}")
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("response", "")
+        except urllib.error.HTTPError as e:
+            raise ModelUnavailable(f"Ollama HTTP {e.code}") from e
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            raise ModelUnavailable(str(getattr(e, "reason", None) or e)) from e
+        except ValueError as e:                                   # not JSON: an unusable answer
+            logger.warning(f"Unreadable answer from Ollama in the consensus engine: {e}")
             return None
+
+    def _opinion(
+        self, prompt: str, system_prompt: str, temperature: float, context_chunks: List[Dict[str, Any]]
+    ) -> DiagnosticReport:
+        """One opinion, validated like the Analyst's diagnosis - or its explicit failure."""
+        try:
+            raw_resp = self._query_llm_prompt(prompt, system_prompt, temperature=temperature)
+        except ModelUnavailable as e:
+            logger.warning(f"Ollama generation failed in consensus engine: {e}")
+            return self.base_diagnostician._create_unavailable_report({}, context_chunks, str(e), time.time())
+        valid_files = {c.get("file_path", "") for c in context_chunks}
+        return self.base_diagnostician._parse_and_validate_response(
+            raw_resp, valid_files, context_chunks, time.time()
+        )
 
     def get_opinion_a(self, log_excerpt: str, context_chunks: List[Dict[str, Any]]) -> DiagnosticReport:
         """Opinion A: Conservative, localized stack-frame analyzer (Zero-shot, temperature 0.0)."""
@@ -118,12 +146,7 @@ class SecondOpinionEngine:
             f"CRASH LOG:\n{log_excerpt}\n\nAVAILABLE CODE CONTEXT:\n{chunks_text}\n\n"
             "Identify suspect file:"
         )
-        raw_resp = self._query_llm_prompt(prompt, system_prompt, temperature=0.0)
-
-        valid_files = {c.get("file_path", "") for c in context_chunks}
-        return self.base_diagnostician._parse_and_validate_response(
-            raw_resp, valid_files, context_chunks, time.time()
-        )
+        return self._opinion(prompt, system_prompt, 0.0, context_chunks)
 
     def get_opinion_b(self, log_excerpt: str, context_chunks: List[Dict[str, Any]]) -> DiagnosticReport:
         """Opinion B: Architectural and caller-contract analyzer (Temperature 0.3)."""
@@ -142,12 +165,7 @@ class SecondOpinionEngine:
             f"INCIDENT TRACE:\n{log_excerpt}\n\nCODE REPOSITORY SLICES:\n{chunks_text}\n\n"
             "Identify offending file:"
         )
-        raw_resp = self._query_llm_prompt(prompt, system_prompt, temperature=0.3)
-
-        valid_files = {c.get("file_path", "") for c in context_chunks}
-        return self.base_diagnostician._parse_and_validate_response(
-            raw_resp, valid_files, context_chunks, time.time()
-        )
+        return self._opinion(prompt, system_prompt, 0.3, context_chunks)
 
     def evaluate_consensus(
         self,
@@ -195,21 +213,44 @@ class SecondOpinionEngine:
                 opinion_b=opinion_b.to_dict(),
                 confidence=confidence
             )
-        else:
-            # Disagreement!
+        if not files_a and not files_b:
+            # Nothing to compare: neither prompt produced a usable diagnosis (the model is
+            # unreachable, or both answers cited nothing real). That is the Analyst's explicit
+            # failure, twice - not two opinions that disagreed (seen live with the model
+            # stopped: "Opinion A suggested [], whereas Opinion B suggested []").
             consensus_summary = (
-                f"Consensus FAILED: Independent opinions disagreed on suspect files. "
-                f"Opinion A suggested {list(files_a)}, whereas Opinion B suggested {list(files_b)}. "
-                f"Blind patching aborted to prevent hallucinations."
+                "No vote: neither prompt produced a usable diagnosis "
+                f"(A: {opinion_a.error_message}; B: {opinion_b.error_message})"
             )
-            logger.warning(f"[KO] Consensus FAILED: {consensus_summary}")
-
+            logger.warning(f"[KO] {consensus_summary}")
             return ConsensusReport(
                 consensus_reached=False,
                 agreed_files=[],
                 consensus_summary=consensus_summary,
                 opinion_a=opinion_a.to_dict(),
                 opinion_b=opinion_b.to_dict(),
-                confidence=0.30,
-                error_message="Models diverged on suspect file identification."
+                confidence=0.0,
+                error_message=consensus_summary,
             )
+
+        def says(label: str, files: Set[str], opinion: DiagnosticReport) -> str:
+            if files:
+                return f"Opinion {label} suggested {sorted(files)}"
+            return f"Opinion {label} produced no usable diagnosis ({opinion.error_message})"
+
+        consensus_summary = (
+            f"Consensus FAILED: the two opinions did not agree on a suspect file. "
+            f"{says('A', files_a, opinion_a)}, whereas {says('B', files_b, opinion_b)}. "
+            f"Blind patching aborted to prevent hallucinations."
+        )
+        logger.warning(f"[KO] {consensus_summary}")
+        return ConsensusReport(
+            consensus_reached=False,
+            agreed_files=[],
+            consensus_summary=consensus_summary,
+            opinion_a=opinion_a.to_dict(),
+            opinion_b=opinion_b.to_dict(),
+            confidence=0.30,
+            error_message="The opinions did not agree on a suspect file.",
+            diverged=True,
+        )

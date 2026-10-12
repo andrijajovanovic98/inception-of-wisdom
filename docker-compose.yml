@@ -1,7 +1,18 @@
 # Inception-of-Wisdom (IoW) - Multi-Container Docker Compose Stack
-# Subject requirement: The entire environment must launch with a single 'docker compose up' command.
-# Includes a local Gitea forge so auto-heal opens real remote Pull Requests for human review.
+# Subject, IV: "A single docker compose up must bring up the agent, the local LLM runtime,
+# and the demo target service." Includes a local Gitea forge so auto-heal opens real remote
+# Pull Requests for human review.
 
+# The project name, not the checkout's directory name: the images are
+# inception-of-wisdom-agent / -demo_app wherever the repository is cloned. The GitOps
+# bootstrap imports that image into the cluster, the k8s manifest runs it, and
+# `make docker-fclean` removes it by that name; in a clone under any other name the
+# bootstrap stopped at "inception-of-wisdom-demo_app:latest missing after build".
+name: inception-of-wisdom
+
+# Every port is published on 127.0.0.1 only: the dashboard is an unauthenticated control
+# API in front of the Docker socket (it patches, commits and restarts), and the Gitea
+# admin password is in the README. Nothing here is meant to be reached from the network.
 services:
   demo_app:
     build:
@@ -10,7 +21,7 @@ services:
     container_name: iow_demo_target
     restart: unless-stopped
     ports:
-      - "5001:5000"
+      - "127.0.0.1:5001:5000"
     volumes:
       - ./demo_app:/app
     environment:
@@ -45,7 +56,7 @@ services:
     volumes:
       - gitea-data:/data
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     networks:
       - iow-net
     healthcheck:
@@ -127,7 +138,7 @@ services:
     container_name: iow_agent
     restart: unless-stopped
     ports:
-      - "${IOW_PORT:-8000}:8000"
+      - "127.0.0.1:${IOW_PORT:-8000}:8000"
     volumes:
       # Rootless Docker (42 campus) serves $XDG_RUNTIME_DIR/docker.sock, not
       # /var/run/docker.sock - mounting the latter hands the agent a socket it

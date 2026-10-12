@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 
 from p3.tests.helpers import TempRepo
@@ -86,6 +87,37 @@ class SanityTests(unittest.TestCase):
         """Seen live: the 1.5B model wrapped its answer in '# BEGIN REGION ---'."""
         leaked = "# BEGIN REGION ---\n" + self.original + "# END REGION ---\n"
         self.assertRefused(_patch(FilePatch("demo_app/app.py", "modify", leaked)), "retrieval marker")
+
+    def test_prompt_scaffolding_is_refused_also_as_a_comment(self) -> None:
+        """L19: in a Python file a leaked prompt line survives the parse check only as a
+        comment, and that is the form the rule missed - the region header, the facts, the
+        retry notes, "--- File: ... ---" and every section header passed behind a '#'.
+        The lines are taken from the patch prompts themselves."""
+        from p3.patcher import CodePatcher
+        patcher = CodePatcher(base_dir=self.repo.path)
+        region = patcher._build_region_prompt(
+            "demo_app/app.py", 8, 9, "def index():\n", "diagnosis", "log", refusal_hint="refused",
+            goal="the service must start",
+            facts="\nFACT (read from the code): demo_app/app.py uses jsonify but never imports it.\n",
+        )
+        full = patcher._build_patch_prompt(
+            "diagnosis", "log", {"demo_app/app.py": self.original}, refusal_hint="refused"
+        )
+        scaffolding = {
+            line.strip() for prompt in (region, full) for line in prompt.splitlines()
+            if line.strip().startswith(("THE REGION", "FACT (", "YOUR PREVIOUS", "--- File:"))
+            or re.fullmatch(r"[A-Z][A-Z ()\"',]+:", line.strip())
+        }
+        self.assertGreaterEqual(len(scaffolding), 10)
+        for line in sorted(scaffolding):
+            for comment in ("# ", "## ", "// "):
+                leaked = self.original.replace(
+                    "app = Flask(__name__)", f"{comment}{line}\napp = Flask(__name__)"
+                )
+                self.assertRefused(_patch(FilePatch("demo_app/app.py", "modify", leaked)), "retrieval marker")
+        # An ordinary comment is not scaffolding.
+        fine = self.original.replace("app = Flask(__name__)", "# Goal: keep serving.\napp = Flask(__name__)")
+        self.assertTrue(self.gate.check_patch(_patch(FilePatch("demo_app/app.py", "modify", fine))).passed)
 
     def test_path_outside_heal_scope(self) -> None:
         self.assertRefused(_patch(FilePatch("p3/agent.py", "modify", "AGENT = 2\n")), "heal scope")

@@ -133,6 +133,27 @@ class ContainerTests(unittest.TestCase):
         self.assertIn(".:/workspace", volumes)
         self.assertIn("/tmp/iow:/tmp/iow", volumes)                     # one index for host and container
 
+    def test_the_images_are_named_by_the_project_not_the_checkout(self) -> None:
+        """M8: compose named the images after the checkout's directory, while the GitOps
+        bootstrap, the k8s manifest and `make docker-fclean` use inception-of-wisdom-*: in a
+        clone under any other name the bootstrap stopped at "missing after build"."""
+        name = yaml.safe_load(_read("docker-compose.yml"))["name"]
+        self.assertEqual(name, "inception-of-wisdom")
+        for rel in ("scripts/argocd_bonus_up.sh", "k8s/demo-app/deployment.yaml"):
+            self.assertIn(f"{name}-demo_app:latest", _read(rel), rel)
+        makefile = _read("Makefile")
+        self.assertRegex(makefile, rf"DOCKER_IMAGE_AGENT\s*:=\s*{name}-agent\n")
+        self.assertRegex(makefile, rf"DOCKER_IMAGE_DEMO\s*:=\s*{name}-demo_app\n")
+
+    def test_nothing_is_published_beyond_this_machine(self) -> None:
+        """M9: the dashboard (an unauthenticated control API in front of the Docker socket), the
+        target and Gitea (whose admin password the README prints) listened on every interface."""
+        published = [(service, str(port)) for service, spec in self.compose.items()
+                     for port in spec.get("ports", [])]
+        self.assertEqual(len(published), 3)
+        for service, port in published:
+            self.assertTrue(port.startswith("127.0.0.1:"), f"{service}: {port}")
+
     def test_the_model_runtime_publishes_no_host_port(self) -> None:
         """M2: its :11436 collided with the host Ollama `make setup` starts."""
         self.assertNotIn("ports", self.compose["ollama"])
@@ -367,6 +388,18 @@ class DashboardPageTests(unittest.TestCase):
         self.assertIn('<td style="white-space: nowrap;">${healCell}</td>', self.page)
         self.assertIn(".toggle-row { display: flex; flex-wrap: wrap;", self.page)
 
+    def test_the_diagnosis_is_asked_for_a_crash_event(self) -> None:
+        """A10: subject V.2's diagnosis takes a crash event (status, log excerpt, exit code); the
+        Analyst tab could only insert the latest crash's text, and sent neither of the others."""
+        self.assertIn('id="diagEventSelect"', self.page)
+        self.assertIn('onchange="pickCrashEvent()"', self.page)
+        diagnose = self.page.split("async function requestDiagnosis(", 1)[1].split("\n    }\n", 1)[0]
+        for field in ("log_excerpt:", "status:", "exit_code:"):
+            self.assertIn(field, diagnose)
+        picker = self.page.split("async function refreshDiagEvents(", 1)[1].split("\n    }\n", 1)[0]
+        self.assertIn("/api/observer/events?type=crash", picker)
+        self.assertIn("value=\"${escapeHtml(ev.id)}\"", picker)       # by event, not signature
+
     def test_the_verification_verdict_reads_the_real_field(self) -> None:
         """D2: every attempt showed UNVERIFIED - the page read `healed`, the field is `is_healed`."""
         self.assertIn("is_healed", self.page)
@@ -452,6 +485,15 @@ class DocsTests(unittest.TestCase):
         for claim in ("deterministic incident", "air-gapped", "air--gapped", "zero-downtime",
                       "continuous availability", "production-grade"):
             self.assertNotIn(claim, readme)
+
+    def test_approvals_are_described_with_the_bounds_they_have(self) -> None:
+        """D9: the README said an approval lands under the rate limit and the hard cap; it is
+        counted against neither on purpose (B13) - only the kill switch and single-flight."""
+        readme = _read("README.md")
+        self.assertNotIn("(kill switch, single-flight, rate limit, hard cap)", readme)
+        self.assertIn("not counted against the hourly rate limit or the lifetime cap", readme)
+        for deck in DECKS:
+            self.assertNotIn("under the heal bounds", _deck_text(deck), deck)
 
     def test_no_emoji_and_no_literal_em_dash(self) -> None:
         """The author's rule: no emoji anywhere; no em dash in code, and in HTML or Markdown

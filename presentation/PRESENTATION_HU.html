@@ -377,7 +377,7 @@ kill_switch: false
         </div>
         <div class="card">
           <h3>Human-in-the-Loop PR-ek</h3>
-          <p>HITL módban semmi nem kerül be emberi jóváhagyás előtt: review PR (<code>iow/review/&lt;ciklus&gt;</code>) a helyi Giteán, a diffjével. A jóváhagyott kód a javítási korlátok alatt települ, és csak akkor marad, ha a cél fennmarad.</p>
+          <p>HITL módban semmi nem kerül be emberi jóváhagyás előtt: review PR (<code>iow/review/&lt;ciklus&gt;</code>) a helyi Giteán, a diffjével. A jóváhagyott kód a kill switch és a single-flight alatt települ (az óránkénti és az élettartam-korlátba nem számít bele), és csak akkor marad, ha a cél fennmarad; egy PR-ről egyszer lehet dönteni.</p>
         </div>
       </div>
       <div class="highlight-box">

@@ -376,7 +376,7 @@ kill_switch: false
         </div>
         <div class="card">
           <h3>Human-in-the-Loop PRs</h3>
-          <p>With HITL on nothing lands before a human approves: a review PR (<code>iow/review/&lt;cycle&gt;</code>) on the local Gitea with its diff. Approving deploys it under the heal bounds and keeps it only if the target stays up.</p>
+          <p>With HITL on nothing lands before a human approves: a review PR (<code>iow/review/&lt;cycle&gt;</code>) on the local Gitea with its diff. Approving deploys it under the kill switch and single-flight (not counted against the rate limit or the cap) and keeps it only if the target stays up; a PR is decided once.</p>
         </div>
       </div>
       <div class="highlight-box">

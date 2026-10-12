@@ -37,17 +37,30 @@ PLACEHOLDER_REGEXES = [
 
 # Retrieval / prompt scaffolding that must never end up inside a source file. These are
 # the exact headers the Analyst and the Patcher put around the code they show the model.
+# In a Python file such a line survives the parse check only as a comment (or inside a
+# string), so every whole-line pattern also matches it behind "#", "//" or a quote: the
+# bare forms alone caught nothing the parse check did not already refuse.
+_LINE_START = r"^[ \t]*(?:#+|//|/\*|\*|[\"'])?[ \t]*"
 RETRIEVAL_MARKER_REGEXES = [
     re.compile(r"---\s*Code Snippet\s*#?\d+\s*---", re.IGNORECASE),
     re.compile(r"#\s*File:\s*[\w\./-]+\s*\|\s*Symbol:", re.IGNORECASE),
     # "--- File: demo_app/app.py ---" and "--- File: demo_app/app.py (83 lines, 2345 characters) ---"
-    re.compile(r"^-{3}\s*File:\s*\S+.*-{3}\s*$", re.IGNORECASE | re.MULTILINE),
+    re.compile(_LINE_START + r"-{3}\s*File:\s*\S+.*-{3}\s*$", re.IGNORECASE | re.MULTILINE),
     # The Patcher's region fence, in any comment dress ("# BEGIN REGION ---").
     re.compile(r"\b(?:BEGIN|END)\s+REGION\b", re.IGNORECASE),
-    re.compile(r"^\s*Symbol:\s*\S+\s*\((?:function|method|class|module|file)\)\s*$", re.MULTILINE),
+    re.compile(_LINE_START + r"Symbol:\s*\S+\s*\((?:function|method|class|module|file)\)\s*$", re.MULTILINE),
+    # The patch prompts' own lines: the region header, the facts read from the code or the
+    # container, and the notes a retry carries.
     re.compile(
-        r"^(?:RELEVANT CODE CHUNKS|ALLOWED SUSPECT FILES|CURRENT SOURCE CODE|ERROR LOG EXCERPT"
-        r"|CRASH DETAILS|AVAILABLE CODE CONTEXT|CODE REPOSITORY SLICES):\s*$",
+        r"THE REGION TO REWRITE \(|FACT \(read from the (?:code|target's container)\)"
+        r"|YOUR PREVIOUS (?:ATTEMPT WAS REJECTED|ANSWER)"
+    ),
+    # A section header of a prompt, alone on its line.
+    re.compile(
+        _LINE_START + r"(?:RELEVANT CODE CHUNKS|ALLOWED SUSPECT FILES|CURRENT SOURCE CODE|ERROR LOG EXCERPT"
+        r"|CRASH DETAILS|AVAILABLE CODE CONTEXT|CODE REPOSITORY SLICES|DIAGNOSIS|GOAL|RULES|TASK"
+        r"|CRITICAL RULES \(SUBJECT CONSTRAINTS\)|CRITICAL CONSTRAINTS|RESPONSE JSON SCHEMA"
+        r"|RESPONSE FORMAT \(JSON, \"files\" first\)|CRASH LOG|INCIDENT TRACE):\s*$",
         re.MULTILINE,
     ),
 ]
