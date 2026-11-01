@@ -98,10 +98,17 @@ class IndexWatcher:
                 "pruned": 0,
             }
 
+            retry: set = set()
             if changed:
                 chunks: List[CodeChunk] = []
                 for path in changed:
-                    file_chunks = self.chunker.chunk_file(path)
+                    try:
+                        file_chunks = self.chunker.chunk_file(path)
+                    except Exception as e:
+                        # One file the chunker cannot read must not keep every other change out
+                        # of the index (nor fail the pass again, every interval).
+                        logger.warning(f"Could not chunk {path}: {e} - skipped.")
+                        continue
                     if not file_chunks:
                         # Emptied on disk: nothing left to index, so nothing may stay.
                         rel = os.path.relpath(path, self.chunker.base_dir)
@@ -113,6 +120,11 @@ class IndexWatcher:
                     for key in ("added", "skipped", "failed"):
                         result[key] = int(stats.get(key, 0))
                     result["pruned"] += int(stats.get("pruned", 0))
+                    if result["failed"]:
+                        # The store was busy or the embedder not ready: none of these files is
+                        # indexed yet, so none may be remembered as done - it would never be
+                        # looked at again, and the Analyst would retrieve pre-patch code.
+                        retry = set(changed)
 
             if removed or force_full:
                 known_rel = [
@@ -121,7 +133,7 @@ class IndexWatcher:
                 ]
                 result["files_removed_chunks"] = self.vector_db.prune_missing_files(known_rel)
 
-            self._mtimes = snapshot
+            self._mtimes = {path: mtime for path, mtime in snapshot.items() if path not in retry}
             self._last_result = result
 
         if changed or removed:

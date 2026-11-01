@@ -63,6 +63,13 @@ RETRIEVAL_MARKER_REGEXES = [
         r"|RESPONSE FORMAT \(JSON, \"files\" first\)|CRASH LOG|INCIDENT TRACE):\s*$",
         re.MULTILINE,
     ),
+    # The Analyst's header around each retrieved chunk, the crash block above it, and the
+    # SUMMARY line a region answer starts with. "Lines: 1-20" even parses as an annotation.
+    re.compile(
+        _LINE_START + r"(?:File:\s*[\w./-]+|Part:\s.+|Lines:\s*\d+-\d+|Code:|Status:\s*crashed"
+        r"|Exit Code:\s*(?:None|\d+)|Error Log:|SUMMARY:\s.*)\s*$",
+        re.MULTILINE,
+    ),
 ]
 
 # A file reduced to one of these is a stub, not a fix.

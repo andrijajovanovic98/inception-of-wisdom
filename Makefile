@@ -5,7 +5,7 @@
 #   make flake / mypy / lint / test / gates
 #   make setup
 #   make p1 / p2 / p3 / bonus / run   # progressive tabs + auto-start target (host agent)
-#   make break / break-hard / break-import / suggest / heal / rollback / status / logs
+#   make break / break-hard / break-import / break-5xx / suggest / heal / rollback / status / logs
 #   make clean / fclean / re
 # NOTE: Do not revert lint (.flake8, mypy.ini) or these Makefile rules.
 
@@ -31,7 +31,8 @@ PYTHON       := /usr/bin/python3
 PY_VER       := $(shell $(PYTHON) -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 SITE_PACKAGES:= $(VENV)/lib/python$(PY_VER)/site-packages
 REQ          := requirements.txt
-LLM_MODEL    := qwen2.5-coder:1.5b
+# analyst.model in iow.config.yml: what `make setup` pulls and what every run uses.
+LLM_MODEL    := $(shell sed -n 's/^ *model: *"\{0,1\}\([^"\#[:space:]]*\).*/\1/p' demo_app/iow.config.yml 2>/dev/null)
 EMBED_MODEL  := all-MiniLM-L6-v2
 PORT         := 8000
 TARGET       := demo_app
@@ -66,6 +67,7 @@ DOCKER_SOCK  ?= $(shell if [ -S "$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}/docker
 export DOCKER_SOCK
 IOW_LLM_MODEL ?= $(LLM_MODEL)
 export IOW_LLM_MODEL
+export OLLAMA_MODEL := $(IOW_LLM_MODEL)
 # Host port of the containerized dashboard (docker-compose.yml: ${IOW_PORT:-8000}).
 export IOW_PORT = $(PORT)
 DASHBOARD_URL = http://127.0.0.1:$(PORT)
@@ -73,7 +75,8 @@ DASHBOARD_URL = http://127.0.0.1:$(PORT)
 .PHONY: all up up-infra up-agent down docker-restart docker-clean docker-fclean run p1 p2 p3 bonus \
 	pr-bonus argocd-bonus argocd-bonus-down gitops-publish ensure-gitops-tools gitops-doctor \
 	gitops-doctor-purge gitea \
-	break break-hard break-import break-env break-syntax demo-reset suggest heal rollback status logs \
+	break break-hard break-import break-env break-syntax break-5xx demo-reset suggest heal rollback \
+	status logs \
 	setup clean fclean re help stop \
 	ensure-dirs ensure-venv ensure-deps ensure-ready ensure-ollama ensure-ollama-quick \
 	ensure-embed ensure-lint-tools ensure-target ensure-gitea ensure-dashboard-port \
@@ -115,6 +118,7 @@ help:
 	@echo " make break-import     - startup crash: missing import -> restart loop"
 	@echo " make break-env        - startup crash: reads an unset environment variable"
 	@echo " make break-syntax     - startup crash: syntax error (unclosed parenthesis)"
+	@echo " make break-5xx        - runtime crash: /healthz answers 500 (5xx probe, process survives)"
 	@echo " make demo-reset       - restore demo_app/app.py from HEAD + restart the target"
 	@echo " make suggest          - 4xx probe: surfaced for a human, never auto-healed"
 	@echo " make heal             - heal the latest crash now (409 when nothing crashed)"
@@ -364,7 +368,8 @@ logs:
 	@docker compose logs -f 2>/dev/null || docker-compose logs -f
 
 # Soft crash: unhandled exception inside a request -> HTTP 500 + traceback in the
-# logs. The process survives, so this exercises the log-pattern and 5xx signals.
+# logs. The process survives, so this exercises the log-pattern signal. /api/crash is
+# not a probe URL: the probes' 5xx signal is `make break-5xx`.
 break:
 	@code=$$(curl -s -o /tmp/iow-break.body -w '%{http_code}' -X POST $(TARGET_URL)/api/crash 2>/dev/null || echo 000); \
 	 body=$$(head -c 200 /tmp/iow-break.body 2>/dev/null || true); \
@@ -433,6 +438,21 @@ break-syntax:
 		docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true; \
 		sleep 4; \
 		$(TARGET_STATE); \
+		echo "    Undo: make demo-reset"; \
+	fi
+
+# 5xx (subject: "a 5xx response is treated as another flavour of crash event"): a bug in
+# a route the Observer probes. The process stays up, so only the probes can see the outage.
+break-5xx:
+	@if ! grep -q '"status": "healthy",' demo_app/app.py; then \
+		echo "[*] demo_app/app.py already patched or modified - nothing to break"; \
+	else \
+		sed -i 's/"status": "healthy",/"status": HEALTH_STATE,  # planted by make break-5xx/' demo_app/app.py; \
+		echo "[!] GET /healthz now raises a NameError - restarting target..."; \
+		docker restart $(DOCKER_TARGET) >/dev/null 2>&1 || true; \
+		sleep 4; \
+		$(TARGET_STATE); \
+		curl -s -o /dev/null -w '    GET /healthz -> HTTP %{http_code}\n' $(TARGET_URL)/healthz 2>/dev/null || true; \
 		echo "    Undo: make demo-reset"; \
 	fi
 
@@ -520,7 +540,7 @@ ensure-ollama: ensure-dirs
 			ollama serve >$(IOW_DIR)/logs/ollama.log 2>&1 & echo $$! > $(IOW_DIR)/ollama.pid; \
 		sleep 2; \
 	fi
-	@HOME="$(IOW_DIR)" OLLAMA_MODELS="$(OLLAMA_DIR)" OLLAMA_HOST="$(OLLAMA_HOST)" ollama pull $(LLM_MODEL)
+	@HOME="$(IOW_DIR)" OLLAMA_MODELS="$(OLLAMA_DIR)" OLLAMA_HOST="$(OLLAMA_HOST)" ollama pull $(IOW_LLM_MODEL)
 
 ensure-ollama-quick: ensure-dirs
 	@command -v ollama >/dev/null 2>&1 || exit 0

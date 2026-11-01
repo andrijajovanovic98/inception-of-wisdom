@@ -21,10 +21,12 @@ from p3.verifier import VerificationResult
 class FakeDiagnostician:
     def __init__(self) -> None:
         self.logs: List[str] = []
+        self.exit_codes: List[Optional[int]] = []
 
     def diagnose_crash(self, log_excerpt: str, exit_code=None, status: str = "crashed", top_k: int = 3,
                        exclude_files=None):
         self.logs.append(log_excerpt)
+        self.exit_codes.append(exit_code)
         return DiagnosticReport(
             success=True,
             summary="The Flask import was removed. Restoring it fixes the NameError.",
@@ -130,6 +132,21 @@ class WisdomLoopTests(unittest.TestCase):
         patch = record.attempts[1].patch
         assert patch is not None
         self.assertIn("+", patch["diff"])
+
+    def test_a_retry_reads_the_new_crash_with_its_own_exit_code(self) -> None:
+        """L26: "the new error log" went back to the Analyst next to the first crash's exit code."""
+        class ExitingVerifier(FakeVerifier):
+            def restart_and_verify(self, grace_period=20.0, progress_callback=None, replay=None):
+                result = super().restart_and_verify(grace_period, progress_callback, replay)
+                result.details["exit_code"] = None if result.is_healed else 3
+                return result
+
+        diag = FakeDiagnostician()
+        crash = _crash()
+        crash.details["exit_code"] = 1
+        patcher = FakePatcher([_fixed(self.repo, "a1"), _fixed(self.repo, "a2")])
+        self._loop(patcher, ExitingVerifier([False, True]), diag).execute_heal(crash, grace_period=0.0)
+        self.assertEqual(diag.exit_codes, [1, 3])
 
     def test_three_failures_roll_back_byte_for_byte(self) -> None:
         self.repo.write("demo_app/app.py", self.repo.read("demo_app/app.py").replace(

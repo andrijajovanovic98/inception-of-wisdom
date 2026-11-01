@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from p2.tests import APP_PY
 from p2.chunker import AstChunker
@@ -67,6 +68,16 @@ class ChunkerTests(unittest.TestCase):
         self.assertEqual(chunks[0].symbol_type, "file")
 
 
+class RetrievalInputTests(unittest.TestCase):
+    def test_an_empty_query_retrieves_nothing_and_asks_no_one(self) -> None:
+        """T4: nothing to look for is no result, not the index's nearest-to-nothing chunks."""
+        db = mock.Mock()
+        retriever = CodeRetriever(db)
+        for query in ("", "   ", "\n"):
+            self.assertEqual(retriever.retrieve_by_query(query), [])
+        db.query_similar.assert_not_called()
+
+
 class DiagnosisParsingTests(unittest.TestCase):
     def test_valid_answer(self) -> None:
         report = _parse(json.dumps({"summary": "Flask import removed.", "files": ["demo_app/app.py"]}))
@@ -76,6 +87,20 @@ class DiagnosisParsingTests(unittest.TestCase):
     def test_basename_resolves_to_the_indexed_path(self) -> None:
         report = _parse(json.dumps({"summary": "x", "files": ["config.py"]}))
         self.assertEqual(report.files, ["demo_app/config.py"])
+
+    def test_an_ambiguous_basename_resolves_to_nothing(self) -> None:
+        """T4: two indexed files called app.py - "app.py" names neither of them for sure. The
+        pipeline does not guess: the answer is dropped, and with nothing left it is an explicit
+        failure; the full path still resolves."""
+        diag = CrashDiagnostician(retriever=CodeRetriever(_NoDb()))  # type: ignore[arg-type]
+        indexed = {"demo_app/app.py", "other/app.py"}
+        vague = diag._parse_and_validate_response(
+            json.dumps({"summary": "x", "files": ["app.py"]}), set(indexed), [], 0.0)
+        self.assertFalse(vague.success)
+        self.assertEqual(vague.files, [])
+        exact = diag._parse_and_validate_response(
+            json.dumps({"summary": "x", "files": ["other/app.py"]}), set(indexed), [], 0.0)
+        self.assertEqual(exact.files, ["other/app.py"])
 
     def test_invented_path_is_dropped_and_fails_explicitly(self) -> None:
         report = _parse(json.dumps({"summary": "x", "files": ["src/made_up.py"]}))

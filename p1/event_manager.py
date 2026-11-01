@@ -17,9 +17,12 @@ import threading
 from collections import deque
 from typing import Optional, List, Dict, Deque, Callable, Any
 from dataclasses import dataclass, field, asdict
+from urllib.parse import urlparse
 
 from p1.docker_monitor import DockerMonitor, ContainerState
-from p1.log_streamer import LogStreamer, latest_error_block, latest_error_span
+from p1.log_streamer import (
+    FLASK_EXCEPTION_RE, LogStreamer, incident_excerpt, latest_error_block, latest_error_span,
+)
 from p1.http_probe import HttpProbeManager, ProbeResult
 
 logger = logging.getLogger("p1.event_manager")
@@ -145,6 +148,8 @@ class EventManager:
         # probe and log sources keep their own windows).
         self._suppress_until: float = 0.0
         self._healthy_rounds = 0
+        # Called on every healthy round once the target has really recovered.
+        self.on_target_serving: Optional[Callable[[], None]] = None
 
         self._wire_components()
 
@@ -303,6 +308,10 @@ class EventManager:
 
     def handle_log_error(self, matched_line: str, context_excerpt: str) -> Optional[ObserverEvent]:
         """Processes one detected error incident from LogStreamer."""
+        # This incident's own report, not the whole tail: the tail still holds the crash
+        # before it. Picked in the Analyst tab, a KeyError was diagnosed from the older
+        # NameError above it (seen live: break-import, demo-reset, break-env).
+        context_excerpt = incident_excerpt(context_excerpt.splitlines()) or context_excerpt
         raw_key = normalize_incident_key(matched_line, context_excerpt)
         summary = f"Error in container logs: {matched_line[:100]}"
         event = self.emit_event(
@@ -323,20 +332,32 @@ class EventManager:
         """Give this traceback to the container-side and probe events of the same incident.
 
         Their log context is the tail at the moment they were raised, and a crash's exit (or
-        the dead probe) comes first: the tail held no error report, only what the target
-        logged before. Picked in the Analyst tab, such an event was diagnosed from healthy
-        access logs (seen live: a missing import blamed on get_data).
+        the dead probe) comes first: the tail held only what the target logged before - healthy
+        access logs, or the report of the crash before this one. Picked in the Analyst tab,
+        such an event was diagnosed from those (seen live: a missing import blamed on
+        get_data). The report that follows within the window replaces either.
+
+        By scope. A report that names the request it was raised in ("Exception on /path
+        [METHOD]") is a soft crash: the process survived it, so it explains neither an exit nor
+        a dead target, and a 5xx only on that very route. Lent to any event still open, an
+        unrelated soft crash replaced the report of an ongoing 5xx and the tail of a hard exit
+        (seen live: a RuntimeError in /api/crash became the diagnosis of a failing /healthz).
         """
-        if latest_error_span(context_excerpt.splitlines()) is None:
+        lines = context_excerpt.splitlines()
+        if latest_error_span(lines) is None:
             return
+        request = FLASK_EXCEPTION_RE.search(context_excerpt)
         now = time.time()
         with self._lock:
             for event in list(self._events)[-30:]:
                 if event.type != "crash" or event.source == "log" or now - event.last_seen > LEND_WINDOW_S:
                     continue
-                own = str(event.details.get("context_excerpt") or "")
-                if latest_error_span(own.splitlines()) is None:
-                    event.details["context_excerpt"] = context_excerpt
+                if request and not (
+                    event.details.get("kind") == "http_5xx"
+                    and urlparse(str(event.details.get("url") or "")).path == request.group(1)
+                ):
+                    continue
+                event.details["context_excerpt"] = context_excerpt
 
     def handle_http_crash(self, probe: ProbeResult) -> Optional[ObserverEvent]:
         """Processes a 5xx or connection crash from HttpProbeManager."""
@@ -491,6 +512,13 @@ class EventManager:
         event was raised until Docker's restart backoff outgrew the window (seen live:
         207 s after a rollback and a `make demo-reset`). Tracebacks and 5xx keep their
         time window, so a soft crash repeated by hand still folds into one event.
+
+        A restart loop is the exception: it stays open for as long as the container side
+        still counts it. Serving between two crashes does not end it, and closed early it was
+        raised anew on the next poll, on a target that may have recovered for good. Nothing
+        closes meanwhile, whichever signal that count is raised as: Kubernetes reads a pod
+        that restarted in place as an exit, and that incident closed and raised again on
+        every poll.
         """
         healthy = (
             bool(results)
@@ -503,14 +531,13 @@ class EventManager:
         self._healthy_rounds = self._healthy_rounds + 1 if healthy else 0
         if self._healthy_rounds < RECOVERY_ROUNDS:
             return
-        if self._healthy_rounds == RECOVERY_ROUNDS:
-            # The container side must agree: its restarts (and a pod's last termination)
-            # are history now, or the same outage is raised again on the next poll.
-            forget = getattr(self.docker_monitor, "forget_restart_history", None)
-            if callable(forget):
-                forget()
+        # The container side must agree: its restarts (and a pod's last termination)
+        # are history now, or the same outage is raised again on the next poll.
+        forget = getattr(self.docker_monitor, "forget_restart_history", None)
+        settled = forget() if callable(forget) else True
+        looping = state is not None and state.is_crash
         with self._lock:
-            closed = [
+            closed = [] if looping else [
                 sig for sig, ev in self._active_signatures.items()
                 if ev.type == "crash" and ev.details.get("kind") in DOWN_KINDS
             ]
@@ -518,6 +545,8 @@ class EventManager:
                 del self._active_signatures[sig]
         if closed:
             logger.info(f"Target serves again: closed {len(closed)} 'target down' incident(s).")
+        if settled and not looping and self.on_target_serving:
+            self.on_target_serving()
 
     def close_incidents(self, event_type: str = "crash") -> int:
         """End every active incident of this type (the events stay in the history).

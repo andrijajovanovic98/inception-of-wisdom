@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import http.server
+import socket
 import threading
 import time
 import unittest
+from typing import Any, Dict, List
 from unittest import mock
 
-from p1.docker_monitor import ContainerState, DockerMonitor, target_facts_from
+from p1 import event_manager
+from p1.docker_monitor import (
+    RESTART_STUCK_S, STABLE_UPTIME_S, ContainerState, DockerMonitor, target_facts_from,
+)
 from p1.event_manager import EventManager, normalize_incident_key
 from p1.http_probe import HttpProbeManager, ProbeResult
 from p1.log_streamer import LogStreamer, latest_error_block
@@ -52,6 +58,18 @@ class DockerExitEventTests(unittest.TestCase):
             _event("restart", 6),
         ]
         self.assertTrue(all(self.monitor._interpret_event(e) is None for e in seq))
+
+    def test_our_own_restart_explains_the_exit_that_follows_it(self) -> None:
+        """T4: the daemon's 'kill' event announces a restart, but the event stream may be
+        reconnecting at that moment: restart_target() says so itself, and only for the one exit."""
+        class Restartable(_Container):
+            def restart(self, timeout: int = 10) -> None:
+                pass
+
+        monitor, _ = _monitored(Restartable("running", 0, "unless-stopped"))
+        self.assertTrue(monitor.restart_target())
+        self.assertIsNone(monitor._interpret_event(_event("die", 1, exit_code="137")))
+        self.assertIsNotNone(monitor._interpret_event(_event("die", 2, exit_code="1")))
 
     def test_a_kill_explains_only_one_exit(self) -> None:
         """The restarted code crashing right after our restart is still reported."""
@@ -105,11 +123,67 @@ class DockerExitEventTests(unittest.TestCase):
 class _Container:
     def __init__(self, status: str, exit_code: int, policy: str) -> None:
         self.status = status
-        self.attrs = {"State": {"Status": status, "ExitCode": exit_code},
-                      "HostConfig": {"RestartPolicy": {"Name": policy}}, "RestartCount": 0}
+        self.attrs: Dict[str, Any] = {"State": {"Status": status, "ExitCode": exit_code},
+                                      "HostConfig": {"RestartPolicy": {"Name": policy}}, "RestartCount": 0}
 
     def reload(self) -> None:
         pass
+
+
+def _monitored(container: _Container) -> tuple:
+    """A real DockerMonitor reading this container (monitor, container)."""
+    monitor = DockerMonitor(container_name="t")
+    client = type("Client", (), {})()
+    client.containers = type("Containers", (), {"get": lambda _s, name: container})()
+    monitor._get_client = lambda: client  # type: ignore[method-assign]
+    return monitor, container
+
+
+class ContainerStateTests(unittest.TestCase):
+    """T4: the subject's container states, read from a real DockerMonitor."""
+
+    def test_a_dead_or_oom_killed_container_is_a_crash(self) -> None:
+        dead = _Container("dead", 137, "no")
+        dead.attrs["State"]["Dead"] = True
+        state = _monitored(dead)[0].inspect()
+        self.assertTrue(state.is_crash)
+        self.assertIn("dead", state.error_reason or "")
+        killed = _Container("running", 0, "no")
+        killed.attrs["State"]["OOMKilled"] = True
+        state = _monitored(killed)[0].inspect()
+        self.assertTrue(state.is_crash)
+        self.assertIn("OOMKilled", state.error_reason or "")
+
+    def test_a_process_running_before_the_agent_attached_has_its_age(self) -> None:
+        """O15, seen live: no 'start' event names a process that was already running when the agent
+        attached, and its unknown age counted as stable - two recovery callbacks in the first two
+        seconds of a target that dies every six. The container's own record of its start stands in."""
+        def stamp(ago: float) -> str:
+            return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - ago)) + ".123456789Z"
+
+        for started, stable in ((stamp(5), False), (stamp(120), True),
+                                ("0001-01-01T00:00:00Z", True), ("garbage", True)):
+            container = _Container("running", 0, "unless-stopped")
+            container.attrs["State"]["StartedAt"] = started
+            monitor, _ = _monitored(container)
+            monitor.inspect()
+            self.assertEqual(monitor.forget_restart_history(), stable, started)
+        container = _Container("running", 0, "unless-stopped")
+        container.attrs["State"]["StartedAt"] = stamp(120)
+        monitor, _ = _monitored(container)
+        monitor._interpret_event(_event("start", time.time_ns()))        # an event knows better
+        monitor.inspect()
+        self.assertFalse(monitor.forget_restart_history())
+
+    def test_a_container_stuck_restarting_is_a_restart_loop(self) -> None:
+        """Docker's backoff stretches a crash loop until the container sits in 'restarting' with
+        a counter that no longer climbs: a restart is transient, being stuck there is not."""
+        monitor, _ = _monitored(_Container("restarting", 1, "unless-stopped"))
+        self.assertFalse(monitor.inspect().is_crash)               # passing through, as in docker restart
+        monitor._restarting_since = time.time() - RESTART_STUCK_S - 1
+        state = monitor.inspect()
+        self.assertTrue(state.is_crash)
+        self.assertIn("restart loop", state.error_reason or "")
 
 
 class StoppedTargetTests(unittest.TestCase):
@@ -376,16 +450,36 @@ class DeduplicationTests(unittest.TestCase):
         self.assertEqual(kinds.count("exit"), 2)            # the crash came back: new event
         self.assertEqual(kinds.count("log_pattern"), 1)     # the soft crash still folds in
 
+    def test_a_dead_probe_ends_with_the_outage_too(self) -> None:
+        """T4: every "target down" kind - exit, restart loop, OOM, dead, unreachable - ends when
+        the target serves again; a 5xx on one route is a soft crash and does not."""
+        em = EventManager(crash_window_seconds=60.0)
+        refused = ProbeResult(url="http://t/", status_code=None, is_crash=True, error_message="refused")
+        em.handle_http_crash(refused)
+        em.handle_http_crash(ProbeResult(url="http://t/x", status_code=500, is_crash=True))
+        ok = [ProbeResult(url="http://t/", status_code=200, is_healthy=True)]
+        em.handle_probe_round(ok)
+        em.handle_probe_round(ok)
+        em.handle_http_crash(refused)                       # down again: a new incident
+        em.handle_http_crash(ProbeResult(url="http://t/x", status_code=500, is_crash=True))
+        kinds = [e["details"]["kind"] for e in em.get_events(event_type="crash")]
+        self.assertEqual(kinds.count("unreachable"), 2)
+        self.assertEqual(kinds.count("http_5xx"), 1)        # still folded into the first one
+
+    def test_an_oom_kill_is_its_own_signal(self) -> None:
+        """T4: the subject's crash signals stay apart in the dashboard (Figure V.1)."""
+        em = EventManager()
+        event = em.handle_docker_state(ContainerState(
+            name="t", status="dead", is_crash=True, error_reason="Container was OOM-killed"))
+        assert event is not None
+        self.assertEqual(event.details["kind"], "oom")
+
     def test_a_crash_loop_ended_by_an_outside_restart_is_over(self) -> None:
         """O10, seen live after `make demo-reset`: the restart counter still climbed inside the
         last minute, so the target that served again was a "restart loop" - raised anew on
         every poll once the outage was closed (nine events in 24 s), and a heal started on
         the healthy target."""
-        monitor = DockerMonitor(container_name="t")
-        container = _Container("restarting", 1, "unless-stopped")
-        client = type("Client", (), {})()
-        client.containers = type("Containers", (), {"get": lambda _s, name: container})()
-        monitor._get_client = lambda: client  # type: ignore[method-assign]
+        monitor, container = _monitored(_Container("restarting", 1, "unless-stopped"))
         em = EventManager(docker_monitor=monitor)
         for restarts in (1, 2, 3):                                    # the crash loop
             container.attrs["RestartCount"] = restarts
@@ -403,6 +497,190 @@ class DeduplicationTests(unittest.TestCase):
             container.attrs["RestartCount"] = restarts
             em.handle_docker_state(monitor.inspect())
         self.assertEqual(len(em.get_events(event_type="crash")), 2)   # a new bad start is new
+
+    def test_one_restart_of_a_healthy_target_is_no_restart_loop(self) -> None:
+        """O14, seen live: `docker restart` resets the counter, and read as a difference the
+        drop from 2 to 0 was the counter climbing - a restart loop on a healthy target that
+        had crashed twice long ago, and a heal started on it."""
+        monitor, container = _monitored(_Container("running", 0, "unless-stopped"))
+        em = EventManager(docker_monitor=monitor)
+        container.attrs["RestartCount"] = 2
+        em.handle_docker_state(monitor.inspect())
+        em.handle_docker_state(monitor.inspect())
+        container.attrs["RestartCount"] = 0                      # one plain docker restart
+        state = monitor.inspect()
+        self.assertFalse(state.is_crash)
+        em.handle_docker_state(state)
+        self.assertEqual(em.get_events(event_type="crash"), [])
+
+    def test_a_target_that_dies_every_few_seconds_stays_a_restart_loop(self) -> None:
+        """O15, seen live: a target serving for six seconds at a time answered the two healthy
+        probe rounds between its crashes, so its restarts were forgotten each time and the
+        restart loop was never raised - the outage read as "the symptom is gone"."""
+        monitor, container = _monitored(_Container("running", 0, "unless-stopped"))
+        em = EventManager(docker_monitor=monitor)
+        served: list = []
+        em.on_target_serving = lambda: served.append(True)
+        ok = [ProbeResult(url="http://t/", status_code=200, is_healthy=True)]
+        for restarts in (1, 2, 3):
+            monitor._last_start_ts = time.time()                 # just started again
+            container.attrs["RestartCount"] = restarts
+            em.handle_docker_state(monitor.inspect())
+            em.handle_probe_round(ok)
+            em.handle_probe_round(ok)                            # it answers until it dies
+        self.assertTrue(monitor.inspect().is_crash)
+        kinds = [e["details"]["kind"] for e in em.get_events(event_type="crash")]
+        self.assertEqual(kinds, ["restart_loop"])                # still one open incident
+        self.assertEqual(served, [])                             # and not recovered
+
+    def test_the_restart_loop_ends_once_the_target_has_stayed_up(self) -> None:
+        """O15: the counter is forgotten when the process has lasted, and the incident ends."""
+        monitor, container = _monitored(_Container("running", 0, "unless-stopped"))
+        em = EventManager(docker_monitor=monitor)
+        served: list = []
+        em.on_target_serving = lambda: served.append(True)
+        ok = [ProbeResult(url="http://t/", status_code=200, is_healthy=True)]
+        for restarts in (1, 2, 3):
+            container.attrs["RestartCount"] = restarts
+            em.handle_docker_state(monitor.inspect())
+        monitor._last_start_ts = time.time() - STABLE_UPTIME_S - 1
+        for _ in range(3):
+            em.handle_docker_state(monitor.inspect())
+            em.handle_probe_round(ok)
+        self.assertFalse(monitor.inspect().is_crash)
+        self.assertEqual(len(em.get_events(event_type="crash")), 1)
+        self.assertTrue(served)
+
+    def test_a_log_event_carries_its_own_report_not_the_crash_before_it(self) -> None:
+        """A11, seen live (break-import, demo-reset, break-env): the KeyError event held the
+        NameError traceback above it, and picked in the Analyst tab it was diagnosed as the
+        missing import. The request lines stay: the Verifier replays them."""
+        em = EventManager()
+        tail = "\n".join([
+            "Traceback (most recent call last):",
+            '  File "/app/app.py", line 21, in <module>',
+            "NameError: name 'Flask' is not defined",
+            "INFO starting",
+            "ERROR in app: Exception on /api/data [GET]",
+            "Traceback (most recent call last):",
+            '  File "/app/app.py", line 92, in <module>',
+            "KeyError: 'IOW_DEMO_PORT'",
+            '172.18.0.1 - - "GET /api/data HTTP/1.1" 500 -',
+        ])
+        event = em.handle_log_error("KeyError: 'IOW_DEMO_PORT'", tail)
+        assert event is not None
+        context = event.details["context_excerpt"]
+        self.assertNotIn("NameError", context)
+        self.assertIn("KeyError", context)
+        self.assertIn("Exception on /api/data [GET]", context)
+        self.assertIn('"GET /api/data HTTP/1.1" 500', context)
+
+    def test_the_report_that_follows_replaces_the_crash_before_it(self) -> None:
+        """A11: raised first, an exit event's tail held the previous crash's traceback, which
+        kept the new one from being lent to it."""
+        streamer = LogStreamer(_NoLogs())
+        streamer.log_buffer.append("NameError: name 'Flask' is not defined")
+        em = EventManager(log_streamer=streamer)
+        exited = em.handle_docker_state(ContainerState(
+            name="t", status="exited", exit_code=1, is_crash=True,
+            error_reason="Container exited with a non-zero status",
+        ))
+        assert exited is not None
+        self.assertIn("NameError", exited.details["context_excerpt"])
+        em.handle_log_error("KeyError: 'IOW_DEMO_PORT'", "KeyError: 'IOW_DEMO_PORT'")
+        self.assertEqual(exited.details["context_excerpt"], "KeyError: 'IOW_DEMO_PORT'")
+
+    def test_a_soft_crash_is_lent_only_to_the_5xx_of_its_own_route(self) -> None:
+        """A11, by scope, seen live: an unrelated RuntimeError in /api/crash replaced the report of
+        the ongoing 5xx on /healthz, and became the diagnosis picked for it. The process survived
+        a request that raised, so that report explains neither an exit nor a dead target."""
+        def soft_crash(exc: str, route: str) -> str:
+            return "\n".join([
+                f"[2026-11-01 10:00:00,000] ERROR in app: Exception on {route}",
+                "Traceback (most recent call last):",
+                '  File "/app/app.py", line 9, in handler',
+                exc,
+            ])
+
+        healthz = soft_crash("NameError: name 'HEALTH_STATE' is not defined", "/healthz [GET]")
+        other = soft_crash("RuntimeError: manual crash", "/api/crash [POST]")
+        streamer = LogStreamer(_NoLogs())
+        for line in healthz.splitlines():
+            streamer.log_buffer.append(line)
+        em = EventManager(log_streamer=streamer)
+        probe = ProbeResult(url="http://t:5000/healthz", status_code=500, is_crash=True)
+        ongoing = em.handle_http_crash(probe)
+        assert ongoing is not None
+        hard_exit = em.handle_docker_state(ContainerState(
+            name="t", status="exited", exit_code=1, is_crash=True,
+            error_reason="Container exited with a non-zero status",
+        ))
+        assert hard_exit is not None
+        tail_of_the_exit = hard_exit.details["context_excerpt"]
+
+        em.handle_log_error("RuntimeError: manual crash", other)             # another route
+        self.assertIn("NameError", ongoing.details["context_excerpt"])
+        self.assertEqual(hard_exit.details["context_excerpt"], tail_of_the_exit)
+
+        ongoing.details["context_excerpt"] = "INFO healthy access log"        # its report not streamed yet
+        em.handle_log_error("NameError: name 'HEALTH_STATE' is not defined", healthz)   # its own route
+        self.assertIn("NameError", ongoing.details["context_excerpt"])
+        self.assertEqual(hard_exit.details["context_excerpt"], tail_of_the_exit)
+
+        # A hard exit prints nothing: its tail (the request that killed it) is its evidence, and
+        # no soft crash, however close, is its report.
+        request_line = '172.18.0.1 - - "POST /api/crash-hard HTTP/1.1" 202 -'
+        quiet = LogStreamer(_NoLogs())
+        quiet.log_buffer.append(request_line)
+        em2 = EventManager(log_streamer=quiet)
+        exited = em2.handle_docker_state(ContainerState(
+            name="t", status="exited", exit_code=1, is_crash=True,
+            error_reason="Container exited with a non-zero status",
+        ))
+        assert exited is not None
+        em2.handle_log_error("RuntimeError: manual crash", other)
+        self.assertEqual(exited.details["context_excerpt"], request_line)
+        startup = ("Traceback (most recent call last):\n"
+                   '  File "/app/app.py", line 3, in <module>\nKeyError: \'PORT\'')
+        em2.handle_log_error("KeyError: 'PORT'", startup)                   # a start-up crash
+        self.assertIn("KeyError", exited.details["context_excerpt"])        # that one is its report
+
+    def test_nothing_closes_while_the_container_side_still_counts_a_crash(self) -> None:
+        """O16: Kubernetes reports a pod that restarted in place as an exit, not as a restart loop.
+        The healthy rounds closed that incident and the next poll raised it again, a new event on
+        every poll for as long as the pod had not stayed up."""
+        class RestartedInPlace:
+            def __init__(self) -> None:
+                self.state = ContainerState(
+                    name="t", status="running", is_crash=True, exit_code=1, restart_count=1,
+                    error_reason="Pod container terminated with exit code 1 (Error)",
+                )
+                self.stayed_up = False
+
+            def get_last_state(self) -> ContainerState:
+                return self.state
+
+            def forget_restart_history(self) -> bool:
+                return self.stayed_up
+
+        pod = RestartedInPlace()
+        em = EventManager(docker_monitor=pod)                    # type: ignore[arg-type]
+        served: List[bool] = []
+        em.on_target_serving = lambda: served.append(True)
+        ok = [ProbeResult(url="http://t/", status_code=200, is_healthy=True)]
+        crashed = pod.state
+        for _ in range(4):                                       # polls and probe rounds, serving
+            em.handle_docker_state(crashed)
+            em.handle_probe_round(ok)
+        self.assertEqual(len(em.get_events(event_type="crash")), 1)
+        self.assertEqual(served, [])
+        pod.stayed_up = True                                     # and now it has stayed up
+        pod.state = ContainerState(name="t", status="running")
+        em.handle_probe_round(ok)
+        em.handle_probe_round(ok)
+        self.assertTrue(served)
+        em.handle_docker_state(crashed)                          # a crash after that is a new one
+        self.assertEqual(len(em.get_events(event_type="crash")), 2)
 
     def test_a_container_exit_gets_the_traceback_that_follows_it(self) -> None:
         """O11, seen live: a crash's exit is raised before its traceback is streamed (the stream
@@ -429,6 +707,33 @@ class DeduplicationTests(unittest.TestCase):
         self.assertEqual(exited.details["context_excerpt"], traceback)
         self.assertEqual(refused.details["context_excerpt"], traceback)
         self.assertNotIn("NameError", earlier.details["context_excerpt"])
+
+    def test_suggestions_are_folded_on_their_own_longer_window(self) -> None:
+        """T4: subject V.1, "on a longer window". Past the crash window but inside its own, the
+        same missing route stays one event; past its own it is a new one."""
+        em = EventManager(crash_window_seconds=0.05, suggestion_window_seconds=0.4)
+        missing = ProbeResult(url="http://t/x", status_code=404, is_suggestion=True)
+        first = em.handle_http_suggestion(missing)
+        time.sleep(0.1)
+        again = em.handle_http_suggestion(missing)
+        assert first is not None and again is not None
+        self.assertIs(first, again)
+        self.assertEqual(first.count, 2)
+        time.sleep(0.5)
+        self.assertIsNot(em.handle_http_suggestion(missing), first)
+
+    def test_the_signature_table_is_bounded(self) -> None:
+        """T4: a burst of unique signatures cannot grow the table without limit, oldest first
+        (a long defense session must not grow the agent); the history keeps every event."""
+        em = EventManager()
+        with mock.patch.object(event_manager, "MAX_ACTIVE_SIGNATURES", 5):
+            for i in range(20):
+                em.handle_log_error(f"ValueError: {chr(97 + i) * 3}", "")
+        events = em.get_events(event_type="crash")
+        self.assertEqual(len(events), 20)
+        self.assertLessEqual(len(em._active_signatures), 5 + 1)   # trimmed before each insert
+        self.assertIn(events[-1]["signature"], em._active_signatures)
+        self.assertNotIn(events[0]["signature"], em._active_signatures)
 
     def test_window_expiry_allows_a_new_event(self) -> None:
         em = EventManager(crash_window_seconds=0.05)
@@ -498,6 +803,30 @@ class LogStreamerTests(unittest.TestCase):
         streamer._process_chunk(line)  # reattach replays the same line
         self.assertEqual(sink, ["RuntimeError: fresh"])
         self.assertEqual(streamer.get_recent_logs(), ["RuntimeError: fresh"])  # shown once
+
+    def test_the_exception_line_is_the_headline_of_a_burst(self) -> None:
+        """T4: one traceback arrives as a burst of matching lines; the event is named after the
+        most diagnostic one, the exception line, not whichever matched last."""
+        self.assertEqual(
+            LogStreamer._pick_headline([
+                "Traceback (most recent call last):", "ValueError: boom", "CRITICAL: shutting down",
+            ]),
+            "ValueError: boom",
+        )
+        self.assertEqual(LogStreamer._pick_headline(["CRITICAL: a", "CRITICAL: b"]), "CRITICAL: b")
+
+    def test_error_lines_during_a_restart_window_raise_nothing(self) -> None:
+        """T4: around our own restart the old process's tracebacks are not a crash; the lines
+        stay in the log view, and detection comes back with the window."""
+        sink: list = []
+        streamer = self._streamer(sink)
+        streamer.suppress_events_for(30)
+        streamer._process_chunk("2030-01-01T00:00:00.000000000Z RuntimeError: while restarting\n")
+        self.assertEqual(sink, [])
+        self.assertIn("RuntimeError: while restarting", streamer.get_recent_logs())
+        streamer.resume_events()
+        streamer._process_chunk("2030-01-01T00:00:01.000000000Z RuntimeError: after the restart\n")
+        self.assertEqual(sink, ["RuntimeError: after the restart"])
 
     def test_lines_microseconds_apart_are_not_mistaken_for_replays(self) -> None:
         """Docker stamps a traceback's lines 1-4 µs apart; a float epoch (or a µs cut)
@@ -630,6 +959,104 @@ def _wait_for(condition, timeout: float = 5.0) -> None:
     deadline = time.time() + timeout
     while not condition() and time.time() < deadline:
         time.sleep(0.02)
+
+
+class _Target(http.server.BaseHTTPRequestHandler):
+    """A real HTTP target: /status/<code> answers that code, /slow outlasts the probe's timeout."""
+
+    def do_GET(self) -> None:
+        if self.path == "/slow":
+            time.sleep(1.0)
+            code = 200
+        else:
+            code = int(self.path.rsplit("/", 1)[1])
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+class ProbeClassificationTests(unittest.TestCase):
+    """T4: the subject's split between hard and soft signals, over real connections. It had no
+    test: a mutation run turned each of these around and every suite stayed green."""
+
+    server: http.server.ThreadingHTTPServer
+    url: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Target)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.url = f"http://127.0.0.1:{cls.server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def _probe(self, path: str, service_url: str = "", timeout: float = 2.0) -> ProbeResult:
+        probe = HttpProbeManager(service_url=service_url or self.url, timeout_seconds=timeout)
+        return probe._probe_single_url(f"{service_url or self.url}{path}")
+
+    def test_a_2xx_is_healthy(self) -> None:
+        result = self._probe("/status/200")
+        self.assertEqual((result.is_healthy, result.is_crash, result.is_suggestion), (True, False, False))
+
+    def test_a_4xx_is_a_suggestion_and_never_a_crash(self) -> None:
+        for code in (400, 404, 405, 499):
+            result = self._probe(f"/status/{code}")
+            self.assertEqual((result.is_healthy, result.is_crash, result.is_suggestion),
+                             (False, False, True), code)
+
+    def test_a_5xx_is_a_crash(self) -> None:
+        for code in (500, 502, 503):
+            result = self._probe(f"/status/{code}")
+            self.assertEqual((result.is_healthy, result.is_crash, result.is_suggestion),
+                             (False, True, False), code)
+
+    def test_a_redirect_is_neither(self) -> None:
+        result = self._probe("/status/302")
+        self.assertEqual((result.is_healthy, result.is_crash, result.is_suggestion), (False, False, False))
+
+    def test_a_refused_connection_is_a_crash(self) -> None:
+        with socket.socket() as free:
+            free.bind(("127.0.0.1", 0))
+            port = free.getsockname()[1]
+        result = self._probe("/", service_url=f"http://127.0.0.1:{port}")
+        self.assertEqual((result.is_crash, result.status_code), (True, None))
+        self.assertIn("refused", result.error_message or "")
+
+    def test_a_timeout_is_a_crash(self) -> None:
+        result = self._probe("/slow", timeout=0.2)
+        self.assertEqual((result.is_crash, result.status_code), (True, None))
+        self.assertIn("timed out", result.error_message or "")
+
+    def test_no_event_is_raised_while_a_restart_is_in_flight(self) -> None:
+        """T4: the target is expected to be unreachable around a deliberate restart: the round
+        is still probed and reported, but no crash event comes of it, until the window ends."""
+        crashes: List[ProbeResult] = []
+        rounds: List[List[ProbeResult]] = []
+        probe = HttpProbeManager(service_url=self.url, probe_paths=["/status/500"], on_crash=crashes.append)
+        probe.on_round = rounds.append
+        probe.suppress_events_for(30)
+        probe.probe_all_once()
+        self.assertEqual((len(crashes), len(rounds)), (0, 1))
+        self.assertEqual(probe.get_latest_results()[f"{self.url}/status/500"]["status_code"], 500)
+        probe.resume_events()
+        probe.probe_all_once()
+        self.assertEqual(len(crashes), 1)
+
+    def test_each_class_reaches_its_own_callback(self) -> None:
+        crashes: List[ProbeResult] = []
+        suggestions: List[ProbeResult] = []
+        probe = HttpProbeManager(service_url=self.url,
+                                 probe_paths=["/status/200", "/status/404", "/status/500"],
+                                 on_crash=crashes.append, on_suggestion=suggestions.append)
+        probe.probe_all_once()
+        self.assertEqual([r.status_code for r in crashes], [500])
+        self.assertEqual([r.status_code for r in suggestions], [404])
 
 
 class ProbeListTests(unittest.TestCase):

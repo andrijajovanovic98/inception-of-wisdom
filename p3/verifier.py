@@ -18,10 +18,10 @@ import logging
 from typing import Optional, Dict, Any, Callable, List, Sequence, Tuple
 from dataclasses import dataclass, asdict, field
 
-from p1.docker_monitor import DockerMonitor
+from p1.docker_monitor import STABLE_UPTIME_S, DockerMonitor
 from p1.http_probe import HttpProbeManager
 from p1.event_manager import EventManager, ObserverEvent
-from p1.log_streamer import LogStreamer, latest_error_block, latest_error_span
+from p1.log_streamer import ACCESS_LINE_RE, FLASK_EXCEPTION_RE, LogStreamer
 
 logger = logging.getLogger("p3.verifier")
 
@@ -33,14 +33,6 @@ PROBE_FAILURE_THRESHOLD = 3
 MAX_REPLAYS = 2
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-# werkzeug / uvicorn access lines: "POST /api/crash HTTP/1.1" 500
-_ACCESS_RE = re.compile(r'"(GET|POST|PUT|PATCH|DELETE|HEAD) (/[^\s"]*) HTTP/[0-9.]+" (\d{3})')
-# Flask names the request whose handler raised, right above the traceback it logs:
-# "ERROR in app: Exception on /api/crash [POST]"
-_FLASK_EXC_RE = re.compile(r"Exception on (/[^\s\[]*) \[(GET|POST|PUT|PATCH|DELETE|HEAD)\]")
-# How far around an error report the lines naming its request are looked for.
-_REQUEST_LINES_BEFORE = 2
-_REQUEST_LINES_AFTER = 10
 
 
 def failing_requests_from_log(
@@ -58,13 +50,13 @@ def failing_requests_from_log(
     last_request: Optional[Tuple[str, str]] = None
     for raw in (log_text or "").splitlines():
         line = _ANSI_RE.sub("", raw)
-        raised = _FLASK_EXC_RE.search(line)
+        raised = FLASK_EXCEPTION_RE.search(line)
         if raised:
             request = (raised.group(2), raised.group(1))
             if raised.group(1) not in ignored and request not in requests:
                 requests.append(request)
             continue
-        match = _ACCESS_RE.search(line)
+        match = ACCESS_LINE_RE.search(line)
         if not match or match.group(2) in ignored:
             continue
         request = (match.group(1), match.group(2))
@@ -74,51 +66,6 @@ def failing_requests_from_log(
     if not requests and last_request is not None:
         requests.append(last_request)
     return requests[:MAX_REPLAYS]
-
-
-def request_lines_around(lines: Sequence[str], start: int, end: int) -> Tuple[List[str], List[str]]:
-    """The lines naming the request behind the error report lines[start:end].
-
-    (before, after): Flask's "Exception on <path> [<METHOD>]" just above the traceback,
-    and the 5xx access line the server writes just below it. Trimming a crash down
-    to its traceback used to drop both, so the request that crashed the target was
-    never replayed - and a patch that still crashed it passed as healed.
-    Nothing is taken past the next error report, so an older or newer incident's
-    request can never be replayed for this one.
-    """
-    before = [
-        line for line in lines[max(0, start - _REQUEST_LINES_BEFORE):start]
-        if _FLASK_EXC_RE.search(_ANSI_RE.sub("", line))
-    ]
-    after: List[str] = []
-    for line in lines[end:end + _REQUEST_LINES_AFTER]:
-        clean = _ANSI_RE.sub("", line)
-        if "Traceback (most recent call last)" in clean or _FLASK_EXC_RE.search(clean):
-            break
-        match = _ACCESS_RE.search(clean)
-        if match and match.group(3).startswith("5"):
-            after.append(line)
-    return before, after
-
-
-def incident_excerpt(lines: Sequence[str], header: Optional[str] = None) -> str:
-    """The log text a crash hands to the Analyst: its latest error report only.
-
-    An older traceback still in the buffer can never steer the diagnosis, and the
-    lines naming the request that raised this one stay, because that request is the
-    symptom re-issued after every redeploy. Without an error report (a hard exit that
-    printed nothing) the tail is kept - its last request is the prime suspect.
-    """
-    lines = list(lines)
-    span = latest_error_span(lines)
-    if span is None:
-        body = latest_error_block(lines)
-    else:
-        before, after = request_lines_around(lines, *span)
-        body = before + lines[span[0]:span[1]] + after
-    if not body:
-        return ""
-    return "\n".join(([header] if header else []) + body)
 
 
 @dataclass
@@ -166,6 +113,8 @@ class TargetVerifier:
         self.git_manager = git_manager
         # When the current redeploy started (logs "since the restart").
         self._restart_started: Optional[float] = None
+        # What the redeployed code exited with, when it died before it answered.
+        self._boot_exit_code: Optional[int] = None
 
     def _refresh_boot_timeout(self) -> None:
         if self.boot_timeout_provider is None:
@@ -178,6 +127,23 @@ class TargetVerifier:
             logger.debug(f"boot_timeout provider failed, keeping {self.boot_timeout_seconds}s: {exc}")
 
     # ------------------------------------------------------------------
+    def _restart_loop_is_live(self, state: Any) -> bool:
+        """Whether a running target's crash state is a restart loop it has not outlived.
+
+        Only a loop counts. Kubernetes marks any pod that restarted in place since it was last
+        seen serving, and Docker keeps counting a loop's restarts for a while after it ended:
+        taken as the symptom, a transient restart or a loop fixed in place made a heal of a
+        healthy target go on to patch working code (the check is there to stop exactly that).
+        A process that has stayed up for STABLE_UPTIME_S is over its loop, whatever the
+        counter still says; with no start time known the loop is taken as live.
+        """
+        reason = (state.error_reason or "").lower()
+        if "restart loop" not in reason and "crashloopbackoff" not in reason:
+            return False
+        started = getattr(self.docker_monitor, "last_start_time", None)
+        began = started() if callable(started) else 0.0
+        return not (began and time.time() - began >= STABLE_UPTIME_S)
+
     def symptom_present(self, replay: Sequence[Tuple[str, str]] = ()) -> Tuple[bool, str]:
         """Is the crash still there, before anything is patched? (present, why)
 
@@ -187,6 +153,13 @@ class TargetVerifier:
         does change it (seen live: a heal with no crash context rewrote /api/crash).
         When this cannot be told, the answer is "present": the loop runs as before.
         """
+        # A restart loop is the outage itself, even at a moment the target happens to answer:
+        # one that dies a few seconds after each start was reported gone, every time, and the
+        # subject's own example of an outage was never healed.
+        state = self.docker_monitor.inspect()
+        if state.is_crash and (state.status != "running" or self._restart_loop_is_live(state)):
+            return True, state.error_reason or f"the target is {state.status}"
+
         request_once = getattr(self.http_probe, "request_once", None)
         if replay and callable(request_once):
             started = time.time()
@@ -206,7 +179,6 @@ class TargetVerifier:
                     return True, f"the target exited with code {code} after {replay[0][0]} {replay[0][1]}"
             return False, f"{', '.join(f'{m} {p}' for m, p in replay)} succeeds now"
 
-        state = self.docker_monitor.inspect()
         if state.status != "running":
             return True, f"the target is {state.status}"
         paths = list(getattr(self.http_probe, "probe_paths", None) or [])
@@ -303,7 +275,7 @@ class TargetVerifier:
                     elapsed_seconds=0.0,
                     error_log=boot_detail,
                     container_status=self.docker_monitor.inspect().status,
-                    details={"redeploy_mode": mode, "phase": "boot"},
+                    details={"redeploy_mode": mode, "phase": "boot", "exit_code": self._boot_exit_code},
                     timestamp=time.time(),
                 )
             logger.info(f"Target answered after redeploy ({boot_detail}); starting grace period.")
@@ -332,6 +304,7 @@ class TargetVerifier:
         last_detail = "target did not answer after redeploy"
         exit_since = getattr(self.docker_monitor, "last_crash_exit_since", None)
         answering_rounds = 0
+        self._boot_exit_code = None
 
         while time.time() < deadline:
             elapsed = self.boot_timeout_seconds - (deadline - time.time())
@@ -348,6 +321,7 @@ class TargetVerifier:
                 # restart policy launched just before the patch landed may die now.
                 crashed_with = exit_since(restart_started, started_after=restart_started)
                 if crashed_with is not None:
+                    self._boot_exit_code = crashed_with
                     return False, (
                         f"Target exited with code {crashed_with} right after the restart.\n"
                         f"{self._tail_logs()}"
@@ -357,6 +331,7 @@ class TargetVerifier:
             if state.status == "exited":
                 exit_code = state.exit_code
                 if exit_code not in (None, 0):
+                    self._boot_exit_code = exit_code
                     return False, (
                         f"Target exited with code {exit_code} instead of starting.\n"
                         f"{self._tail_logs()}"
@@ -470,7 +445,11 @@ class TargetVerifier:
                         elapsed_seconds=round(elapsed, 2),
                         error_log=error_log,
                         container_status="crashed",
-                        details={"event": latest_crash.to_dict(), "redeploy_mode": mode},
+                        details={
+                            "event": latest_crash.to_dict(),
+                            "exit_code": latest_crash.details.get("exit_code"),
+                            "redeploy_mode": mode,
+                        },
                         timestamp=time.time()
                     )
 
@@ -507,7 +486,11 @@ class TargetVerifier:
                         elapsed_seconds=round(elapsed, 2),
                         error_log=f"{reason}\n{self._tail_logs()}",
                         container_status=c_state.status,
-                        details={"container_state": c_state.to_dict(), "redeploy_mode": mode},
+                        details={
+                            "container_state": c_state.to_dict(),
+                            "exit_code": c_state.exit_code,
+                            "redeploy_mode": mode,
+                        },
                         timestamp=time.time()
                     )
 

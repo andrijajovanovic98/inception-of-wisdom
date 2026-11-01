@@ -22,7 +22,7 @@ import logging
 import threading
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Callable, Deque, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Deque, List, Optional, Protocol, Sequence, Tuple
 
 logger = logging.getLogger("p1.log_streamer")
 
@@ -49,6 +49,14 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # is SIGINT, so every `docker stop` / `docker restart` that catches it mid-import prints
 # one of these - including the restart the Wisdom Loop issues itself.
 _INTERRUPTED_RE = re.compile(r"^(?:KeyboardInterrupt|SystemExit)\b")
+# werkzeug / uvicorn access lines: "POST /api/crash HTTP/1.1" 500
+ACCESS_LINE_RE = re.compile(r'"(GET|POST|PUT|PATCH|DELETE|HEAD) (/[^\s"]*) HTTP/[0-9.]+" (\d{3})')
+# Flask names the request whose handler raised, right above the traceback it logs:
+# "ERROR in app: Exception on /api/crash [POST]"
+FLASK_EXCEPTION_RE = re.compile(r"Exception on (/[^\s\[]*) \[(GET|POST|PUT|PATCH|DELETE|HEAD)\]")
+# How far around an error report the lines naming its request are looked for.
+_REQUEST_LINES_BEFORE = 2
+_REQUEST_LINES_AFTER = 10
 
 
 def latest_traceback_was_interrupted(lines: List[str]) -> bool:
@@ -98,6 +106,51 @@ def latest_error_block(lines: List[str], max_lines: int = 40) -> List[str]:
     if span is None:
         return lines[-max_lines:]
     return lines[span[0]:span[1]]
+
+
+def request_lines_around(lines: Sequence[str], start: int, end: int) -> Tuple[List[str], List[str]]:
+    """The lines naming the request behind the error report lines[start:end].
+
+    (before, after): Flask's "Exception on <path> [<METHOD>]" just above the traceback,
+    and the 5xx access line the server writes just below it. Trimming a crash down
+    to its traceback used to drop both, so the request that crashed the target was
+    never replayed - and a patch that still crashed it passed as healed.
+    Nothing is taken past the next error report, so an older or newer incident's
+    request can never be replayed for this one.
+    """
+    before = [
+        line for line in lines[max(0, start - _REQUEST_LINES_BEFORE):start]
+        if FLASK_EXCEPTION_RE.search(_ANSI_RE.sub("", line))
+    ]
+    after: List[str] = []
+    for line in lines[end:end + _REQUEST_LINES_AFTER]:
+        clean = _ANSI_RE.sub("", line)
+        if "Traceback (most recent call last)" in clean or FLASK_EXCEPTION_RE.search(clean):
+            break
+        match = ACCESS_LINE_RE.search(clean)
+        if match and match.group(3).startswith("5"):
+            after.append(line)
+    return before, after
+
+
+def incident_excerpt(lines: Sequence[str], header: Optional[str] = None) -> str:
+    """The log text a crash hands to the Analyst: its latest error report only.
+
+    An older traceback still in the buffer can never steer the diagnosis, and the
+    lines naming the request that raised this one stay, because that request is the
+    symptom re-issued after every redeploy. Without an error report (a hard exit that
+    printed nothing) the tail is kept - its last request is the prime suspect.
+    """
+    lines = list(lines)
+    span = latest_error_span(lines)
+    if span is None:
+        body = latest_error_block(lines)
+    else:
+        before, after = request_lines_around(lines, *span)
+        body = before + lines[span[0]:span[1]] + after
+    if not body:
+        return ""
+    return "\n".join(([header] if header else []) + body)
 
 
 class LogSource(Protocol):

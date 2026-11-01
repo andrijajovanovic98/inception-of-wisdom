@@ -333,10 +333,13 @@ make up                    # = docker compose up --build -d, waits for the dashb
 # dashboard → http://127.0.0.1:8000        (IOW_MODE=p1|p2|p3 make up for one stage)
 make down                  # tear it down
 
-# without make (rootless Docker on campus needs the socket path):
-export DOCKER_SOCK="$XDG_RUNTIME_DIR/docker.sock"
+# without make - rootful or rootless, nothing to set:
 docker compose up --build
 ```
+
+On rootless Docker `/var/run/docker.sock` is not your daemon: compose also mounts your
+runtime directory, and the agent's entrypoint uses the socket that answers (it says which in
+`docker logs iow_agent`, and warns when none does; `DOCKER_SOCK` still overrides it).
 
 The agent container runs as the owner of the checkout (`scripts/agent_entrypoint.sh`):
 on rootful Docker it drops to your uid before writing patched files or git objects, on
@@ -359,8 +362,9 @@ make p3                    # dashboard :8000 with the Wisdom Loop unlocked
 make break-import          # startup crash: missing import → restart loop      (heal it)
 make break-env             # startup crash: reads an unset environment variable (heal it)
 make break-syntax          # startup crash: syntax error                      (heal it)
+make break-5xx             # GET /healthz answers 500, the process survives   (heal it)
 make break-hard            # the process exits 1 (Observer: exit-code event)
-make break                 # HTTP 500 + traceback on POST /api/crash (Observer: log + 5xx)
+make break                 # HTTP 500 + traceback on POST /api/crash, not a probed route (Observer: log event)
 make suggest               # 4xx probe → suggestion, flagged but never auto-healed
 make heal                  # manual heal trigger (latest crash; 409 when nothing crashed)
 make rollback              # put demo_app/ back to the last cycle's pre-loop revision
@@ -378,7 +382,9 @@ model either rewrites the route until the replayed request answers 2xx (seen liv
 attempt 3, after the replay had failed a docstring edit and a commented-out `raise`),
 or declines to change it, and the loop rolls back cleanly. To show a rollback,
 stop the model (`make stop` for the host Ollama, `docker stop iow_ollama` in Docker) and
-plant a crash. The three startup crashes are the runtime failures the subject recommends.
+plant a crash the classifier has not learned yet: a known symptom heals from its cached patch
+without the model, so pick another `break-*` or turn **Classifier Fast Path** off in the Bonus
+tab. The three startup crashes are the runtime failures the subject recommends.
 
 **Quality gates:**
 

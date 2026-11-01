@@ -16,6 +16,7 @@ from typing import Dict, List, Set
 import yaml
 
 from p3.git_manager import SOURCE_STAMP_RE
+from p3.names import undefined_names
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DECKS = sorted(glob.glob(os.path.join(ROOT, "presentation", "*.html")))
@@ -75,14 +76,37 @@ class MakefileTests(unittest.TestCase):
             os.makedirs(os.path.join(work, "demo_app"))
             with open(os.path.join(work, "demo_app", "app.py"), "w", encoding="utf-8") as f:
                 f.write("already = 'modified'\n")
-            out = _run(["make", "-s", "break-import", "break-env", "break-syntax",
+            out = _run(["make", "-s", "break-import", "break-env", "break-syntax", "break-5xx",
                         "DOCKER_TARGET=iow-test-none"], cwd=work).stdout
             with open(os.path.join(work, "demo_app", "app.py"), encoding="utf-8") as f:
                 self.assertEqual(f.read(), "already = 'modified'\n")
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        self.assertEqual(out.count("nothing to break"), 3)
+        self.assertEqual(out.count("nothing to break"), 4)
         self.assertNotIn("restarting target", out)
+
+    def test_the_5xx_signal_has_a_demo(self) -> None:
+        """D10: the subject's "a 5xx response is a crash event" had none: `make break` was
+        documented as "log + 5xx", but /api/crash is POST-only and no probe calls it, so it
+        raises a log event and nothing else. break-5xx breaks a route the probes do call, at
+        run time: the file still parses, and only GET /healthz fails."""
+        config = yaml.safe_load(_read("demo_app/iow.config.yml"))
+        self.assertIn("/healthz", config["target"]["probe_urls"])
+        self.assertNotIn("/api/crash", config["target"]["probe_urls"])
+        work = tempfile.mkdtemp(prefix="iow-make-")
+        try:
+            shutil.copy(os.path.join(ROOT, "Makefile"), work)
+            os.makedirs(os.path.join(work, "demo_app"))
+            shutil.copy(os.path.join(ROOT, "demo_app", "app.py"), os.path.join(work, "demo_app"))
+            _run(["make", "-s", "break-5xx", "DOCKER_TARGET=iow-test-none",
+                  "TARGET_URL=http://127.0.0.1:9"], cwd=work)
+            with open(os.path.join(work, "demo_app", "app.py"), encoding="utf-8") as f:
+                planted = f.read()
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        self.assertEqual(undefined_names(planted), {"HEALTH_STATE"})     # a NameError in the route
+        route = planted.split("def healthcheck", 1)[1].split("@app.route", 1)[0]
+        self.assertIn("HEALTH_STATE", route)
 
     def test_make_stop_only_ever_stops_ollama(self) -> None:
         """M3: `fuser -k` on the port killed rootlesskit - the parent of the Docker daemon."""
@@ -114,7 +138,7 @@ class MakefileTests(unittest.TestCase):
 
     def test_help_shows_every_demo(self) -> None:
         help_text = _run(["make", "--no-print-directory", "help"]).stdout
-        for target in ("up", "down", "break-import", "break-env", "break-syntax", "break-hard",
+        for target in ("up", "down", "break-import", "break-env", "break-syntax", "break-5xx", "break-hard",
                        "demo-reset", "heal", "gates", "argocd-bonus", "gitops-publish"):
             self.assertRegex(help_text, rf"make {re.escape(target)}\b", target)
 
@@ -130,8 +154,26 @@ class ContainerTests(unittest.TestCase):
             self.assertNotIn("profiles", self.compose[service])
         volumes = self.compose["agent"]["volumes"]
         self.assertIn("${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock", volumes)
+        self.assertIn("${XDG_RUNTIME_DIR:-/tmp/iow}:/run/iow-user:ro", volumes)   # M10: rootless
         self.assertIn(".:/workspace", volumes)
         self.assertIn("/tmp/iow:/tmp/iow", volumes)                     # one index for host and container
+
+    def test_the_config_file_names_the_model_and_the_target(self) -> None:
+        """M11: compose set OLLAMA_MODEL, TARGET_CONTAINER and TARGET_URL, so analyst.model,
+        target.container_name and target.service_url did nothing under `make up`, and the model
+        named in the file was never pulled. What compose and the Makefile read is that key."""
+        env = "\n".join(self.compose["agent"]["environment"])
+        self.assertNotIn("TARGET_CONTAINER", env)
+        self.assertNotIn("TARGET_URL", env)
+        self.assertIn("OLLAMA_MODEL=${IOW_LLM_MODEL:-}", env)
+        self.assertIn("./demo_app/iow.config.yml:/iow.config.yml:ro", self.compose["ollama"]["volumes"])
+        wanted = yaml.safe_load(_read("demo_app/iow.config.yml"))["analyst"]["model"]
+        script = self.compose["ollama"]["command"][0].replace("$$", "$")
+        match = re.search(r"sed -n ('[^']+') /iow\.config\.yml", script)
+        assert match is not None
+        read = _run(["sh", "-c", f"sed -n {match.group(1)} demo_app/iow.config.yml"]).stdout.strip()
+        self.assertEqual(read, wanted)
+        self.assertIn(f"LLM_MODEL := {wanted}", _run(["make", "-pn"]).stdout)
 
     def test_the_images_are_named_by_the_project_not_the_checkout(self) -> None:
         """M8: compose named the images after the checkout's directory, while the GitOps
@@ -194,6 +236,7 @@ class EntrypointTests(unittest.TestCase):
             "stat": 'echo "${FAKE_OWNER:-0}"',
             "setpriv": 'echo "SETPRIV $*"',
             "chown": "true",
+            "curl": 'case "$*" in *"${FAKE_ANSWERS:-no socket}"*) exit 0 ;; esac; exit 7',
         }
         for name, body in shims.items():
             path = os.path.join(self.bin, name)
@@ -204,25 +247,41 @@ class EntrypointTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _start(self, uid: str, owner: str) -> str:
+    def _start(self, uid: str, owner: str, answers: str = "/var/run/docker.sock") -> str:
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ.get('PATH', '')}", FAKE_ID=uid,
-                   FAKE_OWNER=owner, IOW_REPO_PATH=os.path.join(self.dir, "workspace"),
+                   FAKE_OWNER=owner, FAKE_ANSWERS=answers,
+                   IOW_REPO_PATH=os.path.join(self.dir, "workspace"),
                    IOW_CACHE_DIR=os.path.join(self.dir, "runtime"))
-        return _run(["sh", os.path.join(ROOT, "scripts", "agent_entrypoint.sh"), "echo", "AGENT"],
-                    env=env).stdout
+        env.pop("DOCKER_HOST", None)
+        return _run(["sh", os.path.join(ROOT, "scripts", "agent_entrypoint.sh"),
+                     "sh", "-c", 'echo "AGENT host=${DOCKER_HOST:-default}"'], env=env).stdout
 
     def test_rootful_docker_drops_to_the_checkouts_owner(self) -> None:
         out = self._start(uid="0", owner="1000")
         self.assertIn("running as uid=1000 gid=1000", out)
         self.assertRegex(
-            out, r"SETPRIV --reuid=1000 --regid=1000 --groups=1000\S* --inh-caps=-all -- echo AGENT"
+            out, r"SETPRIV --reuid=1000 --regid=1000 --groups=1000\S* --inh-caps=-all -- sh -c"
         )
 
     def test_rootless_docker_changes_nothing(self) -> None:
         out = self._start(uid="0", owner="0")
         self.assertIn("rootless Docker maps the host user", out)
-        self.assertIn("AGENT", out)
+        self.assertIn("AGENT host=default", out)
         self.assertNotIn("SETPRIV", out)
+
+    def test_a_bare_compose_up_finds_the_rootless_daemon(self) -> None:
+        """M10, seen live: on rootless Docker /var/run/docker.sock is the machine's rootful daemon
+        (permission denied) or nothing, and a plain `docker compose up` brought up four healthy
+        containers around an agent that saw no logs, no exit and restarted nothing."""
+        out = self._start(uid="0", owner="0", answers="/run/iow-user/docker.sock")
+        self.assertIn("AGENT host=unix:///run/iow-user/docker.sock", out)
+        self.assertNotIn("WARNING", out)
+
+    def test_an_agent_without_a_daemon_says_so(self) -> None:
+        """M10: it came up without a word."""
+        out = self._start(uid="0", owner="0", answers="no socket answers")
+        self.assertIn("WARNING: no Docker daemon answers", out)
+        self.assertIn("AGENT host=default", out)                 # it still starts: the Observer retries
 
 
 class DemoTargetTests(unittest.TestCase):
@@ -387,6 +446,15 @@ class DashboardPageTests(unittest.TestCase):
         # Badges were clipped: the heal status cell and the flag toggles may not squeeze them.
         self.assertIn('<td style="white-space: nowrap;">${healCell}</td>', self.page)
         self.assertIn(".toggle-row { display: flex; flex-wrap: wrap;", self.page)
+
+    def test_the_operator_controls_are_on_the_page(self) -> None:
+        """D11: /api/auto-heal/toggle had no control on the page, the kill switch was shown
+        with no word on how to flip it, and a bound of 0 read as 5 and 20 (`||`, L21)."""
+        self.assertIn('onclick="toggleAutoHeal()"', self.page)
+        self.assertIn("'/api/auto-heal/toggle'", self.page)
+        self.assertIn("kill_switch: true in that file refuses every new heal", self.page)
+        self.assertIn("rate_limit_per_hour ?? 5", self.page)
+        self.assertIn("hard_cap ?? 20", self.page)
 
     def test_the_diagnosis_is_asked_for_a_crash_event(self) -> None:
         """A10: subject V.2's diagnosis takes a crash event (status, log excerpt, exit code); the

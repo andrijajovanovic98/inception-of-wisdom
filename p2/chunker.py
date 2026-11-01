@@ -67,6 +67,12 @@ class AstChunker:
             logger.error(f"Failed to read file {rel_path}: {e}")
             return []
 
+        if "\x00" in source_code:
+            # Not text, so no code the Analyst could cite - and a null byte makes ast.parse raise
+            # ValueError, not SyntaxError: one such file failed every watch pass for good.
+            logger.warning(f"Skipping {rel_path}: it contains null bytes (a binary file).")
+            return []
+
         if not source_code.strip():
             return []
 

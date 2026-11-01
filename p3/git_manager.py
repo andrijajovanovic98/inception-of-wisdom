@@ -764,7 +764,10 @@ class GitManager:
         untouched = self.heal_paths_at(pre)
 
         self._pre_loop_hash = pre
-        self._created_paths = []
+        # What the cycle created died with the agent's memory, and a rollback only removes
+        # what it knows about: a file an unverified patch added stayed in the tree (not
+        # identical, and the next cycle would have taken it as pre-loop). Git knows it.
+        self._created_paths = self._paths_added(pre, tip) if agent_state and tip else []
         if agent_state or untouched:
             logger.warning(
                 f"A heal cycle was interrupted (the agent stopped mid-cycle): rolling back "
@@ -785,6 +788,13 @@ class GitManager:
             "outcome": outcome,
             "rollback_check": self.last_rollback_check if outcome == "rolled_back" else None,
         }
+
+    def _paths_added(self, base: str, tip: str) -> List[str]:
+        """Files under the heal paths that `tip` has and `base` does not."""
+        code, out, _ = self._run_git(
+            ["diff", "--name-only", "--diff-filter=A", base, tip, "--", *self.heal_paths], check=False
+        )
+        return [line for line in out.splitlines() if line] if code == 0 else []
 
     def _save_outside_edits(self, agent_state: str) -> Optional[Dict[str, Any]]:
         """Keep edits made to the heal paths outside the loop before a rollback.

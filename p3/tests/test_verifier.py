@@ -5,10 +5,13 @@ from __future__ import annotations
 import time
 import unittest
 from typing import List, Optional
+from unittest import mock
 
-from p1.docker_monitor import ContainerState
+from p1.docker_monitor import STABLE_UPTIME_S, ContainerState
+from p1.event_manager import EventManager
 from p1.http_probe import ProbeResult
-from p3.verifier import TargetVerifier, failing_requests_from_log, incident_excerpt
+from p1.log_streamer import incident_excerpt
+from p3.verifier import TargetVerifier, failing_requests_from_log
 
 
 class FakeContainer:
@@ -61,6 +64,21 @@ class FakeProbe:
         return _result(self.replay_code)
 
 
+class ScriptedProbe(FakeProbe):
+    """One status code per probe round, the last repeating: round 1 is the boot check, the rest
+    are the grace period's."""
+
+    def __init__(self, rounds: List[Optional[int]]) -> None:
+        super().__init__([200])
+        self.rounds = list(rounds)
+        self.round = 0
+
+    def probe_all_once(self) -> List[ProbeResult]:
+        code = self.rounds[min(self.round, len(self.rounds) - 1)]
+        self.round += 1
+        return [_result(code)]
+
+
 def _verifier(container: FakeContainer, probe: FakeProbe) -> TargetVerifier:
     return TargetVerifier(
         docker_monitor=container, http_probe=probe, boot_timeout_seconds=20,  # type: ignore[arg-type]
@@ -74,6 +92,18 @@ class VerifierTests(unittest.TestCase):
         self.assertTrue(result.is_healed)
         self.assertGreaterEqual(result.elapsed_seconds, 0.6)
         self.assertEqual(container.restarts, 1)
+
+    def test_two_dropped_requests_in_a_row_are_noise_three_are_an_outage(self) -> None:
+        """T4: "one dropped request is noise; several in a row means the service really
+        stopped answering" - a mutation run failed the verdict on the first dropped request
+        and every suite stayed green."""
+        noisy = _verifier(FakeContainer(), ScriptedProbe([200, 500, 500, 200])).restart_and_verify(
+            grace_period=2.0)
+        self.assertTrue(noisy.is_healed, noisy.error_log)
+        down = _verifier(FakeContainer(), ScriptedProbe([200, 500, 500, 500])).restart_and_verify(
+            grace_period=5.0)
+        self.assertEqual(down.status, "http_failure")
+        self.assertEqual(down.details["consecutive_failures"], 3)
 
     def test_what_the_replaced_process_printed_is_history(self) -> None:
         """Seen live: the old process's KeyboardInterrupt (the restart's own SIGINT)
@@ -105,6 +135,34 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(result.status, "http_failure")
         self.assertLess(time.time() - started, 8)       # boot window is 20 s
 
+    def test_a_failed_redeploy_reports_the_exit_code_of_the_new_process(self) -> None:
+        """L26: the next attempt's diagnosis must read this crash, not the event's."""
+        container = FakeContainer()
+        container.crash_exit_at = time.time() + 60
+        result = _verifier(container, FakeProbe([None])).restart_and_verify(grace_period=1)
+        self.assertEqual((result.status, result.details.get("exit_code")), ("restart_failed", 1))
+
+    def test_the_same_crash_inside_the_dedup_window_still_fails_the_attempt(self) -> None:
+        """T4 for L6: folded into the old event by deduplication, a patched target crashing the
+        same way raises no new event - the Verifier listens to every occurrence."""
+        events = EventManager(crash_window_seconds=60.0)
+        boom = "RuntimeError: still broken"
+        events.handle_log_error(boom, boom)                      # the incident being healed
+
+        class CrashesAgain(FakeProbe):
+            def request_once(self, method: str, path: str) -> ProbeResult:
+                events.handle_log_error(boom, boom)              # the same crash, deduplicated
+                return super().request_once(method, path)
+
+        verifier = TargetVerifier(
+            docker_monitor=FakeContainer(), http_probe=CrashesAgain([200]),  # type: ignore[arg-type]
+            event_manager=events, boot_timeout_seconds=20,
+        )
+        result = verifier.restart_and_verify(grace_period=1, replay=[("GET", "/api/data")])
+        self.assertEqual(len(events.get_events()), 1)
+        self.assertEqual(result.status, "crashed")
+        self.assertFalse(result.is_healed)
+
     def test_exit_right_after_restart_fails_fast(self) -> None:
         container = FakeContainer()
         container.crash_exit_at = time.time() + 3600  # "after the restart" for any since
@@ -113,6 +171,48 @@ class VerifierTests(unittest.TestCase):
         self.assertFalse(result.is_healed)
         self.assertIn("exited with code 1", result.error_log or "")
         self.assertLess(time.time() - started, 5)
+
+    def test_a_container_that_loops_during_the_grace_period_fails_the_attempt(self) -> None:
+        """T4: subject V.3, "stays up for the grace period and no new crash event fires" - the
+        probes may answer while the container side reports a restart loop."""
+        container = FakeContainer()
+        looping = ContainerState(name="t", status="running", is_crash=True, timestamp=time.time(),
+                                 error_reason="Container entered a restart loop")
+        with mock.patch.object(container, "inspect", return_value=looping):
+            result = _verifier(container, FakeProbe([200])).restart_and_verify(grace_period=3)
+        self.assertEqual((result.is_healed, result.status), (False, "crashed"))
+        self.assertIn("restart loop", result.error_log or "")
+
+    def test_an_exit_the_restart_policy_papered_over_fails_the_grace_period(self) -> None:
+        """T4: the exit state lasts milliseconds under a restart policy; the daemon's 'die' event
+        is the evidence, and one after the boot fails the attempt even though the probes answer."""
+        class ExitsAfterBoot(FakeContainer):
+            armed = False
+
+            def last_crash_exit_since(
+                self, since: float, started_after: Optional[float] = None
+            ) -> Optional[int]:
+                return 1 if self.armed else None
+
+        container = ExitsAfterBoot()
+
+        class ArmsAfterBoot(FakeProbe):
+            def probe_all_once(self) -> List[ProbeResult]:
+                booted = super().probe_all_once()
+                container.armed = True                       # the boot check is over: now it dies
+                return booted
+
+        result = _verifier(container, ArmsAfterBoot([200])).restart_and_verify(grace_period=3)
+        self.assertEqual((result.is_healed, result.status), (False, "crashed"))
+        self.assertIn("exited with code 1 during the grace period", result.error_log or "")
+
+    def test_a_container_that_is_not_running_at_the_end_is_not_healed(self) -> None:
+        """T4: "stayed up" - a target whose container is paused when the grace period ends did not."""
+        container = FakeContainer()
+        container.status = "paused"
+        result = _verifier(container, FakeProbe([200])).restart_and_verify(grace_period=0.6)
+        self.assertEqual((result.is_healed, result.status), (False, "crashed"))
+        self.assertIn("paused", result.error_log or "")
 
     def test_the_failing_request_is_replayed_and_must_not_fail_again(self) -> None:
         """Soft crash on a route no probe covers: 'stayed up' is not enough."""
@@ -228,6 +328,68 @@ class SymptomCheckTests(unittest.TestCase):
         present, why = verifier.symptom_present([("POST", "/api/crash-hard")])
         self.assertTrue(present)
         self.assertIn("exited with code 1", why)
+
+    def test_a_restart_loop_is_present_even_while_it_answers(self) -> None:
+        """L25, seen live: a target that dies a few seconds after every start was reported
+        "the symptom is gone" whenever the check found it up - the subject's own example of
+        an outage, written off as gone and its heal never run."""
+        container = FakeContainer()
+        probe = FakeProbe([200], replay_code=200)
+        probe.probe_paths = ["/"]                            # type: ignore[attr-defined]
+        looping = ContainerState(name="t", status="running", is_crash=True, timestamp=time.time(),
+                                 error_reason="Container entered a restart loop")
+        with mock.patch.object(container, "inspect", return_value=looping):
+            verifier = _verifier(container, probe)
+            self.assertEqual(verifier.symptom_present(),
+                             (True, "Container entered a restart loop"))
+            self.assertTrue(verifier.symptom_present([("GET", "/api/data")])[0])
+        self.assertEqual(probe.replayed, [])                 # known before anything is re-issued
+
+    def test_a_restart_loop_the_process_has_outlived_is_over(self) -> None:
+        """L25: Docker keeps counting a loop's restarts for a while after a fix in place ended
+        it. A process that has stayed up is over its loop, whatever the counter still says, and
+        the target is judged by what answers - as before the loop check existed."""
+        container = FakeContainer()
+        probe = FakeProbe([200], replay_code=200)
+        probe.probe_paths = ["/"]                            # type: ignore[attr-defined]
+        looping = ContainerState(name="t", status="running", is_crash=True, timestamp=time.time(),
+                                 error_reason="Container entered a restart loop")
+        container.last_start_time = lambda: time.time() - STABLE_UPTIME_S - 5   # type: ignore[attr-defined]
+        with mock.patch.object(container, "inspect", return_value=looping):
+            present, why = _verifier(container, probe).symptom_present()
+            self.assertFalse(present, why)
+            container.last_start_time = lambda: time.time() - 5                 # type: ignore[attr-defined]
+            self.assertTrue(_verifier(container, probe).symptom_present()[0])   # up for 5 s: live
+
+    def test_one_restart_in_place_is_no_restart_loop(self) -> None:
+        """L25 on Kubernetes: the monitor marks any pod that restarted in place since it was last
+        seen serving. Taken as a loop, a transient restart (OOM, node pressure) that was over made
+        the heal go on to patch a healthy pod - the very thing this check is there to stop."""
+        container = FakeContainer()
+        probe = FakeProbe([200], replay_code=200)
+        probe.probe_paths = ["/"]                            # type: ignore[attr-defined]
+        restarted = ContainerState(
+            name="t", status="running", is_crash=True, exit_code=137, restart_count=1,
+            timestamp=time.time(), error_reason="Pod container terminated with exit code 137 (OOMKilled)",
+        )
+        with mock.patch.object(container, "inspect", return_value=restarted):
+            present, why = _verifier(container, probe).symptom_present()
+            self.assertFalse(present, why)
+            self.assertFalse(_verifier(container, probe).symptom_present([("GET", "/api/data")])[0])
+            probe.replay_code = 500                          # but a request that still fails is
+            self.assertTrue(_verifier(container, probe).symptom_present([("GET", "/api/data")])[0])
+
+    def test_one_failing_route_is_the_symptom_while_another_answers(self) -> None:
+        """T4: the check is "is every probe answering", not "does any": a half-fixed target that
+        still errors on /healthz is not healed because / serves."""
+        class PerRoute(FakeProbe):
+            def request_once(self, method: str, path: str) -> ProbeResult:
+                return _result(500 if path == "/healthz" else 200)
+
+        probe = PerRoute([200])
+        probe.probe_paths = ["/", "/healthz"]                # type: ignore[attr-defined]
+        present, why = _verifier(FakeContainer(), probe).symptom_present()
+        self.assertTrue(present, why)
 
     def test_a_down_target_is_present_and_a_healthy_one_is_not(self) -> None:
         container = FakeContainer()

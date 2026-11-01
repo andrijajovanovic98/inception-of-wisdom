@@ -10,6 +10,7 @@ import time
 import logging
 import threading
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict, Iterable, Iterator, Optional, Tuple
 from dataclasses import dataclass, asdict
 
@@ -36,10 +37,27 @@ RESTART_STUCK_S = 12.0
 # container dies. That kill explains exactly one following 'die' (if it comes within
 # this window); any later exit - e.g. the restarted code crashing - is a real crash.
 DELIBERATE_STOP_WINDOW_S = 30.0
+# Answering probes is not recovering: a target that dies a few seconds after every start
+# answers them in between. Its restarts count until the current process has stayed up this long.
+STABLE_UPTIME_S = 30.0
 
 
 _NOISE_ENV_RE = re.compile(r"^(PATH|HOME|HOSTNAME|TERM|LANG|LC_\w+|PYTHON_\w+|PIP_\w+|GPG_\w+)$")
 _SECRET_ENV_RE = re.compile(r"KEY|TOKEN|SECRET|PASS|CRED", re.IGNORECASE)
+
+
+def _epoch(stamp: Any) -> float:
+    """Docker's RFC 3339 time (nanoseconds, 'Z') as epoch seconds; 0.0 when unset or unreadable.
+
+    A container that never started carries the zero time, 0001-01-01.
+    """
+    try:
+        head, _, fraction = str(stamp).rstrip("Z").partition(".")
+        whole = datetime.fromisoformat(head).replace(tzinfo=timezone.utc)
+        value = whole.timestamp() + (int((fraction + "000000")[:6]) / 1e6 if fraction else 0.0)
+    except (ValueError, OverflowError):
+        return 0.0
+    return value if value > 1e9 else 0.0
 
 
 def target_facts_from(ports: Iterable[Any], env: Iterable[Tuple[str, str]]) -> Dict[str, Any]:
@@ -153,7 +171,7 @@ class DockerMonitor:
                 self._client = None
                 return None
 
-    def forget_restart_history(self) -> None:
+    def forget_restart_history(self) -> bool:
         """The target serves again: the restarts counted so far belong to an outage that is over.
 
         The restart-loop check reads the restart counter over the last minute, and only the
@@ -162,12 +180,25 @@ class DockerMonitor:
         a restart loop on a target that served again, raised anew on every poll once the
         Observer had closed the outage (seen live: nine events in 24 s, and a heal started
         on the healthy target).
+
+        Asked on every healthy round, and a no-op until the process has stayed up: forgetting
+        at the first healthy rounds wiped the count between two crashes of a target that serves
+        for six seconds at a time, so that restart loop was never seen (seen live).
+        Returns whether the target has recovered that far.
         """
+        if time.time() - self._last_start_ts < STABLE_UPTIME_S:
+            return False
         self._restart_samples.clear()
         self._restarting_since = None
+        return True
 
     def _is_restart_loop(self, now: float, restart_count: int) -> bool:
         """True when the container restarted repeatedly inside the recent window."""
+        # `docker restart` resets the counter. Read as a difference, the drop looked like
+        # the counter climbing: one plain restart of a healthy target that had crashed twice
+        # today was raised as a restart loop (seen live). What came before it is another count.
+        if self._restart_samples and restart_count < self._restart_samples[-1][1]:
+            self._restart_samples.clear()
         self._restart_samples.append((now, restart_count))
         cutoff = now - RESTART_LOOP_WINDOW_S
         recent = [c for ts, c in self._restart_samples if ts >= cutoff]
@@ -201,6 +232,13 @@ class DockerMonitor:
             status = str(c_state.get("Status", "unknown")).lower()
             exit_code = c_state.get("ExitCode", 0)
             restart_count = int(attrs.get("RestartCount", 0) or 0)
+            # A process already running when the agent attached is named by no 'start' event, and
+            # an unknown age counted as stable: seen live, a target that dies every six seconds
+            # had two recovery callbacks in its first two seconds. Its own record of its start
+            # stands in until an event says better (polls never overwrite an event's time, or an
+            # old process's exit could be taken for the new one's).
+            if not self._last_start_ts:
+                self._last_start_ts = _epoch(c_state.get("StartedAt"))
 
             is_crash = False
             error_reason = None

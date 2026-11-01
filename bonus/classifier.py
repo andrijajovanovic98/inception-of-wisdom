@@ -260,6 +260,12 @@ class TinySymptomClassifier:
         best_entry = None
 
         for k, entry in self.entries.items():
+            # An entry whose patch failed has lost its trust, exactly or not. The score below
+            # counts the symptom's features only, so the very crash a patch had just failed on
+            # still scored 1.00, and that patch went on skipping the model until the third
+            # failure evicted it.
+            if entry.get("confidence", 1.0) < self.confidence_threshold:
+                continue
             stored_feat = entry.get("features", {})
             score = 0.0
 

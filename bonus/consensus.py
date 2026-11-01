@@ -193,8 +193,10 @@ class SecondOpinionEngine:
         files_a: Set[str] = set(opinion_a.files)
         files_b: Set[str] = set(opinion_b.files)
 
-        # 3. Consensus Check
-        common_files = list(files_a.intersection(files_b))
+        # 3. Consensus Check. In opinion A's order: the patcher rewrites the first agreed file it
+        # finds a region in, and a set intersection handed them over in hash order - which file
+        # was patched changed from one run of the agent to the next.
+        common_files = [path for path in dict.fromkeys(opinion_a.files) if path in files_b]
 
         if common_files:
             # Full or partial agreement on target file
