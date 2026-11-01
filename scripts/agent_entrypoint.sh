@@ -14,6 +14,25 @@ set -eu
 
 WORKSPACE="${IOW_REPO_PATH:-/workspace}"
 RUNTIME_DIR="${IOW_CACHE_DIR:-/tmp/iow}"
+SOCKET="${IOW_DOCKER_SOCKET:-/var/run/docker.sock}"
+USER_SOCKET="${IOW_USER_DOCKER_SOCKET:-/run/iow-user/docker.sock}"
+
+# Subject, IV: a single `docker compose up`. Compose cannot ask which daemon it talks to, and
+# on rootless Docker the /var/run/docker.sock it mounts is either nothing or the machine's
+# rootful daemon, which this user may not reach: the agent came up "healthy" and blind, with
+# no logs, no exit events and no way to restart the target. The socket that answers is used.
+answers() {
+  curl -s -o /dev/null -m 3 --unix-socket "$1" http://localhost/_ping
+}
+if [ -z "${DOCKER_HOST:-}" ] && ! answers "$SOCKET"; then
+  if answers "$USER_SOCKET"; then
+    export DOCKER_HOST="unix://$USER_SOCKET"
+    echo "[iow-agent] $SOCKET does not answer: using the rootless daemon at $USER_SOCKET"
+  else
+    echo "[iow-agent] WARNING: no Docker daemon answers at $SOCKET or $USER_SOCKET - the agent can" \
+      "neither watch nor restart the target. Set DOCKER_SOCK to the daemon's socket." >&2
+  fi
+fi
 
 if [ "$(id -u)" = "0" ] && [ -d "$WORKSPACE" ]; then
   uid="$(stat -c %u "$WORKSPACE")"

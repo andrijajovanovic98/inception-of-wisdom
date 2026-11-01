@@ -5,9 +5,10 @@
 # The agent re-reads this file whenever it changes, so a peer can retune the loop
 # mid-defense without restarting anything: every key is live except
 # target.container_name, target.service_url, analyst.model and
-# analyst.embedding_model, which are read once at start-up. A value that is not
-# usable keeps the last good one. The agent is also forbidden from patching this
-# file, and a rollback preserves your edits.
+# analyst.embedding_model, which are read once at start-up (a host run gets its
+# target URL from the Makefile, and IOW_LLM_MODEL overrides analyst.model). A value
+# that is not usable keeps the last good one. The agent is also forbidden from
+# patching this file, and a rollback preserves your edits.
 
 # ==============================================================================
 # Wisdom Loop Safety Bounds (Subject Mandatory)

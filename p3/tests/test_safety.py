@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -84,6 +85,32 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("rate limit", reason or "")
 
+    def test_the_rate_limit_counts_the_last_hour_only(self) -> None:
+        """T4: subject V.3, "a rate limit per hour". Three heals half an hour ago fill the hour;
+        three heals two hours ago do not (a mutation run widened the window to ten hours and
+        every suite stayed green)."""
+        self._write(BASE.replace("hard_cap: 4", "hard_cap: 100").replace("cooldown: 300", "cooldown: 0"))
+        self.sm._heal_timestamps_history = [time.time() - 1800.0] * 3
+        allowed, reason = self.sm.acquire_heal_slot("recent")
+        self.assertFalse(allowed)
+        self.assertIn("rate limit", reason or "")
+        self.sm._heal_timestamps_history = [time.time() - 7200.0] * 3
+        self.assertTrue(self.sm.acquire_heal_slot("old")[0])
+
+    def test_the_cooldown_runs_from_the_end_of_the_heal(self) -> None:
+        """T4: a heal that ran longer than the cooldown must not be out of its cooldown the
+        moment it ends - the cooldown is there to keep a patch from retriggering the loop."""
+        self._write(BASE.replace("cooldown: 300", "cooldown: 1"))
+        self.assertTrue(self.sm.acquire_heal_slot("sig")[0])
+        time.sleep(0.7)                                      # the heal runs
+        self.sm.release_heal_slot("sig")
+        time.sleep(0.5)                                      # 1.2 s after it started, 0.5 s after it ended
+        allowed, reason = self.sm.acquire_heal_slot("sig")
+        self.assertFalse(allowed)
+        self.assertIn("cooldown", reason or "")
+        time.sleep(0.6)
+        self.assertTrue(self.sm.acquire_heal_slot("sig")[0])
+
     def test_hard_cap(self) -> None:
         self._write(BASE.replace("rate_limit_per_hour: 3", "rate_limit_per_hour: 100"))
         for sig in ("a", "b", "c", "d"):
@@ -137,6 +164,69 @@ class SafetyTests(unittest.TestCase):
         cfg = self.sm.reload_config()
         self.assertEqual(cfg["hard_cap"], 4)
         self.assertEqual(cfg["grace_period"], 5.0)
+
+    def test_a_bound_of_zero_refuses_every_heal(self) -> None:
+        """L21, seen live: an operator lowering a bound as far as it goes got the last value
+        back - `rate_limit_per_hour: 0` was 5 and `hard_cap: 0` was 20, and the heal ran."""
+        for line, words in (("rate_limit_per_hour: 0", "rate limit"), ("hard_cap: 0", "hard cap")):
+            key = line.split(":")[0]
+            self._write(re.sub(rf"{key}: \d+", line, BASE))
+            allowed, reason = self.sm.acquire_heal_slot("sig")
+            self.assertFalse(allowed, line)
+            self.assertIn(words, reason or "")
+
+    def test_values_that_are_not_finite_are_rejected(self) -> None:
+        """L21: YAML reads .inf and .nan as floats. A grace period of .inf never ends, so one
+        heal held the single-flight slot for good; .nan compares false with every minimum."""
+        for key, keep in (("grace_period", 5.0), ("cooldown", 300.0), ("boot_timeout", 30.0),
+                          ("rate_limit_per_hour", 3), ("hard_cap", 4)):
+            for word in (".inf", ".nan"):
+                self._write(re.sub(rf"{key}: \d+", f"{key}: {word}", BASE))
+                self.assertEqual(self.sm.reload_config()[key], keep, f"{key}: {word}")
+
+    def test_a_live_setting_that_is_not_finite_keeps_the_last_value(self) -> None:
+        """L21: `top_k: .inf` raised OverflowError where only ValueError was expected, in the
+        constructor: one word in the file kept the agent from starting."""
+        self._write(BASE + "analyst:\n  top_k: .inf\ntarget:\n  probe_interval_seconds: .inf\n")
+        settings = self.sm.read_live_settings()
+        self.assertEqual(settings["top_k"], 3)
+        self.assertEqual(settings["probe_interval_seconds"], 3.0)
+
+    def test_a_heal_that_found_nothing_to_do_costs_nothing(self) -> None:
+        """L22, seen live: two real heals and three checks of a crash already gone read 5/5, and
+        a real crash was refused. No model, no commit, no restart: no count and no cooldown."""
+        self.assertTrue(self.sm.acquire_heal_slot("gone")[0])
+        self.sm.acquire_heal_slot("sibling")                 # refused: single-flight
+        self.sm.refund_heal("gone")
+        self.sm.release_heal_slot("gone")
+        status = self.sm.get_status()
+        self.assertEqual((status["hourly_heal_count"], status["lifetime_heal_count"]), (0, 0))
+        self.assertEqual(status["active_signatures_in_cooldown"], 0)
+        self.assertFalse(status["single_flight_active"])
+        self.assertTrue(self.sm.acquire_heal_slot("gone")[0])
+        self.sm.release_heal_slot("gone")                    # a real heal counts again
+        status = self.sm.get_status()
+        self.assertEqual((status["lifetime_heal_count"], status["active_signatures_in_cooldown"]), (1, 1))
+
+    def test_a_failed_heal_holds_the_whole_outage(self) -> None:
+        """L23, seen live with the model stopped and a 300 s cooldown: a heal that fails fast is
+        over before the sibling signatures arrive, and one of them started the cycle again six
+        seconds later - the same symptom retriggering the loop on its own."""
+        self.sm.acquire_heal_slot("unreachable")
+        self.sm.hold_incident()
+        self.sm.release_heal_slot("unreachable")
+        allowed, reason = self.sm.acquire_heal_slot("restart-loop")     # first seen only now
+        self.assertFalse(allowed)
+        self.assertIn("outage the last heal failed on", reason or "")
+        self.sm.release_incident()                           # it recovered: a new crash is new
+        self.assertTrue(self.sm.acquire_heal_slot("restart-loop")[0])
+
+    def test_the_hold_on_a_failed_outage_ends_with_the_cooldown(self) -> None:
+        """L23: `cooldown` in the file is what bounds it, live."""
+        self.sm.hold_incident()
+        self.assertFalse(self.sm.acquire_heal_slot("sibling")[0])
+        self._write(BASE.replace("cooldown: 300", "cooldown: 0"))
+        self.assertTrue(self.sm.acquire_heal_slot("sibling")[0])
 
     def test_an_operator_landing_is_single_flight_but_not_counted(self) -> None:
         """Landing an approved PR: kill switch and single-flight, not the heal counters."""

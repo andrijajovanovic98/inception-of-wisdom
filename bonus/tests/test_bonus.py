@@ -19,6 +19,7 @@ from unittest import mock
 from bonus.classifier import TinySymptomClassifier
 from bonus.consensus import SecondOpinionEngine
 from bonus.pr_manager import PullRequestManager
+from p1.docker_monitor import STABLE_UPTIME_S
 from p3.git_manager import GitManager
 from p3.patcher import StructuredPatch
 from p3.tests.helpers import TempRepo
@@ -85,6 +86,25 @@ class ClassifierTests(unittest.TestCase):
         clf.record_failure(key)
         self.assertNotIn(key, clf.entries)          # evicted: back to the LLM
         self.assertFalse(clf.classify(CRASH).matched)
+
+    def test_a_symptom_that_lost_trust_no_longer_skips_the_model(self) -> None:
+        """B21: after one failure (0.75) and after two (0.50) the entry was below the threshold,
+        the exact match refused it - and the fuzzy match, which scores the symptom's features
+        only, gave the very crash it had failed on 1.00 and replayed the same patch."""
+        clf = TinySymptomClassifier(self.store)
+        key = clf.record_successful_heal(CRASH, PATCH, pre_contents={"demo_app/app.py": "broken\n"})
+        for confidence in (0.75, 0.5):
+            clf.record_failure(key)
+            self.assertEqual(clf.entries[key]["confidence"], confidence)
+            match = clf.classify(CRASH, read_file=lambda p: "broken\n")
+            self.assertFalse(match.matched, confidence)
+            self.assertIsNone(match.cached_patch)
+        self.assertEqual(clf.get_stats()["total_fast_path_bypasses"], 0)
+        # A symptom that never failed still matches fuzzily (another address, another line).
+        other = TinySymptomClassifier(os.path.join(self.dir, "other.json"))
+        other.record_successful_heal(CRASH, PATCH, pre_contents={"demo_app/app.py": "broken\n"})
+        again = CRASH.replace("0x7f00aa", "0x55ffee").replace("line 78", "line 80")
+        self.assertTrue(other.classify(again, read_file=lambda p: "broken\n").matched)
 
     def test_a_failed_fast_path_is_penalised_although_it_is_not_the_last_attempt(self) -> None:
         """The dashboard only looked at the last of three attempts - the cached patch is
@@ -181,6 +201,27 @@ class SecondOpinionTests(unittest.TestCase):
         report = engine.evaluate_consensus(CRASH)
         self.assertTrue(report.consensus_reached)
         self.assertEqual(report.agreed_files, ["demo_app/app.py"])
+
+    def test_the_agreed_files_keep_the_first_opinions_order(self) -> None:
+        """B22: the agreed files were a set intersection, in hash order. The patcher rewrites
+        the first of them it finds a region in, so which file was patched changed from one run
+        of the agent to the next."""
+        class FiveFiles(_Retriever):
+            def retrieve_for_crash(self, log: str, top_k: int = 3) -> Tuple[List[Dict[str, Any]], Dict]:
+                names = ["e", "b", "d", "a", "c"]
+                return [{"file_path": f"demo_app/{n}.py", "start_line": 1, "end_line": 2, "content": "x"}
+                        for n in names], {}
+
+        order = ["demo_app/e.py", "demo_app/b.py", "demo_app/d.py", "demo_app/a.py", "demo_app/c.py"]
+        engine = ScriptedOpinions([
+            {"summary": "the frame", "files": order},
+            {"summary": "the contract", "files": list(reversed(order))},
+        ])
+        engine.retriever = FiveFiles()                            # type: ignore[assignment]
+        report = engine.evaluate_consensus(CRASH)
+        self.assertTrue(report.consensus_reached)
+        self.assertEqual(report.agreed_files, order)
+        self.assertEqual(report.confidence, 0.95)                 # the same set: full agreement
 
     def test_divergence_blocks_the_patch(self) -> None:
         engine = ScriptedOpinions([
@@ -449,6 +490,33 @@ class BonusRouterTests(unittest.TestCase):
         self.assertFalse(flags["human_in_the_loop"])
         self.assertEqual(client.get("/api/bonus/prs").status_code, 200)       # reading stays open
 
+    def test_the_second_opinion_route_validates_its_input(self) -> None:
+        """B23: the route reads an untyped body. A number as the log or "x" as top_k was an
+        HTTP 500 from inside the retriever; the Analyst's routes answer 422 for the same input.
+        A good request still reaches the engine, with top_k None meaning analyst.top_k."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from bonus.bonus_api import create_bonus_router
+
+        engine = mock.Mock()
+        engine.evaluate_consensus.return_value.to_dict.return_value = {"consensus_reached": False}
+        app = FastAPI()
+        app.include_router(create_bonus_router(consensus_engine=engine))
+        client = TestClient(app)
+        for log in (-1, True, 1.5, ["a"], {"a": 1}):
+            answer = client.post("/api/bonus/consensus/evaluate", json={"log_excerpt": log})
+            self.assertEqual(answer.status_code, 422, log)
+        route = "/api/bonus/consensus/evaluate"
+        not_a_count: List[Any] = ["x", 1.5, 0, -1, True, [], {}]
+        for top_k in not_a_count:
+            answer = client.post(route, json={"log_excerpt": "boom", "top_k": top_k})
+            self.assertEqual(answer.status_code, 422, top_k)
+        self.assertEqual(client.post(route, json={"log_excerpt": ""}).status_code, 400)
+        engine.evaluate_consensus.assert_not_called()
+        self.assertEqual(client.post(route, json={"log_excerpt": "boom"}).status_code, 200)
+        self.assertEqual(client.post(route, json={"log_excerpt": "boom", "top_k": 2}).status_code, 200)
+        self.assertEqual([c.kwargs["top_k"] for c in engine.evaluate_consensus.call_args_list], [None, 2])
+
     def test_a_pr_created_through_the_api_passes_the_sanity_gate(self) -> None:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -643,9 +711,70 @@ class GitOpsTests(unittest.TestCase):
                 mock.patch.object(gitops, "_run", lambda cmd, timeout=60.0: (0, answers.pop(0), "")):
             self.assertFalse(monitor.inspect().is_crash)           # serving
             self.assertTrue(monitor.inspect().is_crash)            # exited 1, restarted in place
-            monitor.forget_restart_history()                       # the Observer: it serves again
+            self.assertFalse(monitor.forget_restart_history())     # up for a moment only (O16)
+            assert monitor._up_since is not None
+            monitor._up_since = (monitor._up_since[0], monitor._up_since[1] - STABLE_UPTIME_S - 1)
+            self.assertTrue(monitor.forget_restart_history())      # the Observer: it serves again
             self.assertFalse(monitor.inspect().is_crash)           # that termination is history
             self.assertTrue(monitor.inspect().is_crash)            # a new crash still is one
+
+    def test_a_pod_that_serves_between_its_crashes_is_not_recovered(self) -> None:
+        """O16: O15's gate on Kubernetes. A pod that answers for a while after every restart in
+        place was forgotten after two healthy probe rounds, each cycle: its incidents closed and
+        were raised again (six events for three cycles), and the hold on a failed heal was lifted
+        while the pod was still looping."""
+        from bonus import gitops
+        from p1.event_manager import EventManager
+        from p1.http_probe import ProbeResult
+
+        def pods(restarts: int, current: Dict[str, Any], last_exit: Optional[int] = None) -> str:
+            container: Dict[str, Any] = {"name": "demo", "restartCount": restarts, "state": current}
+            if last_exit is not None:
+                container["lastState"] = {"terminated": {"exitCode": last_exit, "reason": "Error"}}
+            return json.dumps({"items": [{
+                "metadata": {"name": "p", "uid": "u1", "creationTimestamp": "2026-10-10T10:00:00Z"},
+                "status": {"phase": "Running", "containerStatuses": [container]},
+            }]})
+
+        now = {"pods": pods(0, {"running": {}})}
+        monitor = gitops.KubeTargetMonitor()
+        manager = EventManager(docker_monitor=monitor)               # type: ignore[arg-type]
+        served: List[bool] = []
+        manager.on_target_serving = lambda: served.append(True)
+        up = [ProbeResult(url="http://t/", status_code=200, is_healthy=True)]
+        refused = [ProbeResult(url="http://t/", status_code=None, is_crash=True, error_message="refused")]
+
+        def poll() -> Any:
+            state = monitor.inspect()
+            manager.handle_docker_state(state)
+            return state
+
+        def kinds() -> List[str]:
+            return sorted(e["details"]["kind"] for e in manager.get_events(event_type="crash"))
+
+        with mock.patch.object(gitops, "tools_available", lambda: (True, "ok")), \
+                mock.patch.object(gitops, "_run", lambda cmd, timeout=60.0: (0, now["pods"], "")):
+            poll()                                                   # serving: the baseline
+            for restarts in (1, 2, 3):
+                now["pods"] = pods(restarts, {"waiting": {"reason": "CrashLoopBackOff"}}, last_exit=1)
+                poll()
+                manager.handle_probe_round(refused)
+                now["pods"] = pods(restarts, {"running": {}}, last_exit=1)
+                for _ in range(3):                                   # it answers until it dies again
+                    self.assertTrue(poll().is_crash)
+                    manager.handle_probe_round(up)
+            self.assertEqual(kinds(), ["exit", "restart_loop"])      # one incident each
+            self.assertEqual(served, [])
+            assert monitor._up_since is not None                     # now it stays up
+            monitor._up_since = (monitor._up_since[0], monitor._up_since[1] - STABLE_UPTIME_S - 1)
+            for _ in range(3):
+                state = poll()
+                manager.handle_probe_round(up)
+            self.assertFalse(state.is_crash)
+            self.assertTrue(served)
+            now["pods"] = pods(4, {"waiting": {"reason": "CrashLoopBackOff"}}, last_exit=1)
+            poll()                                                   # a crash after that is new
+            self.assertEqual(kinds(), ["exit", "restart_loop", "restart_loop"])
 
     def test_a_timed_out_command_never_echoes_its_arguments(self) -> None:
         import sys

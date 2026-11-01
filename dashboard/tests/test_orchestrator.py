@@ -14,6 +14,7 @@ from unittest import mock
 
 from p1.docker_monitor import ContainerState
 from p1.event_manager import ObserverEvent
+from p1.http_probe import ProbeResult
 from p3.tests.helpers import TempRepo
 
 # dashboard.app builds its orchestrator at import: every path it touches points at a
@@ -71,11 +72,98 @@ class HealTriggerTests(unittest.TestCase):
             self._event_with(state).assert_not_called()
         self.assertEqual(self.orch.safety_manager.get_status()["lifetime_heal_count"], 0)
 
+    def test_a_suggestion_never_starts_a_heal(self) -> None:
+        """T4: subject V.1, a 4xx is "never patched on its own". The refusal of the API had a
+        test, the autonomous path had none: a mutation run removed the check and stayed green."""
+        now = time.time()
+        suggestion = ObserverEvent(id="s1", type="suggestion", source="http_probe", signature="sig-4xx",
+                                   summary="HTTP 404", details={}, first_seen=now, last_seen=now)
+        crashed = ContainerState(name="t", status="running")
+        with mock.patch.object(self.orch.docker_monitor, "inspect", return_value=crashed), \
+                mock.patch.object(dashboard.threading, "Thread") as thread:
+            self.orch._on_observer_event(suggestion)
+        thread.assert_not_called()
+        self.assertEqual(self.orch.safety_manager.get_status()["lifetime_heal_count"], 0)
+
+    def test_a_refused_slot_starts_no_heal(self) -> None:
+        """T4: subject V.3, "one heal at a time": a crash raised while a heal runs is refused by
+        the bounds before any thread starts (a mutation run let it start one and every suite
+        stayed green)."""
+        self.assertTrue(self.orch.safety_manager.acquire_heal_slot("the-running-heal")[0])
+        try:
+            thread = self._event_with(ContainerState(name="t", status="restarting", is_crash=True))
+        finally:
+            self.orch.safety_manager.release_heal_slot("the-running-heal")
+        thread.assert_not_called()
+
     def test_a_crashed_target_is_healed(self) -> None:
         thread = self._event_with(ContainerState(name="t", status="restarting", is_crash=True))
         thread.assert_called_once()
         self.assertEqual(self.orch.safety_manager.get_status()["lifetime_heal_count"], 1)
         self.orch.safety_manager.release_heal_slot("sig-1")
+
+
+class HealBudgetTests(unittest.TestCase):
+    """What a heal costs: only a heal that ran counts, and a failed one holds its outage."""
+
+    def setUp(self) -> None:
+        self.orch = dashboard.InceptionOrchestrator(config_path=dashboard.orchestrator.config_path)
+
+    def _heal(self, signature: str, present: Any, result: Any = None) -> Any:
+        allowed, _ = self.orch.safety_manager.acquire_heal_slot(signature)
+        self.assertTrue(allowed)
+        running = ContainerState(name="t", status="running")
+        with mock.patch.object(self.orch.docker_monitor, "inspect", return_value=running), \
+                mock.patch.object(self.orch.verifier, "symptom_present", return_value=present), \
+                mock.patch.object(self.orch.wisdom_loop, "execute_heal", return_value=result) as heal:
+            self.orch.run_heal_cycle(_logged_crash(signature), grace_period=0.0)
+        self.orch.safety_manager.release_heal_slot(signature)
+        return heal
+
+    def test_a_crash_already_gone_spends_nothing(self) -> None:
+        """L22, seen live: heals of old events and a stray error line read 5/5 after two real
+        heals, and a real crash was refused."""
+        heal = self._heal("sig-gone", (False, "every probe answers"))
+        heal.assert_not_called()
+        status = self.orch.safety_manager.get_status()
+        self.assertEqual((status["hourly_heal_count"], status["lifetime_heal_count"]), (0, 0))
+        self.assertEqual(status["active_signatures_in_cooldown"], 0)
+
+    def test_a_verified_heal_ends_its_incident(self) -> None:
+        """T4: the same crash coming back after a verified heal is a new one, not a repeat the
+        old incident's window folds away."""
+        with mock.patch.object(self.orch.event_manager, "close_incidents") as close:
+            self._heal("sig-fixed", (True, "failing"), mock.Mock(status="healed", attempts=[]))
+        close.assert_called_once_with("crash")
+
+    def test_a_heal_that_ran_is_counted(self) -> None:
+        self._heal("sig-run", (True, "failing"), mock.Mock(status="healed", attempts=[]))
+        self.assertEqual(self.orch.safety_manager.get_status()["lifetime_heal_count"], 1)
+
+    def test_a_failed_heal_holds_the_outage_until_the_target_recovers(self) -> None:
+        """L23, seen live on the defense's own rollback demo: one planted crash with the model
+        stopped, two full cycles six seconds apart, the second through a sibling signature."""
+        self._heal("sig-exit", (True, "failing"), mock.Mock(status="rolled_back", attempts=[]))
+        allowed, reason = self.orch.safety_manager.acquire_heal_slot("sig-restart-loop")
+        self.assertFalse(allowed)
+        self.assertIn("outage the last heal failed on", reason or "")
+        ok = [ProbeResult(url="http://t/", status_code=200, is_healthy=True)]
+        self.orch.event_manager.handle_probe_round(ok)
+        self.orch.event_manager.handle_probe_round(ok)         # the Observer: it serves again
+        self.assertTrue(self.orch.safety_manager.acquire_heal_slot("sig-new")[0])
+        self.orch.safety_manager.release_heal_slot("sig-new")
+
+    def test_analyst_model_in_the_file_is_the_model(self) -> None:
+        """M11: compose always set OLLAMA_MODEL, so `analyst.model` was a dead key under
+        `make up`. An empty override is no override; a set one still wins."""
+        path = self.orch.config_path
+        self.addCleanup(_REPO.write, "demo_app/iow.config.yml", _REPO.read("demo_app/iow.config.yml"))
+        with open(path, "a", encoding="utf-8") as f:
+            f.write('analyst:\n  model: "tiny-test:1b"\n')
+        with mock.patch.dict(os.environ, {"OLLAMA_MODEL": ""}):
+            self.assertEqual(dashboard.InceptionOrchestrator(path).diagnostician.model_name, "tiny-test:1b")
+        with mock.patch.dict(os.environ, {"OLLAMA_MODEL": "other:1b"}):
+            self.assertEqual(dashboard.InceptionOrchestrator(path).diagnostician.model_name, "other:1b")
 
 
 class ReviewOutcomeTests(unittest.TestCase):

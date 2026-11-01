@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import unittest
+from unittest import mock
 
 from p3.tests.helpers import TempRepo
 from p3.git_manager import GitManager
@@ -74,6 +75,62 @@ class GitManagerTests(unittest.TestCase):
         self.assertEqual(self.repo.git("rev-parse", "--abbrev-ref", "HEAD"), "main")
         self.assertEqual(self.repo.git("diff", "--cached", "--name-only"), staged)
         self.assertEqual(self.repo.read("p3/agent.py"), "AGENT = 'wip'\n")
+
+    def test_a_rollback_that_does_not_land_on_the_pre_loop_revision_fails(self) -> None:
+        """T4: subject V.3, "rewinds the auto-heal branch to the pre-loop revision": the rewind
+        is checked, and a branch that is anywhere else is reported as a failed rollback."""
+        self.gm.snapshot_pre_loop()
+        self.gm.apply_patch_atomically(_patch(FilePatch("demo_app/app.py", "modify", "X = 1\n")))
+        tip = self.gm.get_branch_tip("iow/auto-heal")
+        with mock.patch.object(self.gm, "get_branch_tip", side_effect=[tip, "0" * 40]):
+            self.assertFalse(self.gm.rollback_to_pre_loop())
+        self.assertTrue(self.gm.rollback_to_pre_loop())
+        self.assertEqual(self.gm.get_branch_tip("iow/auto-heal"), self.head)
+
+    def test_an_interrupted_cycle_takes_the_files_it_created_with_it(self) -> None:
+        """L20: what a cycle created was only in the agent's memory, so after a stop mid-cycle
+        the rollback left the file behind, reported not identical, and the next cycle would
+        have taken the unverified file as pre-loop. Reproduced on the running stack."""
+        before = self.repo.snapshot_files()
+        self.gm.snapshot_pre_loop()
+        applied = self.gm.apply_patch_atomically(
+            _patch(FilePatch("demo_app/helper.py", "create", "X = 1\n"),
+                   FilePatch("demo_app/notes.txt", "modify", "changed\n"))
+        )
+        self.assertTrue(applied.success)
+        reborn = GitManager(repo_dir=self.repo.path)            # a new process: no memory
+        recovered = reborn.recover_interrupted_cycle()
+        assert recovered is not None
+        self.assertEqual(recovered["outcome"], "rolled_back")
+        self.assertTrue(recovered["rollback_check"]["identical"])
+        self.assertEqual(self.repo.snapshot_files(), before)
+        self.assertEqual(self.repo.git("status", "--porcelain"), "")
+
+    def test_a_tree_that_is_already_the_pre_loop_state_is_rolled_back_not_left_alone(self) -> None:
+        """T4: the agent stopped after committing an attempt, and the tree went back to the
+        pre-loop bytes meanwhile (a `make demo-reset`). Nothing of the patch is on disk, so the
+        branch is rewound and the rollback verified - it is not "someone else's work"."""
+        original = self.repo.read("demo_app/app.py")
+        self.gm.snapshot_pre_loop()
+        self.gm.apply_patch_atomically(_patch(FilePatch("demo_app/app.py", "modify", "X = 1\n")))
+        self.repo.write("demo_app/app.py", original)           # the tree is the pre-loop state again
+        recovered = GitManager(repo_dir=self.repo.path).recover_interrupted_cycle()
+        assert recovered is not None
+        self.assertEqual(recovered["outcome"], "rolled_back")
+        self.assertTrue(recovered["rollback_check"]["identical"])
+        self.assertEqual(self.gm.get_branch_tip("iow/auto-heal"), self.head)
+
+    def test_a_recovery_leaves_a_file_someone_else_added(self) -> None:
+        """L20: only the cycle's own files go. An interrupted tree that is not the agent's is
+        left alone, whatever it holds."""
+        self.gm.snapshot_pre_loop()
+        self.gm.apply_patch_atomically(_patch(FilePatch("demo_app/helper.py", "create", "X = 1\n")))
+        self.repo.write("demo_app/peer_notes.txt", "mine\n")
+        recovered = GitManager(repo_dir=self.repo.path).recover_interrupted_cycle()
+        assert recovered is not None
+        self.assertEqual(recovered["outcome"], "left_alone")
+        self.assertEqual(self.repo.read("demo_app/peer_notes.txt"), "mine\n")
+        self.assertEqual(self.repo.read("demo_app/helper.py"), "X = 1\n")
 
     def test_operator_config_edit_survives_rollback(self) -> None:
         self.gm.snapshot_pre_loop()

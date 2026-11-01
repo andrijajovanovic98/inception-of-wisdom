@@ -41,10 +41,30 @@ class SanityTests(unittest.TestCase):
         files = [FilePatch(f"demo_app/f{i}.py", "create", "x = 1\n") for i in range(4)]
         self.assertRefused(_patch(*files), "exceeds the limit of 3")
 
+    def test_exactly_three_files_pass(self) -> None:
+        """T4: the subject refuses a patch that touches *more than* three files. A mutation run
+        refused three as well, and every suite stayed green."""
+        files = [FilePatch(f"demo_app/f{i}.py", "create", "x = 1\n") for i in range(3)]
+        result = self.gate.check_patch(_patch(*files))
+        self.assertTrue(result.passed, result.reasons)
+
+    def test_a_patch_without_files_is_refused(self) -> None:
+        """T4: nothing to apply is not a fix; the gate says so itself instead of passing it on."""
+        result = self.gate.check_patch(_patch())
+        self.assertFalse(result.passed)
+        self.assertIn("zero files", " ".join(result.reasons))
+
     def test_shrink_over_sixty_percent(self) -> None:
         self.assertRefused(
             _patch(FilePatch("demo_app/app.py", "modify", self.original[:60])), "shrinkage"
         )
+
+    def test_a_shrink_of_exactly_sixty_percent_passes(self) -> None:
+        """T4: "shrinks a file by more than 60 %" - 60 % itself is allowed, 61 % is not."""
+        self.repo.write("demo_app/data.txt", "a" * 99 + "\n")                      # 100 bytes
+        exact = self.gate.check_patch(_patch(FilePatch("demo_app/data.txt", "modify", "b" * 39 + "\n")))
+        self.assertTrue(exact.passed, exact.reasons)                               # 40 bytes: 60.0 %
+        self.assertRefused(_patch(FilePatch("demo_app/data.txt", "modify", "b" * 38 + "\n")), "shrinkage")
 
     def test_a_small_file_may_not_shrink_by_more_than_sixty_percent_either(self) -> None:
         # run.sh is 19 bytes: the subject's 60 % rule names no size floor (80 B was exempt).
@@ -82,6 +102,25 @@ class SanityTests(unittest.TestCase):
     def test_leaked_snippet_header(self) -> None:
         leaked = self.original + "\n# --- Code Snippet #2 ---\n"
         self.assertRefused(_patch(FilePatch("demo_app/app.py", "modify", leaked)), "retrieval marker")
+
+    def test_the_analysts_chunk_headers_are_leaked_markers_too(self) -> None:
+        """L24: the header around each retrieved chunk and the crash block above it passed as
+        comments, and "Lines: 1-20" passed bare: it parses, as an annotation."""
+        for line in ("# File: demo_app/app.py", "# Part: function index", "# Lines: 1-20", "Lines: 1-20",
+                     "# Code:", "# Status: crashed", "# Exit Code: 1", "# Error Log:",
+                     "# SUMMARY: restored the import"):
+            with self.subTest(line=line):
+                leaked = self.original.rstrip("\n") + "\n" + line + "\n"
+                self.assertRefused(_patch(FilePatch("demo_app/app.py", "modify", leaked)), "retrieval marker")
+
+    def test_a_comment_that_only_looks_like_a_header_passes(self) -> None:
+        """L24: the rule is about the prompts' exact lines, not about the words."""
+        for line in ("# Parts of this file are generated", "# Status: see the wiki", "# Lines are short",
+                     "# The file: app.py"):
+            with self.subTest(line=line):
+                kept = self.original.replace('"ok"', '"fixed"').rstrip("\n") + "\n" + line + "\n"
+                result = self.gate.check_patch(_patch(FilePatch("demo_app/app.py", "modify", kept)))
+                self.assertTrue(result.passed, result.reasons)
 
     def test_echoed_region_fence_is_a_leaked_marker(self) -> None:
         """Seen live: the 1.5B model wrapped its answer in '# BEGIN REGION ---'."""

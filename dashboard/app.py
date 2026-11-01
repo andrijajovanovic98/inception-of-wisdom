@@ -69,7 +69,7 @@ except ImportError:
 
 # Part 1: Observer imports
 from p1.docker_monitor import DockerMonitor  # noqa: E402
-from p1.log_streamer import LogStreamer  # noqa: E402
+from p1.log_streamer import LogStreamer, incident_excerpt  # noqa: E402
 from p1.http_probe import HttpProbeManager  # noqa: E402
 from p1.event_manager import EventManager, ObserverEvent  # noqa: E402
 from p1.observer_api import create_observer_router  # noqa: E402
@@ -86,7 +86,7 @@ from p2.analyst_api import create_analyst_router  # noqa: E402
 from p3.patcher import CodePatcher, StructuredPatch  # noqa: E402
 from p3.sanity import SanityChecker  # noqa: E402
 from p3.git_manager import GitManager  # noqa: E402
-from p3.verifier import TargetVerifier, incident_excerpt  # noqa: E402
+from p3.verifier import TargetVerifier  # noqa: E402
 from p3.loop import HealCycleRecord, WisdomLoop  # noqa: E402
 from p3.safety import SafetyManager  # noqa: E402
 from p3.loop_api import create_loop_router  # noqa: E402
@@ -161,7 +161,8 @@ class InceptionOrchestrator:
         incident_debounce = live["incident_debounce_seconds"]
         self.incident_debounce = incident_debounce
 
-        model_name = os.environ.get("OLLAMA_MODEL", analyst_cfg.get("model", "qwen2.5-coder:1.5b"))
+        # An override wins; compose passes an empty one when there is none.
+        model_name = os.environ.get("OLLAMA_MODEL") or analyst_cfg.get("model", "qwen2.5-coder:1.5b")
         embedding_model = analyst_cfg.get("embedding_model", "all-MiniLM-L6-v2")
         ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11436")
         # Makefile / ollama CLI use host:port; HTTP clients need a full URL.
@@ -279,6 +280,7 @@ class InceptionOrchestrator:
 
         # Register event subscriber for autonomous healing
         self.event_manager.add_listener(self._on_observer_event)
+        self.event_manager.on_target_serving = self.safety_manager.release_incident
 
     def _crash_window(self, configured: float) -> float:
         """The crash dedup window; on Kubernetes it must outlast the pod's restart backoff."""
@@ -577,6 +579,7 @@ class InceptionOrchestrator:
         # open a review PR proposing a change to working code (seen live: Gitea #14).
         refused = self.wisdom_loop.nothing_to_patch(event)
         if refused is not None:
+            self.safety_manager.refund_heal(sig)
             if refused.status == "not_needed":
                 self.event_manager.close_incidents("crash")
             return
@@ -739,6 +742,8 @@ class InceptionOrchestrator:
             # The target was verified healthy: this incident is over, and the same crash
             # coming back is a new one (the per-signature cooldown still applies).
             self.event_manager.close_incidents("crash")
+        elif result.status == "rolled_back":
+            self.safety_manager.hold_incident()
 
         if not result.attempts:
             return

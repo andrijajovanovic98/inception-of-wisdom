@@ -856,6 +856,7 @@
         <div class="card-header">
           <div class="card-title">Wisdom Loop Safety Guardrails (iow.config.yml)</div>
           <div style="display: flex; gap: 10px;">
+            <button id="autoHealBtn" class="btn btn-secondary" onclick="toggleAutoHeal()">Pause Auto-Heal</button>
             <button class="btn btn-danger" onclick="triggerManualRollback()">Emergency Git Rollback</button>
             <button class="btn btn-primary" onclick="triggerManualHeal()">Trigger Heal Now</button>
           </div>
@@ -1410,6 +1411,9 @@
           loopBadge.className = "badge badge-green";
           loopText.textContent = data.orchestrator.auto_heal_enabled ? "AUTO-HEAL ACTIVE" : "AUTO-HEAL PAUSED";
         }
+        const autoHealBtn = document.getElementById('autoHealBtn');
+        autoHealBtn.textContent = data.orchestrator.auto_heal_enabled ? "Pause Auto-Heal" : "Resume Auto-Heal";
+        autoHealBtn.disabled = !data.orchestrator.loop_enabled;
 
         // Tab 1 stats
         document.getElementById('obsContainerName').textContent = data.target.container_name;
@@ -1429,8 +1433,8 @@
         const sf = data.wisdom_loop.safety || {};
         document.getElementById('sfActiveVal').textContent = sf.single_flight_active ? "RUNNING" : "IDLE";
         document.getElementById('sfActiveVal').style.color = sf.single_flight_active ? "#fbbf24" : "#34d399";
-        document.getElementById('hourlyRateVal').textContent = `${sf.hourly_heal_count || 0} / ${(sf.config || {}).rate_limit_per_hour || 5}`;
-        document.getElementById('hardCapVal').textContent = `${sf.lifetime_heal_count || 0} / ${(sf.config || {}).hard_cap || 20}`;
+        document.getElementById('hourlyRateVal').textContent = `${sf.hourly_heal_count || 0} / ${(sf.config || {}).rate_limit_per_hour ?? 5}`;
+        document.getElementById('hardCapVal').textContent = `${sf.lifetime_heal_count || 0} / ${(sf.config || {}).hard_cap ?? 20}`;
         const ks = (sf.config || {}).kill_switch;
         document.getElementById('killSwitchVal').textContent = ks ? "ACTIVE (BLOCKED)" : "OFF";
         document.getElementById('killSwitchVal').style.color = ks ? "#f87171" : "#34d399";
@@ -1439,7 +1443,8 @@
         if (cfgLine) {
           cfgLine.textContent = `iow.config.yml (live): grace_period ${cfg.grace_period}s · cooldown ${cfg.cooldown}s · `
             + `rate_limit ${cfg.rate_limit_per_hour}/h · hard_cap ${cfg.hard_cap} · boot_timeout ${cfg.boot_timeout}s · `
-            + `${sf.active_signatures_in_cooldown || 0} signature(s) in cooldown`;
+            + `${sf.active_signatures_in_cooldown || 0} signature(s) in cooldown · `
+            + `kill_switch: true in that file refuses every new heal`;
         }
         const refusal = sf.last_refusal;
         const refusalLine = document.getElementById('lastRefusalLine');
@@ -1738,6 +1743,21 @@
     }
 
     // Wisdom Loop actions
+    // Paused, crashes are still observed and a manual heal still runs; the kill switch
+    // in iow.config.yml is what refuses every heal.
+    async function toggleAutoHeal() {
+      try {
+        const res = await fetch('/api/auto-heal/toggle', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          await showAlert(data.detail || `Refused (HTTP ${res.status})`, 'warn', 'Wisdom Loop');
+        }
+        await refreshOverview();
+      } catch (err) {
+        await showAlert("Failed to toggle auto-heal: " + err, 'error', 'Wisdom Loop');
+      }
+    }
+
     async function triggerManualHeal() {
       if (!await showConfirm("Start an autonomous Wisdom Loop heal cycle now?", "Wisdom Loop")) return;
       try {

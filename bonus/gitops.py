@@ -538,6 +538,9 @@ class KubeTargetMonitor:
         # pod as the agent first saw it, or as it was when it served again.
         self._restart_baseline: Optional[Tuple[str, int]] = None
         self._last_pod: Optional[Tuple[str, int]] = None
+        # ((pod uid, restart count), when the agent first saw every container of it running):
+        # how long the pod's current processes have been up, on the agent's own clock.
+        self._up_since: Optional[Tuple[Tuple[str, int], float]] = None
 
     # -- state ---------------------------------------------------------------
     def inspect(self) -> Any:
@@ -573,6 +576,7 @@ class KubeTargetMonitor:
             items = []
 
         if not items:
+            self._up_since = None
             state = ContainerState(
                 name=self.container_name, status="not_found",
                 error_reason=f"No pod matches '{self.selector}' in {self.namespace}",
@@ -584,6 +588,7 @@ class KubeTargetMonitor:
         pod = _newest_pod(items) or items[0]
         blocker = _start_blocker(pod)
         if blocker:
+            self._up_since = None
             state = ContainerState(
                 name=self.container_name, status="not_started",
                 error_reason=blocker, timestamp=now,
@@ -598,6 +603,11 @@ class KubeTargetMonitor:
         if self._restart_baseline is None:
             self._restart_baseline = (uid, restarts)
         self._last_pod = (uid, restarts)
+        if statuses and all("running" in (cs.get("state") or {}) for cs in statuses):
+            if self._up_since is None or self._up_since[0] != (uid, restarts):
+                self._up_since = ((uid, restarts), now)
+        else:
+            self._up_since = None
         # Kubernetes keeps a container's last termination in the pod status until its next
         # restart. A pod that came back on its own (a crash-and-restart in place) read as
         # crashed on every poll, and once the Observer closed the outage it was raised anew
@@ -644,10 +654,22 @@ class KubeTargetMonitor:
     def get_last_state(self) -> Optional[Any]:
         return self._last_state
 
-    def forget_restart_history(self) -> None:
-        """The target serves again: the newest pod's terminations so far are history."""
+    def forget_restart_history(self) -> bool:
+        """The target serves again: the newest pod's terminations so far are history.
+
+        Not before its processes have stayed up, as on Docker (STABLE_UPTIME_S): a pod that dies
+        a few seconds after every start answers the probes in between, and forgetting then read
+        it as recovered each time - its incident closed and raised anew as a new event on every
+        restart, and the hold on a failed heal lifted while it was still looping.
+        Returns whether the target has recovered that far.
+        """
+        from p1.docker_monitor import STABLE_UPTIME_S
+
+        if self._up_since is None or time.time() - self._up_since[1] < STABLE_UPTIME_S:
+            return False
         if self._last_pod is not None:
             self._restart_baseline = self._last_pod
+        return True
 
     def target_facts(self) -> Dict[str, Any]:
         """Container ports and (non-secret) literal env of the newest pod's app container."""

@@ -108,16 +108,20 @@ services:
         ollama serve &
         srv=$$!
         until ollama list >/dev/null 2>&1; do sleep 1; done
-        echo "[iow-ollama] pulling $${IOW_LLM_MODEL}..."
-        ollama pull "$${IOW_LLM_MODEL}" || echo "[iow-ollama] pull failed - retry on first use"
+        # analyst.model in iow.config.yml, unless IOW_LLM_MODEL overrides it.
+        model="$${IOW_LLM_MODEL:-$$(sed -n 's/^ *model: *"\{0,1\}\([^"#[:space:]]*\).*/\1/p' /iow.config.yml)}"
+        echo "$$model" > /tmp/iow-model
+        echo "[iow-ollama] pulling $$model..."
+        ollama pull "$$model" || echo "[iow-ollama] pull failed - retry on first use"
         echo "[iow-ollama] ready"
         wait $$srv
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
       - OLLAMA_KEEP_ALIVE=30m
-      - IOW_LLM_MODEL=${IOW_LLM_MODEL:-qwen2.5-coder:1.5b}
+      - IOW_LLM_MODEL=${IOW_LLM_MODEL:-}
     volumes:
       - ollama-models:/root/.ollama
+      - ./demo_app/iow.config.yml:/iow.config.yml:ro
     # No host port: the agent talks to it over iow-net (http://ollama:11434). Publishing
     # :11436 collided with the host Ollama `make setup` runs there, and on rootless
     # Docker that port is held by rootlesskit (see `make stop`).
@@ -125,7 +129,7 @@ services:
       - iow-net
     healthcheck:
       # Healthy once the model is actually pulled, not merely once the server is up.
-      test: ["CMD-SHELL", "ollama show \"$${IOW_LLM_MODEL}\" >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "ollama show \"$$(cat /tmp/iow-model)\" >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 60
@@ -143,9 +147,10 @@ services:
       # Rootless Docker (42 campus) serves $XDG_RUNTIME_DIR/docker.sock, not
       # /var/run/docker.sock - mounting the latter hands the agent a socket it
       # cannot read, so it can neither inspect nor restart its siblings.
-      # `make up` exports DOCKER_SOCK; for a bare `docker compose up` set it with:
-      #   export DOCKER_SOCK=$XDG_RUNTIME_DIR/docker.sock
+      # `make up` exports DOCKER_SOCK. A bare `docker compose up` needs nothing: the user's
+      # runtime directory is mounted as well, and the entrypoint uses the socket that answers.
       - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${XDG_RUNTIME_DIR:-/tmp/iow}:/run/iow-user:ro
       # Read-write access to the target's source tree (and its git repository).
       - .:/workspace
       # One runtime dir for host and container runs: the persistent ChromaDB index,
@@ -154,13 +159,11 @@ services:
       - /tmp/iow:/tmp/iow
     environment:
       - IOW_MODE=${IOW_MODE:-full}
-      - TARGET_CONTAINER=iow_demo_target
-      - TARGET_URL=http://demo_app:5000
       - IOW_CONFIG_PATH=/workspace/demo_app/iow.config.yml
       - IOW_TARGET_DIR=/workspace/demo_app
       - IOW_REPO_PATH=/workspace
       - OLLAMA_HOST=${IOW_AGENT_OLLAMA_HOST:-http://ollama:11434}
-      - OLLAMA_MODEL=${IOW_LLM_MODEL:-qwen2.5-coder:1.5b}
+      - OLLAMA_MODEL=${IOW_LLM_MODEL:-}
       - GITEA_URL=http://gitea:3000
       - GITEA_PUBLIC_URL=http://localhost:3000
       - GITEA_OWNER=iow

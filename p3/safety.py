@@ -9,6 +9,7 @@ is kept verbatim and served through get_section() so nothing in the file is dead
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import threading
@@ -27,12 +28,14 @@ logger = logging.getLogger("p3.safety")
 
 DEFAULT_CONFIG_PATH = "demo_app/iow.config.yml"
 
-# name -> (python type, minimum allowed value)
+# name -> (python type, minimum allowed value). 0 is a usable rate limit and hard cap: it
+# refuses every heal. Treating it as a typo kept the last value, so an operator lowering
+# a safety bound as far as it goes got 5 and 20 instead.
 _BOUND_SPECS: Dict[str, Tuple[type, float]] = {
     "grace_period": (float, 0.0),
     "cooldown": (float, 0.0),
-    "rate_limit_per_hour": (int, 1),
-    "hard_cap": (int, 1),
+    "rate_limit_per_hour": (int, 0),
+    "hard_cap": (int, 0),
     # How long a redeployed target may take to answer before the attempt fails.
     "boot_timeout": (float, 1.0),
 }
@@ -60,6 +63,17 @@ LIVE_LISTS: Tuple[Tuple[str, List[str]], ...] = (
 LIVE_CHOICES: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
     ("analyst", "patch_strategy", ("region", "full_file"), "region"),
 )
+
+
+def _finite(value: Any) -> Any:
+    """`value`, or ValueError for .inf / .nan, which YAML reads as floats.
+
+    A grace period of .inf never ends, so one heal held the single-flight slot for good,
+    and .nan compares false with every minimum, so it passed as a number too.
+    """
+    if not math.isfinite(value):
+        raise ValueError(value)
+    return value
 
 
 @dataclass
@@ -103,6 +117,10 @@ class SafetyManager:
         self._lifetime_heal_count: int = 0
         # Signatures refused by single-flight during the running heal (see release).
         self._flight_echoes: Set[str] = set()
+        # The running heal found nothing to do (see refund_heal).
+        self._refunded: bool = False
+        # When a heal last failed on the outage still going on (see hold_incident).
+        self._incident_held_at: Optional[float] = None
         # Most recent refusal, so the dashboard can say *why* nothing happened.
         self.last_refusal: Optional[Dict[str, Any]] = None
 
@@ -146,8 +164,8 @@ class SafetyManager:
             )
             return None
         try:
-            cast = caster(value)
-        except (TypeError, ValueError):
+            cast = _finite(caster(value))
+        except (TypeError, ValueError, OverflowError):
             logger.warning(
                 "iow.config.yml: '%s: %r' is not a number - keeping %r",
                 key, value, self._config.get(key),
@@ -284,6 +302,15 @@ class SafetyManager:
             return SafetyCheckResult(allowed=False, refusal_reason=reason, config_snapshot=cfg)
 
         cooldown = float(cfg.get("cooldown", 300.0))
+        if self._incident_held_at is not None and now - self._incident_held_at < cooldown:
+            remaining = round(cooldown - (now - self._incident_held_at), 1)
+            reason = (
+                f"Refused: cooldown active for the outage the last heal failed on "
+                f"({remaining}s remaining)."
+            )
+            logger.warning(f"Safety constraint triggered: {reason}")
+            return SafetyCheckResult(allowed=False, refusal_reason=reason, config_snapshot=cfg)
+
         last_heal_time = self._signature_last_healed.get(signature)
         if last_heal_time is not None:
             time_since_last = now - last_heal_time
@@ -371,10 +398,48 @@ class SafetyManager:
         logger.info(f"Exclusive slot acquired for [{label}] (not counted as a heal).")
         return True, None
 
+    def refund_heal(self, signature: str) -> None:
+        """The heal this slot was taken for found nothing to do, so it never ran.
+
+        The slot is taken before anyone looks. A heal of a crash that is already gone, or one
+        stray error line in the log, spent one of the hour's heals and one of the lifetime's
+        without a model call, a commit or a restart: seen live, two real heals and three
+        such checks read 5/5, and a real crash was refused. No heal, no count - and no
+        cooldown, which is there to keep a patch from retriggering the loop.
+        Call it while holding the slot; release_heal_slot() still follows.
+        """
+        with self._state_lock:
+            if self._heal_timestamps_history:
+                self._heal_timestamps_history.pop()
+            self._lifetime_heal_count = max(0, self._lifetime_heal_count - 1)
+            self._signature_last_healed.pop(signature, None)
+            self._refunded = True
+
+    def hold_incident(self) -> None:
+        """A heal failed: the whole outage waits out the cooldown, not only its signature.
+
+        One crash raises several signatures (exit code, log line, dead probe, restart loop).
+        The ones raised while the heal runs share its cooldown, but a heal that fails fast is
+        over before the others arrive: with the model stopped, a sibling started the cycle
+        again six seconds later (seen live, 300 s cooldown) - the same symptom retriggering
+        the loop on its own. Lifted early once the target has recovered (release_incident).
+        """
+        with self._state_lock:
+            self._incident_held_at = time.time()
+
+    def release_incident(self) -> None:
+        """The target recovered: whatever crashes next is a new incident."""
+        with self._state_lock:
+            self._incident_held_at = None
+
     def release_heal_slot(self, signature: Optional[str] = None) -> None:
         """Releases the single-flight execution lock."""
         with self._state_lock:
             self._single_flight_active = False
+            if self._refunded:
+                self._refunded = False
+                self._flight_echoes.clear()
+                signature = None
             now = time.time()
             if signature:
                 # Cooldown counts from the completion moment.
@@ -439,10 +504,10 @@ class SafetyManager:
             try:
                 if isinstance(raw, bool):
                     raise ValueError(raw)
-                value = cast(raw)
+                value = _finite(cast(raw))
                 if value < minimum:
                     raise ValueError(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 logger.warning(
                     "iow.config.yml: '%s.%s: %r' is not usable (minimum %s) - keeping %r",
                     section, key, raw, minimum, keep,

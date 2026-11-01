@@ -470,6 +470,9 @@ class WisdomLoop:
                     verify_res.error_log or "Target failed to stay up during verification."
                 )
                 current_status = verify_res.container_status or "crashed"
+                # The crash the next diagnosis reads is this one: the event's exit code
+                # belonged to the failure before the patch.
+                current_exit_code = verify_res.details.get("exit_code")
                 attempt_record.error_message = (
                     f"Verification failed ({verify_res.status}): {current_error_log[:150]}"
                 )

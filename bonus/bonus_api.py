@@ -161,9 +161,15 @@ def create_bonus_router(
         if not consensus_engine:
             raise HTTPException(status_code=404, detail="Second Opinion consensus engine not initialized")
         log_excerpt = payload.get("log_excerpt", "")
+        top_k = payload.get("top_k")  # None = analyst.top_k
+        # An untyped body: a number as the log, or "x" as top_k, used to be an HTTP 500 from deep
+        # inside the retriever. The Analyst's own routes answer 422 for the same input.
+        if not isinstance(log_excerpt, str):
+            raise HTTPException(status_code=422, detail="log_excerpt must be text")
+        if top_k is not None and (isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1):
+            raise HTTPException(status_code=422, detail="top_k must be a positive integer")
         if not log_excerpt:
             raise HTTPException(status_code=400, detail="log_excerpt cannot be empty")
-        top_k = payload.get("top_k")  # None = analyst.top_k
         report = consensus_engine.evaluate_consensus(log_excerpt, top_k=top_k)
         return report.to_dict()
 
